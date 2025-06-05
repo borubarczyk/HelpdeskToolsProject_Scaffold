@@ -1,1 +1,183 @@
-# Code for loading and assigning icons
+function Load-AllIcons {
+    param (
+        [string]$BasePath = "$PSScriptRoot/../Resources/Icons"
+    )
+
+    try {
+        # Dolne przyciski
+        $HT_UI.Buttons.ConnectExchange.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath "microsoft-exchange-2019.png"))
+        $HT_UI.Buttons.ConnectSharePoint.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath "microsoft-sharepoint-2019.png"))
+        $HT_UI.Buttons.ConnectGraph.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath "api.png"))
+        $HT_UI.Buttons.PasswordGen.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath "password.png"))
+        $HT_UI.Buttons.Exit.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath "close.png"))
+
+        foreach ($btn in $HT_UI.Buttons.Values) {
+            $btn.ImageAlign = 'MiddleCenter'
+            $btn.TextImageRelation = 'ImageBeforeText'
+            $btn.TextAlign = 'MiddleCenter'
+        }
+
+        # Ikony użytkownika (jeśli zakładka wczytana)
+        if ($HT_UI.UsersTab -and $HT_UI.UsersTab.Actions) {
+            $iconsMap = @{
+                Refresh         = "Refresh.png"
+                ResetPassword   = "Password.png"
+                ToggleBlock     = "Denied.png"
+                ChangeLicense   = "Software License.png"
+                AddToGroup      = "Add Male User Group.png"
+                RemoveFromGroup = "Minus.png"
+                ChangeMFA       = "Microsoft Authenticator.png"
+                EditContact     = "Info.png"
+                Mailbox         = "Email.png"
+                Devices         = "Multiple Devices.png"
+            }
+
+            foreach ($key in $iconsMap.Keys) {
+                $HT_UI.UsersTab.Actions[$key].Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $iconsMap[$key]))
+                $HT_UI.UsersTab.Actions[$key].ImageAlign = 'MiddleLeft'
+                $HT_UI.UsersTab.Actions[$key].TextImageRelation = 'ImageBeforeText'
+                $HT_UI.UsersTab.Actions[$key].TextAlign = 'MiddleCenter'
+            }
+        }
+
+        # Ikony SharePoint (jeśli zakładka wczytana)
+        if ($HT_UI.SharePointTab -and $HT_UI.SharePointTab.Actions) {
+            $iconsMap_SP = @{
+                Refresh             = "Refresh.png"
+                CheckPermissions    = "Eye open.png"
+                GrantPermissions    = "Add Male User Group.png"
+                RemovePermissions   = "Minus.png"
+                ToggleInheritance   = "Process.png"
+                CreateSecurityGroup = "User Groups.png"
+                CheckGroup          = "Info.png"
+                AddFolder           = "Add Folder.png"
+            }
+
+            foreach ($key in $iconsMap_SP.Keys) {
+                $HT_UI.SharePointTab.Actions[$key].Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $iconsMap_SP[$key]))
+                $HT_UI.SharePointTab.Actions[$key].ImageAlign = 'MiddleLeft'
+                $HT_UI.SharePointTab.Actions[$key].TextImageRelation = 'ImageBeforeText'
+                $HT_UI.SharePointTab.Actions[$key].TextAlign = 'MiddleCenter'
+            }
+        }
+
+        # Skrzynki (Mailboxes)
+        if ($HT_UI.MailboxesTab -and $HT_UI.MailboxesTab.Actions) {
+            $iconsMap_MB = @{
+                Refresh       = "Refresh.png"
+                CheckPerms    = "Eye open.png"
+                GrantPerms    = "Add Male User Group.png"
+                RemovePerms   = "Minus.png"
+                Convert       = "Process.png"
+                Autoresponder = "Reply.png"
+                HideFromGAL   = "eye.png"
+                EnableArchive = "shared-mail.png"
+                Forwards      = "forward-message.png"
+                Advanced      = "administrative-tools.png"
+            }
+
+            foreach ($key in $iconsMap_MB.Keys) {
+                $HT_UI.MailboxesTab.Actions[$key].Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $iconsMap_MB[$key]))
+                $HT_UI.MailboxesTab.Actions[$key].ImageAlign = 'MiddleLeft'
+                $HT_UI.MailboxesTab.Actions[$key].TextImageRelation = 'ImageBeforeText'
+                $HT_UI.MailboxesTab.Actions[$key].TextAlign = 'MiddleCenter'
+            }
+        }
+
+        # Intune
+        if ($HT_UI.IntuneTab -and $HT_UI.IntuneTab.Actions) {
+            $iconsMap_Intune = @{
+                Refresh        = "Refresh.png"
+                RenameDevice   = "Rename.png"
+                SetPrimaryUser = "Change User.png"
+                DeviceInfo     = "Info.png"
+                AppList        = "Software.png"
+                Memberships    = "User Groups.png"
+                RecoveryKey    = "Secure.png"
+                LAPS           = "Key Security.png"
+            }
+
+            foreach ($key in $iconsMap_Intune.Keys) {
+                $HT_UI.IntuneTab.Actions[$key].Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $iconsMap_Intune[$key]))
+                $HT_UI.IntuneTab.Actions[$key].ImageAlign = 'MiddleLeft'
+                $HT_UI.IntuneTab.Actions[$key].TextImageRelation = 'ImageBeforeText'
+                $HT_UI.IntuneTab.Actions[$key].TextAlign = 'MiddleCenter'
+            }
+        }
+
+        # Ikony dla Lokalnego AD
+        if ($HT_UI.LocalADTab -and $HT_UI.LocalADTab.Views) {
+            $icons_LocalAD = @{
+                "Użytkownicy" = @{
+                    "Odśwież"           = "Refresh.png"
+                    "Resetuj hasło"     = "Password.png"
+                    "Zablokuj/Odblokuj" = "Denied.png"
+                    "Zmień grupy"       = "Add Male User Group.png"
+                    "Przypisz profil"   = "Organization.png"
+                    "Wyeksportuj dane"  = "CSV.png"
+                    "Przenieś OU"       = "Organization.png"
+                    "Usuń konto"        = "Remove.png"
+                }
+                "Komputery"   = @{
+                    "Odśwież"      = "Refresh.png"
+                    "Zrestartuj"   = "Restart.png"
+                    "Zablokuj"     = "Denied.png"
+                    "Zmień OU"     = "Organization.png"
+                    "Wyłącz konto" = "Denied.png"
+                    "Wyczyść SID"  = "Refresh.png"
+                    "Usuń konto"   = "Remove.png"
+                }
+                "Grupy"       = @{
+                    "Odśwież"         = "Refresh.png"
+                    "Dodaj członków"  = "Add Male User Group.png"
+                    "Usuń członków"   = "Minus.png"
+                    "Zmień nazwę"     = "Rename.png"
+                    "Zmień typ grupy" = "Admin Settings Male.png"
+                    "Zmień zakres"    = "Group Objects.png"
+                    "Usuń grupę"      = "Remove.png"
+                }
+            }
+
+            foreach ($section in $icons_LocalAD.Keys) {
+                $view = $HT_UI.LocalADTab.Views[$section]
+                if ($view) {
+                    foreach ($btn in $view.Buttons.Controls) {
+                        if ($icons_LocalAD[$section].ContainsKey($btn.Text)) {
+                            $iconPath = Join-Path $BasePath $icons_LocalAD[$section][$btn.Text]
+                            if (Test-Path $iconPath) {
+                                $btn.Image = [System.Drawing.Image]::FromFile($iconPath)
+                                $btn.ImageAlign = 'MiddleLeft'
+                                $btn.TextImageRelation = 'ImageBeforeText'
+                                $btn.TextAlign = 'MiddleCenter'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # Ikony dla zakładki Logi
+        if ($HT_UI.LogsTab -and $HT_UI.LogsTab.Buttons) {
+            $icons_Logs = @{
+                ClearLog = "Clear Symbol.png"
+                SaveLog  = "Save.png"
+                CopyLog  = "Copy.png"
+            }
+
+            foreach ($key in $icons_Logs.Keys) {
+                $btn = $HT_UI.LogsTab.Buttons[$key]
+                if ($btn) {
+                    $btn.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $icons_Logs[$key]))
+                    $btn.ImageAlign = 'MiddleLeft'
+                    $btn.TextImageRelation = 'ImageBeforeText'
+                    $btn.TextAlign = 'MiddleCenter'
+                }
+            }
+        }
+        Write-Log -Message "Ikony zostały załadowane pomyślnie." -Type "Info"
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show("❌ Nie udało się załadować ikon: $($_.Exception.Message)", "Błąd ikon", "OK", "Error")
+         Write-Log -Message "❌ Nie udało się załadować ikon: $($_.Exception.Message)" -Type "Error"
+    }
+}

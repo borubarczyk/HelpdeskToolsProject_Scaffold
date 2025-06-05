@@ -1,4 +1,6 @@
 {
-  "TenantId": "",
-  "LogLevel": "Info"
+    "PasswordEmailAdress": "helpdesk@example.com",
+    "PasswordEmailTitle": "Hasło tymczasowe",
+    "PasswordSpecialCharacters": "!@#$%&?=",
+    "PasswordUseWordBased": false
 }
