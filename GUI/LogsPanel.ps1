@@ -49,6 +49,7 @@ $buttons_Logs = @{
     ClearLog = New-LogActionButton "Wyczyść log"
     SaveLog  = New-LogActionButton "Zapisz log"
     CopyLog  = New-LogActionButton "Kopiuj wszystko"
+    ConfigLocation = New-LogActionButton "Lokalizacja konfiguracji i logów"
 }
 
 $panel_LogButtons.Controls.AddRange($buttons_Logs.Values)

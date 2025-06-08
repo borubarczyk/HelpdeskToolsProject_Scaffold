@@ -1,7 +1,4 @@
 function Load-AllIcons {
-    param (
-        [string]$BasePath = "$PSScriptRoot/../Resources/Icons"
-    )
 
     try {
         # Dolne przyciski
@@ -138,30 +135,29 @@ function Load-AllIcons {
                 }
             }
 
-            foreach ($section in $icons_LocalAD.Keys) {
-                $view = $HT_UI.LocalADTab.Views[$section]
-                if ($view) {
-                    foreach ($btn in $view.Buttons.Controls) {
-                        if ($icons_LocalAD[$section].ContainsKey($btn.Text)) {
-                            $iconPath = Join-Path $BasePath $icons_LocalAD[$section][$btn.Text]
-                            if (Test-Path $iconPath) {
-                                $btn.Image = [System.Drawing.Image]::FromFile($iconPath)
-                                $btn.ImageAlign = 'MiddleLeft'
-                                $btn.TextImageRelation = 'ImageBeforeText'
-                                $btn.TextAlign = 'MiddleCenter'
-                            }
-                        }
+            foreach ($section in $HT_UI.LocalADTab.Views.Keys) {
+                foreach ($label in $HT_UI.LocalADTab.Views[$section].Buttons.Keys) {
+                    $btn = $HT_UI.LocalADTab.Views[$section].Buttons[$label]
+                    $iconFile = $icons_LocalAD[$section][$label]
+                    $iconPath = Join-Path $BasePath $iconFile
+                    if (Test-Path $iconPath) {
+                        $btn.Image = [System.Drawing.Image]::FromFile($iconPath)
+                        $btn.ImageAlign = 'MiddleLeft'
+                        $btn.TextImageRelation = 'ImageBeforeText'
+                        $btn.TextAlign = 'MiddleCenter'
                     }
                 }
             }
+
         }
 
         # Ikony dla zakładki Logi
         if ($HT_UI.LogsTab -and $HT_UI.LogsTab.Buttons) {
             $icons_Logs = @{
-                ClearLog = "Clear Symbol.png"
-                SaveLog  = "Save.png"
-                CopyLog  = "Copy.png"
+                ClearLog       = "Clear Symbol.png"
+                SaveLog        = "Save.png"
+                CopyLog        = "Copy.png"
+                ConfigLocation = "Opened Folder.png"
             }
 
             foreach ($key in $icons_Logs.Keys) {
@@ -174,10 +170,39 @@ function Load-AllIcons {
                 }
             }
         }
+
         Write-Log -Message "Ikony zostały załadowane pomyślnie." -Type "Info"
     }
     catch {
-        [System.Windows.Forms.MessageBox]::Show("❌ Nie udało się załadować ikon: $($_.Exception.Message)", "Błąd ikon", "OK", "Error")
-         Write-Log -Message "❌ Nie udało się załadować ikon: $($_.Exception.Message)" -Type "Error"
+        Write-Log -Message "Nie udało się załadować ikon: $($_.Exception.Message)" -Type "Error"
     }
+}
+
+function Set-PasswordGeneratorIcons {
+    try {
+        # Ikony dla Generatora Haseł
+        if ($HT_UI.PasswordGeneratorWindow -and $HT_UI.PasswordGeneratorWindow.Actions -and $HT_UI.PasswordGeneratorWindow.CopyButton) {
+            $iconsMap_PassGen = @{
+                Generate = "Password reset.png"
+                Send     = "Email.png"
+                Close    = "close.png"
+                Copy     = "Copy.png"
+            }
+    
+            foreach ($key in $iconsMap_PassGen.Keys) {
+                $btn = $HT_UI.PasswordGeneratorWindow.Actions[$key]
+                if ($btn) {
+                    $btn.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $iconsMap_PassGen[$key]))
+                    $btn.ImageAlign = 'MiddleLeft'
+                    $btn.TextImageRelation = 'ImageBeforeText'
+                    $btn.TextAlign = 'MiddleCenter'
+                }
+            }
+        }
+        Write-Log -Message "Ikony dla Generatora Haseł zostały załadowane pomyślnie." -Type "Info"
+    }
+    catch {
+        Write-Log -Message "Nie udało się załadować ikon dla Generatora Haseł: $($_.Exception.Message)" -Type "Error"
+    }
+    
 }

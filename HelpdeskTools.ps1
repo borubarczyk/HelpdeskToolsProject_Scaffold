@@ -1,21 +1,24 @@
 #Requires -RunAsAdministrator
 #Requires -Version 7
 
+# Zmienne globalne
+$Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
+$Global:ConfigPath = Join-Path -Path $Global:ConfigDir -ChildPath "config.json"
+$Global:BasePath = "$PSScriptRoot/../Resources/Icons"
+
 <#
 .SYNOPSIS
     Główny plik uruchamiający aplikację Helpdesk Tools.
 #>
 
-# Wczytaj konfigurację
-$config = Get-Content -Path "$PSScriptRoot/config.json" | ConvertFrom-Json
-
 # Import modułów
 $modulePaths = @(
     "$PSScriptRoot/Modules/Utils.psm1",
-    "$PSScriptRoot/Modules/ActiveDirectory.psm1",
-    "$PSScriptRoot/Modules/ExchangeOnline.psm1",
-    "$PSScriptRoot/Modules/SharePoint.psm1",
-    "$PSScriptRoot/Modules/M365Users.psm1"  
+    "$PSScriptRoot/Modules/LocalActiveDirectory.psm1",
+    "$PSScriptRoot/Modules/MailboxesExchangeOnline.psm1",
+    "$PSScriptRoot/Modules/GraphAPISharePoint.psm1",
+    "$PSScriptRoot/Modules/GraphAPIM365Users.psm1",
+    "$PSScriptRoot/Modules/PasswordGenerator.psm1"
 )
 
 foreach ($path in $modulePaths) {
@@ -37,7 +40,7 @@ foreach ($path in $modulePaths) {
 . "$PSScriptRoot/GUI/SharePointPanel.ps1"
 . "$PSScriptRoot/GUI/LogsPanel.ps1"
 . "$PSScriptRoot/GUI/LocalADPanel.ps1"
-. "$PSScriptRoot/Modules/PasswordGeneratorGUI.ps1"
+. "$PSScriptRoot/GUI/PasswordGenerator.ps1"
 . "$PSScriptRoot/GUI/GUIHelpers.ps1"
 . "$PSScriptRoot/GUI/Events.ps1"
 
@@ -50,8 +53,8 @@ Load-AllIcons
 # Uruchom GUI
 try {
     [void][System.Windows.Forms.Application]::EnableVisualStyles()
-    [System.Windows.Forms.Application]::Run($mainForm) | Out-Null
+    [System.Windows.Forms.Application]::Run($mainForm)
 }
 catch {
-    Write-Error "Błąd uruchamiania GUI: $_"
+    Write-Error "Błąd uruchamiania GUI: $_" 
 }

@@ -1,7 +1,3 @@
-
-#requires -version 7
-#requires -RunAsAdministrator
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -14,7 +10,6 @@ $mainForm.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 $mainForm.FormBorderStyle = 'FixedSingle'
 $mainForm.MaximizeBox = $false
 $mainForm.Icon = [System.Drawing.Icon]::ExtractIcon(("$PSScriptRoot/../Resources/Icons/Tools.ico"), 0, $true)
-
 
 # Tab Control
 $tabControl = New-Object System.Windows.Forms.TabControl

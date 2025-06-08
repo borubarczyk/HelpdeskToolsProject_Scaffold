@@ -3,8 +3,8 @@ Add-Type -AssemblyName System.Drawing
 
 $form_PasswordGenerator = New-Object System.Windows.Forms.Form
 $form_PasswordGenerator.Text = "Generator haseł"
-$form_PasswordGenerator.Size = '600,500'
-$form_PasswordGenerator.StartPosition = "CenterScreen"
+$form_PasswordGenerator.Size = '600,450' # Increased height to accommodate better spacing
+$form_PasswordGenerator.StartPosition = "CenterParent"
 $form_PasswordGenerator.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 $form_PasswordGenerator.FormBorderStyle = 'FixedDialog'
 $form_PasswordGenerator.MaximizeBox = $false
@@ -13,12 +13,12 @@ $form_PasswordGenerator.MaximizeBox = $false
 $groupbox_Settings = New-Object System.Windows.Forms.GroupBox
 $groupbox_Settings.Text = "Ustawienia hasła"
 $groupbox_Settings.Location = '10,10'
-$groupbox_Settings.Size = '560,200'
+$groupbox_Settings.Size = '560,220' # Increased height to fit special characters input
 
 # TableLayoutPanel dla checkboxów
 $tableLayoutPanel = New-Object System.Windows.Forms.TableLayoutPanel
 $tableLayoutPanel.Location = '10,20'
-$tableLayoutPanel.Size = '540,160'
+$tableLayoutPanel.Size = '540,140'
 $tableLayoutPanel.ColumnCount = 2
 $tableLayoutPanel.RowCount = 3
 $tableLayoutPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
@@ -53,12 +53,12 @@ foreach ($item in $checkboxDefinitions) {
 # TextBox dla znaków specjalnych
 $label_SpecialChars = New-Object System.Windows.Forms.Label
 $label_SpecialChars.Text = "Znaki specjalne:"
-$label_SpecialChars.Location = '10,170'
+$label_SpecialChars.Location = '10,170' # Moved down to avoid overlap
 $label_SpecialChars.Size = '100,20'
 
 $textbox_SpecialChars = New-Object System.Windows.Forms.TextBox
-$textbox_SpecialChars.Text = '!@#$%&*+?='
-$textbox_SpecialChars.Location = '120,170'
+$textbox_SpecialChars.Text = $PasswordSpecialCharacters
+$textbox_SpecialChars.Location = '120,170' # Moved down to avoid overlap
 $textbox_SpecialChars.Size = '420,25'
 
 $groupbox_Settings.Controls.AddRange(@($tableLayoutPanel, $label_SpecialChars, $textbox_SpecialChars))
@@ -66,20 +66,20 @@ $groupbox_Settings.Controls.AddRange(@($tableLayoutPanel, $label_SpecialChars, $
 # Label, TrackBar i NumericUpDown
 $label_Length = New-Object System.Windows.Forms.Label
 $label_Length.Text = "Długość hasła:"
-$label_Length.Location = '10,220'
+$label_Length.Location = '10,240'
 $label_Length.Size = '100,20'
 
 $numericupdown_Length = New-Object System.Windows.Forms.NumericUpDown
-$numericupdown_Length.Location = '120,220'
+$numericupdown_Length.Location = '120,240'
 $numericupdown_Length.Size = '60,25'
-$numericupdown_Length.Minimum = 4
+$numericupdown_Length.Minimum = 8
 $numericupdown_Length.Maximum = 64
 $numericupdown_Length.Value = 8
 
 $trackbar_Length = New-Object System.Windows.Forms.TrackBar
-$trackbar_Length.Location = '190,215'
+$trackbar_Length.Location = '190,235'
 $trackbar_Length.Size = '380,40'
-$trackbar_Length.Minimum = 4
+$trackbar_Length.Minimum = 8
 $trackbar_Length.Maximum = 64
 $trackbar_Length.Value = 8
 $trackbar_Length.TickFrequency = 4
@@ -87,15 +87,15 @@ $trackbar_Length.SmallChange = 1
 $trackbar_Length.LargeChange = 4
 
 $trackbar_Length.add_Scroll({
-    $numericupdown_Length.Value = $trackbar_Length.Value
-})
+        $numericupdown_Length.Value = $trackbar_Length.Value
+    })
 $numericupdown_Length.add_ValueChanged({
-    $trackbar_Length.Value = $numericupdown_Length.Value
-})
+        $trackbar_Length.Value = $numericupdown_Length.Value
+    })
 
 # Pole z wynikiem
 $richtextbox_Password = New-Object System.Windows.Forms.RichTextBox
-$richtextbox_Password.Location = '10,270'
+$richtextbox_Password.Location = '10,290'
 $richtextbox_Password.Size = '480,40'
 $richtextbox_Password.ReadOnly = $true
 $richtextbox_Password.BackColor = 'White'
@@ -104,7 +104,7 @@ $richtextbox_Password.Font = New-Object System.Drawing.Font("Segoe UI", 11)
 
 $button_Copy = New-Object System.Windows.Forms.Button
 $button_Copy.Text = "Kopiuj"
-$button_Copy.Location = '500,270'
+$button_Copy.Location = '500,290'
 $button_Copy.Size = '70,40'
 
 # Dolne przyciski
@@ -119,7 +119,7 @@ foreach ($btn in $bottomButtons) {
     $b = New-Object System.Windows.Forms.Button
     $b.Text = $btn.Text
     $b.Size = '180,40'
-    $b.Location = "$($btn.X),330"
+    $b.Location = "$($btn.X),350" # Moved up to reduce excessive bottom spacing
     $b.FlatStyle = 'Standard'
     $form_PasswordGenerator.Controls.Add($b)
     $buttons[$btn.Name] = $b
@@ -127,18 +127,77 @@ foreach ($btn in $bottomButtons) {
 
 # Dodaj wszystko do formularza
 $form_PasswordGenerator.Controls.AddRange(@(
-    $groupbox_Settings,
-    $label_Length,
-    $numericupdown_Length,
-    $trackbar_Length,
-    $richtextbox_Password,
-    $button_Copy
-))
+        $groupbox_Settings,
+        $label_Length,
+        $numericupdown_Length,
+        $trackbar_Length,
+        $richtextbox_Password,
+        $button_Copy
+    ))
 
 # Obsługa przycisku zamknięcia
 $buttons['Close'].Add_Click({
-    $form_PasswordGenerator.Close()
-})
+        $form_PasswordGenerator.Close()
+    })
+
+# Obsługa przycisku generowania hasła
+$buttons['Generate'].Add_Click({
+    
+    })
+
+$buttons['Send'].Add_Click({
+        if ($richtextbox_Password.Text -ne "" -and $Global:PasswordEmailAdress -ne "" -or $Global:PasswordEmailAdress -ne $null -and $Global:dPasswordEmailTitle -ne "" -or $Global:dPasswordEmailTitle -ne $null) {
+            try {
+                $phoneNumber = Show-InputBox -Prompt "Podaj numer telefonu do wysłania SMS z hasłem (opcjonalnie - pozostaw puste):" -Title "Numer telefonu:" -ValidationType "Phone"
+                if ($phoneNumber) {
+                    $subject = [System.Web.HttpUtility]::UrlEncode($Global:PasswordEmailTitle + $phoneNumber)
+                    $body = [System.Web.HttpUtility]::UrlEncode($richtextbox_Password.Text)
+                    $mailtoUri = "mailto:$($Global:PasswordEmailAdress)?subject=$subject&body=$body"
+                    Start-Process $mailtoUri
+                    Write-Log -Message "E-mail z hasłem został wysłany do $($Global:PasswordEmailAdress)" -Type "Info"
+                }
+                else {
+                    Write-Log -Message "Anulowane przez użytkownika" -Type "Warn"
+                }
+            }
+            catch {
+                Write-Log -Message "Błąd podczas wysyłania e-maila z hasłem: $_" -Type "Error&Notification"
+            }
+        }
+        else {
+            Write-Log -Message "Brak hasła lub adresu e-mail do wysłania" -Type "Warning&Notification"
+        }
+    
+    })
+
+# Obsługa przycisku kopiowania
+$button_Copy.Add_Click({
+        if ( $richtextbox_Password.Text -ne "" ) {
+            try {
+                [System.Windows.Forms.Clipboard]::SetText($richtextbox_Password.Text)
+                Write-Log -Message "Hasło skopiowane do schowka" -NotificationType "Info"
+                Show-Toast -Message "Hasło skopiowane do schowka" -NotificationType "Info"
+            }
+            catch {
+                Write-Log -Message "Błąd podczas kopiowania hasła do schowka: $_" -Type "Error&Notification"
+            }
+        }
+        else {
+            Write-Log -Message "Brak hasła do skopiowania" -Type "Warning&Notification"
+        }
+    })
+
+$HT_UI.PasswordGeneratorWindow = [ordered]@{
+    Form    = $form_PasswordGenerator
+    Actions = $buttons  # ten hashtable z Generate, Send, Close
+    CopyButton = $button_Copy
+}
+
+if (-not $HT_UI.PasswordGeneratorWindow.Initialized) {
+    Set-PasswordGeneratorIcons
+    $HT_UI.PasswordGeneratorWindow.Initialized = $true
+}
 
 # Wyświetl
 $form_PasswordGenerator.Topmost = $true
+

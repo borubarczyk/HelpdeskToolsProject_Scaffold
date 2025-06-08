@@ -2,120 +2,106 @@
 $panel_LocalAD = New-Object System.Windows.Forms.Panel
 $panel_LocalAD.Dock = 'Fill'
 
+# ComboBox z listą obiektów (dynamicznie ładowana)
+$combobox_LocalAD_List = New-Object System.Windows.Forms.ComboBox
+$combobox_LocalAD_List.Location = '10,10'
+$combobox_LocalAD_List.Width = 660
+$combobox_LocalAD_List.DropDownStyle = 'DropDownList'
+$combobox_LocalAD_List.Items.Add('Lista niezaładowana - kliknij "Odśwież"')
+$combobox_LocalAD_List.SelectedIndex = 0
+
 # ComboBox do wyboru sekcji (Użytkownicy, Komputery, Grupy)
 $combobox_LocalAD_Section = New-Object System.Windows.Forms.ComboBox
-$combobox_LocalAD_Section.Location = '10,10'
-$combobox_LocalAD_Section.Width = 200
+$combobox_LocalAD_Section.Location = '680,10'
+$combobox_LocalAD_Section.Width = 190
 $combobox_LocalAD_Section.DropDownStyle = 'DropDownList'
 $combobox_LocalAD_Section.Items.AddRange(@("Użytkownicy", "Komputery", "Grupy"))
-$combobox_LocalAD_Section.SelectedIndex = 0
 
-# Panel główny dla dynamicznych sekcji
-$panel_LocalAD_Content = New-Object System.Windows.Forms.Panel
-$panel_LocalAD_Content.Location = '10,50'
-$panel_LocalAD_Content.Size = '860,600'
-$panel_LocalAD_Content.BorderStyle = 'FixedSingle'
+# RichTextBox z informacjami
+$richtextbox_LocalAD_Info = New-Object System.Windows.Forms.RichTextBox
+$richtextbox_LocalAD_Info.Location = '10,50'
+$richtextbox_LocalAD_Info.Size = '660,600'
+$richtextbox_LocalAD_Info.ReadOnly = $true
 
-# ========== Funkcja do tworzenia widoku sekcji ==========
-function New-LocalADSection {
-    param (
-        [string]$type
+# Panel boczny z przyciskami
+$panel_LocalAD_Actions = New-Object System.Windows.Forms.FlowLayoutPanel
+$panel_LocalAD_Actions.Location = '680,50'
+$panel_LocalAD_Actions.Size = '190,700'
+$panel_LocalAD_Actions.FlowDirection = 'TopDown'
+$panel_LocalAD_Actions.WrapContents = $false
+$panel_LocalAD_Actions.AutoScroll = $true
+
+function New-LocalADActionButton($text) {
+    $btn = New-Object System.Windows.Forms.Button
+    $btn.Size = '170,45'
+    $btn.Text = $text
+    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    return $btn
+}
+
+$LocalAD_ActionSets = @{
+    "Użytkownicy" = @(
+        "Odśwież", "Resetuj hasło", "Zablokuj/Odblokuj", "Zmień grupy",
+        "Przypisz profil", "Wyeksportuj dane", "Przenieś OU", "Usuń konto"
     )
+    "Komputery" = @(
+        "Odśwież", "Zrestartuj", "Zablokuj", "Zmień OU", "Wyłącz konto",
+        "Wyczyść SID", "Usuń konto"
+    )
+    "Grupy" = @(
+        "Odśwież", "Dodaj członków", "Usuń członków", "Zmień nazwę",
+        "Zmień typ grupy", "Zmień zakres", "Usuń grupę"
+    )
+}
 
-    $panel = New-Object System.Windows.Forms.Panel
-    $panel.Dock = 'Fill'
+$buttons_LocalAD = @{ }
+$HT_UI.LocalADTab = [ordered]@{
+    Panel      = $panel_LocalAD
+    SectionBox = $combobox_LocalAD_Section
+    ObjectBox  = $combobox_LocalAD_List
+    DetailsBox = $richtextbox_LocalAD_Info
+    Views      = @{}
+}
 
-    $combo = New-Object System.Windows.Forms.ComboBox
-    $combo.Location = '10,10'
-    $combo.Width = 650
-    $combo.DropDownStyle = 'DropDownList'
-    $combo.Items.Add("Lista niezaładowana - kliknij Odśwież")
-    $combo.SelectedIndex = 0
-
-    $rich = New-Object System.Windows.Forms.RichTextBox
-    $rich.Location = '10,50'
-    $rich.Size = '650,540'
-    $rich.ReadOnly = $true
-
-    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $buttonPanel.Location = '680,50'
-    $buttonPanel.Size = '170,680'
-    $buttonPanel.FlowDirection = 'TopDown'
-    $buttonPanel.WrapContents = $false
-    $buttonPanel.AutoScroll = $true
-
-    function New-ActionBtn($label) {
-        $btn = New-Object System.Windows.Forms.Button
-        $btn.Size = '160,45'
-        $btn.Text = $label
-        $btn.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-        return $btn
+foreach ($section in $LocalAD_ActionSets.Keys) {
+    $btnSet = @{}
+    foreach ($label in $LocalAD_ActionSets[$section]) {
+        $btn = New-LocalADActionButton $label
+        $btnSet[$label] = $btn
     }
+    $HT_UI.LocalADTab.Views[$section] = @{ Buttons = $btnSet }
+}
 
-    $actions = switch ($type) {
-        "Użytkownicy" {
-            @(
-                "Odśwież", "Resetuj hasło", "Zablokuj/Odblokuj", "Zmień grupy",
-                "Przypisz profil", "Wyeksportuj dane", "Przenieś OU", "Usuń konto"
-            )
-        }
-        "Komputery" {
-            @(
-                "Odśwież", "Zrestartuj", "Zablokuj", "Zmień OU", "Wyłącz konto",
-                "Wyczyść SID", "Usuń konto"
-            )
-        }
-        "Grupy" {
-            @(
-                "Odśwież", "Dodaj członków", "Usuń członków", "Zmień nazwę",
-                "Zmień typ grupy", "Zmień zakres", "Usuń grupę"
-            )
-        }
-    }
+function Show-LocalADButtons {
+    $panel_LocalAD_Actions.Controls.Clear()
+    $buttons_LocalAD.Clear()
 
-    foreach ($label in $actions) {
-        $buttonPanel.Controls.Add((New-ActionBtn $label))
-    } 
-
-    $panel.Controls.AddRange(@($combo, $rich, $buttonPanel))
-    return [ordered]@{
-        Panel    = $panel
-        ComboBox = $combo
-        RichBox  = $rich
-        Buttons  = $buttonPanel
+    $selected = $combobox_LocalAD_Section.SelectedItem
+    $btns = $HT_UI.LocalADTab.Views[$selected].Buttons
+    foreach ($label in $btns.Keys) {
+        $btn = $btns[$label]
+        $buttons_LocalAD[$label] = $btn
+        $panel_LocalAD_Actions.Controls.Add($btn)
     }
 }
 
-# ========== Sekcje ==========
-$LocalAD_Views = @{
-    "Użytkownicy" = New-LocalADSection "Użytkownicy"
-    "Komputery"   = New-LocalADSection "Komputery"
-    "Grupy"       = New-LocalADSection "Grupy"
-}
-
-# ========== Zmiana widoku ==========
+# Obsługa zmiany sekcji
 $combobox_LocalAD_Section.add_SelectedIndexChanged({
-        $panel_LocalAD_Content.Controls.Clear()
-        $section = $combobox_LocalAD_Section.SelectedItem
-        $panel_LocalAD_Content.Controls.Add($LocalAD_Views[$section].Panel)
-    })
+    Show-LocalADButtons
+})
 
-# Wyświetl domyślny widok
-$panel_LocalAD_Content.Controls.Add($LocalAD_Views["Użytkownicy"].Panel)
-
-# Dodanie kontrolek do głównego panelu
+# Dodanie kontrolek do panelu głównego
 $panel_LocalAD.Controls.AddRange(@(
-        $combobox_LocalAD_Section,
-        $panel_LocalAD_Content
-    ))
+    $combobox_LocalAD_List,
+    $combobox_LocalAD_Section,
+    $richtextbox_LocalAD_Info,
+    $panel_LocalAD_Actions
+))
 
 # Podłączenie do zakładki
 $HT_UI.Tabs["Lokalne AD"].Controls.Clear()
 $HT_UI.Tabs["Lokalne AD"].Controls.Add($panel_LocalAD)
 
-# Eksport referencji
-$global:HT_UI.LocalADTab = [ordered]@{
-    Panel    = $panel_LocalAD
-    ComboBox = $combobox_LocalAD_Section
-    Views    = $LocalAD_Views
-} 
+# Inicjalne pokazanie przycisków dla domyślnej sekcji
+$combobox_LocalAD_Section.SelectedIndex = 0
+Show-LocalADButtons
