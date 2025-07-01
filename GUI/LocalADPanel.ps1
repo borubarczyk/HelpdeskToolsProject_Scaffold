@@ -44,11 +44,11 @@ $LocalAD_ActionSets = @{
         "Odśwież", "Resetuj hasło", "Zablokuj/Odblokuj", "Zmień grupy",
         "Przypisz profil", "Wyeksportuj dane", "Przenieś OU", "Usuń konto"
     )
-    "Komputery" = @(
+    "Komputery"   = @(
         "Odśwież", "Zrestartuj", "Zablokuj", "Zmień OU", "Wyłącz konto",
         "Wyczyść SID", "Usuń konto"
     )
-    "Grupy" = @(
+    "Grupy"       = @(
         "Odśwież", "Dodaj członków", "Usuń członków", "Zmień nazwę",
         "Zmień typ grupy", "Zmień zakres", "Usuń grupę"
     )
@@ -78,7 +78,7 @@ function Show-LocalADButtons {
 
     $selected = $combobox_LocalAD_Section.SelectedItem
     $btns = $HT_UI.LocalADTab.Views[$selected].Buttons
-    foreach ($label in $btns.Keys) {
+    foreach ($label in $LocalAD_ActionSets[$selected]) {
         $btn = $btns[$label]
         $buttons_LocalAD[$label] = $btn
         $panel_LocalAD_Actions.Controls.Add($btn)
@@ -87,16 +87,16 @@ function Show-LocalADButtons {
 
 # Obsługa zmiany sekcji
 $combobox_LocalAD_Section.add_SelectedIndexChanged({
-    Show-LocalADButtons
-})
+        Show-LocalADButtons
+    })
 
 # Dodanie kontrolek do panelu głównego
 $panel_LocalAD.Controls.AddRange(@(
-    $combobox_LocalAD_List,
-    $combobox_LocalAD_Section,
-    $richtextbox_LocalAD_Info,
-    $panel_LocalAD_Actions
-))
+        $combobox_LocalAD_List,
+        $combobox_LocalAD_Section,
+        $richtextbox_LocalAD_Info,
+        $panel_LocalAD_Actions
+    ))
 
 # Podłączenie do zakładki
 $HT_UI.Tabs["Lokalne AD"].Controls.Clear()

@@ -1,4 +1,4 @@
-function Load-AllIcons {
+function Get-AllIcons {
 
     try {
         # Dolne przyciski
@@ -171,7 +171,7 @@ function Load-AllIcons {
             }
         }
 
-        Write-Log -Message "Ikony zostały załadowane pomyślnie." -Type "Info"
+        Write-Log -Message "Ikony do GUI zostały załadowane pomyślnie." -Type "Info"
     }
     catch {
         Write-Log -Message "Nie udało się załadować ikon: $($_.Exception.Message)" -Type "Error"
@@ -197,6 +197,14 @@ function Set-PasswordGeneratorIcons {
                     $btn.TextImageRelation = 'ImageBeforeText'
                     $btn.TextAlign = 'MiddleCenter'
                 }
+            }
+            # Osobno kopiuj
+            if ($HT_UI.PasswordGeneratorWindow.CopyButton -and (Test-Path (Join-Path $BasePath $iconsMap_PassGen['Copy']))) {
+                $btn = $HT_UI.PasswordGeneratorWindow.CopyButton
+                $btn.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $iconsMap_PassGen['Copy']))
+                $btn.ImageAlign = 'MiddleLeft'
+                $btn.TextImageRelation = 'ImageBeforeText'
+                $btn.TextAlign = 'MiddleCenter'
             }
         }
         Write-Log -Message "Ikony dla Generatora Haseł zostały załadowane pomyślnie." -Type "Info"

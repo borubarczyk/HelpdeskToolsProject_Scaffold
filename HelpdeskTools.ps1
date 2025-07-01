@@ -1,3 +1,8 @@
+<#
+.SYNOPSIS
+    Główny plik uruchamiający aplikację Helpdesk Tools.
+#>
+
 #Requires -RunAsAdministrator
 #Requires -Version 7
 
@@ -5,11 +10,13 @@
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
 $Global:ConfigPath = Join-Path -Path $Global:ConfigDir -ChildPath "config.json"
 $Global:BasePath = "$PSScriptRoot/../Resources/Icons"
-
-<#
-.SYNOPSIS
-    Główny plik uruchamiający aplikację Helpdesk Tools.
-#>
+$Global:PasswordSpecialCharacters = "!@#$%^&*()-_=+[]{}|;:,.<>?/"
+$Global:PasswordUseWordBased = $false
+$Global:ConnectedToExchange = $false
+$Global:ConnectedToGraphAPI = $false
+$Global:ConnectedToSharepoint = $false
+$Global:ConnectedToSharepointPnP = $false
+$Global:LogPasswordGeneration = $false
 
 # Import modułów
 $modulePaths = @(
@@ -18,7 +25,8 @@ $modulePaths = @(
     "$PSScriptRoot/Modules/MailboxesExchangeOnline.psm1",
     "$PSScriptRoot/Modules/GraphAPISharePoint.psm1",
     "$PSScriptRoot/Modules/GraphAPIM365Users.psm1",
-    "$PSScriptRoot/Modules/PasswordGenerator.psm1"
+    "$PSScriptRoot/Modules/PasswordGenerator.psm1",
+    "$PSScriptRoot/Modules/ModulesConnection.psm1"
 )
 
 foreach ($path in $modulePaths) {
@@ -42,19 +50,27 @@ foreach ($path in $modulePaths) {
 . "$PSScriptRoot/GUI/LocalADPanel.ps1"
 . "$PSScriptRoot/GUI/PasswordGenerator.ps1"
 . "$PSScriptRoot/GUI/GUIHelpers.ps1"
-. "$PSScriptRoot/GUI/Events.ps1"
+. "$PSScriptRoot/GUI/MainForm_Events.ps1"
+. "$PSScriptRoot/GUI/Events/IntunePanel_Events.ps1"
+. "$PSScriptRoot/GUI/Events/MailBoxPanel_Events.ps1"
+. "$PSScriptRoot/GUI/Events/SharePointPanel_Events.ps1"
+. "$PSScriptRoot/GUI/Events/LocalADPanel_Events.ps1"
+. "$PSScriptRoot/GUI/Events/UsersPanel_Events.ps1"
 
+# Sprawdź załaduj jak nie ma utwórz katalog konfiguracyjny i plik konfiguracyjny
+Get-Configuration
 
 # Załaduj ikony do przycisków
-Load-Configuration
-Load-AllIcons
-
+Get-AllIcons
 
 # Uruchom GUI
 try {
+    [System.Threading.Thread]::CurrentThread.SetApartmentState([System.Threading.ApartmentState]::STA)
     [void][System.Windows.Forms.Application]::EnableVisualStyles()
     [System.Windows.Forms.Application]::Run($mainForm)
 }
 catch {
     Write-Error "Błąd uruchamiania GUI: $_" 
 }
+
+[System.Windows.Forms.Application]::Exit()

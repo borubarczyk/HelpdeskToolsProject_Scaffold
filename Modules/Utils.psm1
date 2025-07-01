@@ -13,25 +13,25 @@ function Write-Log {
     switch ($Type) {
         "Info" {
             $Message = "ℹ️ $Message"
-            Append-LogToFile -Message $Message -Type "Info"
+            Add-LogToFile -Message $Message -Type "Info"
         }
         "Warn" {
             $Message = "⚠️ $Message"
-            Append-LogToFile -Message $Message -Type "Warn"
+            Add-LogToFile -Message $Message -Type "Warn"
         }
         "Warning&Notification" {
             $Message = "⚠️ $Message"
             Show-Toast -Message $Message -Title "Ostrzeżenie" -NotificationType "Warning"
-            Append-LogToFile -Message $Message -Type "Warn"
+            Add-LogToFile -Message $Message -Type "Warn"
         }
         "Error" {
             $Message = "❌ $Message"
-            Append-LogToFile -Message $Message -Type "Error"
+            Add-LogToFile -Message $Message -Type "Error"
         }
         "Error&Notification" {
             $Message = "❌ $Message"
             Show-Toast -Message $Message -Title "Błąd" -NotificationType "Error"
-            Append-LogToFile -Message $Message -Type "Error"
+            Add-LogToFile -Message $Message -Type "Error"
         }
         default {
             $Message = "[UNKNOWN] $Message"
@@ -157,7 +157,7 @@ function Set-ButtonsEnabled {
 }
 
 # Funkcja do wczytywania konfiguracji z pliku config.json
-function Load-Configuration {
+function Get-Configuration {
     [CmdletBinding()]
     param (
         [string]$Path = $Global:ConfigPath
@@ -167,7 +167,7 @@ function Load-Configuration {
         Write-Log -Message "Plik konfiguracyjny nie istnieje: $Path" -Type "Warn"
 
         $response = Show-Dialog -Message "Plik konfiguracyjny nie istnieje:`n$Path`nCzy chcesz go utworzyć?" `
-                                -Buttons "YesNo" -Type "Question" -Title "Brak pliku konfiguracyjnego"
+            -Buttons "YesNo" -Type "Question" -Title "Brak pliku konfiguracyjnego"
 
         if ($response -ne 'Yes') {
             Write-Log -Message "Użytkownik anulował ładowanie konfiguracji." -Type "Info"
@@ -175,7 +175,7 @@ function Load-Configuration {
         }
         else {
             Write-Log -Message "Tworzenie nowego pliku konfiguracyjnego: $Path" -Type "Info"
-            Create-ConfigFile -Path $Path
+            New-ConfigFile -Path $Path
 
             # Po utworzeniu pliku, spróbuj ponownie go wczytać
             if (-not (Test-Path $Path)) {
@@ -190,31 +190,52 @@ function Load-Configuration {
     try {
         $configContent = Get-Content -Raw -Path $Path | ConvertFrom-Json
 
-        $Global:PasswordEmailAdress       = $configContent.PasswordEmailAdress
-        $Global:PasswordEmailTitle        = $configContent.PasswordEmailTitle
+        $Global:PasswordEmailAdress = $configContent.PasswordEmailAdress
+        $Global:PasswordEmailTitle = $configContent.PasswordEmailTitle
         $Global:PasswordSpecialCharacters = $configContent.PasswordSpecialCharacters
-        $Global:PasswordUseWordBased      = $configContent.PasswordUseWordBased
+        $Global:PasswordUseWordBased = $configContent.PasswordUseWordBased
+        $Global:LogPasswordGeneration = $configContent.LogPasswordGeneration
 
         Write-Log -Message "Wczytano konfigurację z pliku: $Path" -Type "Info"
         Show-Toast -Message "Konfiguracja została wczytana pomyślnie." -NotificationType "Info"
+        Set-LoadedConfiguration
+        Set-ConfigurationToUI
     }
     catch {
         Write-Log -Message "Błąd przy ładowaniu config.json: $($_.Exception.Message)" -Type "Error&Notification"
     }
 }
 
+# Funkcja do ustawiania globalnych zmiennych na podstawie wczytanej konfiguracji
+function Set-LoadedConfiguration {
+    Write-Log "Konfiguracja wczytana:" "Info"
+    Write-Log " - Email nadawcy: $Global:PasswordEmailAdress" "Info"
+    Write-Log " - Tytuł e-maila: $Global:PasswordEmailTitle" "Info"
+    Write-Log " - Znaki specjalne: $Global:PasswordSpecialCharacters" "Info"
+    Write-Log " - Hasła słowne: $Global:PasswordUseWordBased" "Info"
+    Write-Log " - Loguj generowanie haseł: $Global:LogPasswordGeneration" "Info"
+}
+
+# Funkcja do ustawiania konfiguracji w interfejsie użytkownika
+function Set-ConfigurationToUI {
+    if ($HT_UI -and $HT_UI.PasswordGeneratorWindow.SpecialCharacters) {
+        $HT_UI.PasswordGeneratorWindow.SpecialCharacters.Text = $Global:PasswordSpecialCharacters
+    }
+}
+
 # Funkcja do tworzenia pliku konfiguracyjnego
-function Create-ConfigFile {
+function New-ConfigFile {
     [CmdletBinding()]
     param (
         [string]$Path = $Global:ConfigPath
     )
 
     $defaultConfig = @{
-        PasswordEmailAdress         = ""
-        PasswordEmailTitle          = "Nowe hasło"
-        PasswordSpecialCharacters   = "!@#$%^&*?"
-        PasswordUseWordBased        = $false
+        PasswordEmailAdress       = ""
+        PasswordEmailTitle        = "Nowe hasło"
+        PasswordSpecialCharacters = "!@#$%^&*?"
+        PasswordUseWordBased      = $false
+        LogPasswordGeneration     = $true
     }
     
     try {
@@ -247,9 +268,9 @@ function Show-Dialog {
 
     $buttonEnum = [System.Windows.Forms.MessageBoxButtons]::$Buttons
     $iconEnum = switch ($Type) {
-        "Info"     { [System.Windows.Forms.MessageBoxIcon]::Information }
-        "Error"    { [System.Windows.Forms.MessageBoxIcon]::Error }
-        "Warning"  { [System.Windows.Forms.MessageBoxIcon]::Warning }
+        "Info" { [System.Windows.Forms.MessageBoxIcon]::Information }
+        "Error" { [System.Windows.Forms.MessageBoxIcon]::Error }
+        "Warning" { [System.Windows.Forms.MessageBoxIcon]::Warning }
         "Question" { [System.Windows.Forms.MessageBoxIcon]::Question }
     }
 
@@ -266,7 +287,7 @@ function Save-ContentToFile {
         [ValidateSet("txt", "csv", "json")]
         [string]$Format,
 
-        [string]$Path,  # <-- opcjonalna ścieżka
+        [string]$Path, # <-- opcjonalna ścieżka
 
         [string]$Title = "Zapisz plik",
         [string]$DefaultName = "output",
@@ -286,8 +307,8 @@ function Save-ContentToFile {
         $dialog = New-Object System.Windows.Forms.SaveFileDialog
         $dialog.Title = $Title
         $dialog.Filter = switch ($Format) {
-            "txt"  { "Pliki tekstowe (*.txt)|*.txt" }
-            "csv"  { "Pliki CSV (*.csv)|*.csv" }
+            "txt" { "Pliki tekstowe (*.txt)|*.txt" }
+            "csv" { "Pliki CSV (*.csv)|*.csv" }
             "json" { "Pliki JSON (*.json)|*.json" }
         }
         $dialog.InitialDirectory = $DefaultPath
@@ -303,8 +324,8 @@ function Save-ContentToFile {
 
     try {
         switch ($Format) {
-            "txt"  { $Data | Out-File -FilePath $Path -Encoding UTF8 }
-            "csv"  { $Data | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 }
+            "txt" { $Data | Out-File -FilePath $Path -Encoding UTF8 }
+            "csv" { $Data | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 }
             "json" { $Data | ConvertTo-Json -Depth 5 | Out-File -FilePath $Path -Encoding UTF8 }
         }
         Write-Log -Message "Zapisano dane do pliku: $Path" -Type "Info"
@@ -314,8 +335,8 @@ function Save-ContentToFile {
     }
 }
 
-# Funckja dopisywania logów do pliku
-function Append-LogToFile {
+# Funkcja dopisywania logów do pliku
+function Add-LogToFile {
     param (
         [Parameter(Mandatory)]
         [string]$Message,
@@ -371,23 +392,23 @@ function Show-InputBox {
 
     $textbox = New-Object Windows.Forms.TextBox
     $textbox.Location = '10,40'
-    $textbox.Width = 360
+    $textbox.Width = 460
 
     $errorLabel = New-Object Windows.Forms.Label
     $errorLabel.ForeColor = 'Red'
     $errorLabel.Location = '10,65'
-    $errorLabel.Size = '360,20'
+    $errorLabel.Size = '460,20'
     $errorLabel.Text = ''
 
     $ok = New-Object Windows.Forms.Button
     $ok.Text = 'OK'
-    $ok.Location = '180,95'
+    $ok.Location = '280,95'
     $ok.Size = '90,30'
     $ok.Enabled = $true
 
     $cancel = New-Object Windows.Forms.Button
     $cancel.Text = 'Anuluj'
-    $cancel.Location = '280,95'
+    $cancel.Location = '380,95'
     $cancel.Size = '90,30'
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.CancelButton = $cancel
@@ -425,9 +446,19 @@ function Show-InputBox {
 
     $textbox.add_TextChanged($validate)
     $ok.Add_Click({
-        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-        $form.Close()
-    })
+            $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+            $form.Close()
+        })
+
+    $textbox.add_KeyDown({
+            if ($_.KeyCode -eq 'Enter') {
+                $validate.Invoke()
+                if ($ok.Enabled) {
+                    $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+                    $form.Close()
+                }
+            }
+        })
 
     $form.Controls.AddRange(@($label, $textbox, $errorLabel, $ok, $cancel))
 
@@ -437,4 +468,61 @@ function Show-InputBox {
 
     return $null
 }
+
+# Funkcja do ustawiania stanu przycisków w GUI
+function Set-ButtonsState {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("Lock", "Unlock")]
+        [string]$Action,
+
+        [Parameter(Mandatory = $false)]
+        [string]$PanelName = $HT_UI.TabControl.SelectedTab.Text,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$LockMainButtons = $true
+    )
+
+    if ($LockMainButtons -eq $true) {
+        if ($HT_UI.Buttons) {
+            foreach ($btn in $HT_UI.Buttons.Values) {
+                if ($btn -is [System.Windows.Forms.Button]) {
+                    $btn.Enabled = ($Action -eq "Unlock")
+                }
+            }
+        }
+    }
+
+    if (-not $HT_UI.Tabs.Contains($PanelName)) {
+        Write-Log "Panel '$PanelName' nie istnieje w HT_UI.Tabs." "Error"
+        return
+    }
+
+    $panel = $HT_UI.Tabs[$PanelName]
+
+    if (-not $panel.Controls) {
+        Write-Log "Panel '$PanelName' nie zawiera kontrolek." "Error"
+        return
+    }
+
+    function Set-StateRecursive {
+        param (
+            [System.Windows.Forms.Control]$Parent
+        )
+
+        foreach ($ctrl in $Parent.Controls) {
+            if ($ctrl -is [System.Windows.Forms.Button]) {
+                $ctrl.Enabled = ($Action -eq "Unlock")
+            }
+            if ($ctrl.HasChildren) {
+                Set-StateRecursive -Parent $ctrl
+            }
+        }
+    }
+
+    Set-StateRecursive -Parent $panel
+}
+
+
+
 

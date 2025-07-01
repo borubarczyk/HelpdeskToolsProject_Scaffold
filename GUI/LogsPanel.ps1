@@ -46,13 +46,15 @@ function New-LogActionButton($text) {
 }
 
 $buttons_Logs = @{
-    ClearLog = New-LogActionButton "Wyczyść log"
-    SaveLog  = New-LogActionButton "Zapisz log"
     CopyLog  = New-LogActionButton "Kopiuj wszystko"
+    SaveLog  = New-LogActionButton "Zapisz log"
+    ClearLog = New-LogActionButton "Wyczyść log"
     ConfigLocation = New-LogActionButton "Lokalizacja konfiguracji i logów"
 }
 
-$panel_LogButtons.Controls.AddRange($buttons_Logs.Values)
+foreach ($key in @("CopyLog", "SaveLog", "ClearLog", "ConfigLocation")) {
+    $panel_LogButtons.Controls.Add($buttons_Logs[$key])
+}
 
 # Dodanie do głównego panelu
 $panel_Logs.Controls.AddRange(@(
@@ -67,7 +69,7 @@ $HT_UI.Tabs["Logi"].Controls.Clear()
 $HT_UI.Tabs["Logi"].Controls.Add($panel_Logs)
 
 # Eksport referencji
-$global:HT_UI.LogsTab = @{
+$global:HT_UI.LogsTab = [ordered]@{
     Panel     = $panel_Logs
     TextBox   = $richtextbox_Logs
     Buttons   = $buttons_Logs
