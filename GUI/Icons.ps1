@@ -171,6 +171,24 @@ function Get-AllIcons {
             }
         }
 
+        # Ikony dla zakładki Settings
+        if ($HT_UI.SettingsTab -and $HT_UI.SettingsTab.Buttons) {
+            $icons_Settings = @{
+                SaveConfig   = "Save.png"
+                LoadConfig   = "Refresh.png"
+            }
+
+            foreach ($key in $icons_Settings.Keys) {
+                $btn = $HT_UI.SettingsTab.Buttons[$key]
+                if ($btn) {
+                    $btn.Image = [System.Drawing.Image]::FromFile((Join-Path $BasePath $icons_Settings[$key]))
+                    $btn.ImageAlign = 'MiddleLeft'
+                    $btn.TextImageRelation = 'ImageBeforeText'
+                    $btn.TextAlign = 'MiddleCenter'
+                }
+            }
+        }
+
         Write-Log -Message "Ikony do GUI zostały załadowane pomyślnie." -Type "Info"
     }
     catch {

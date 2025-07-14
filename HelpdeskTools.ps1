@@ -6,6 +6,7 @@
 #Requires -RunAsAdministrator
 #Requires -Version 7
 
+
 # Zmienne globalne
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
 $Global:ConfigPath = Join-Path -Path $Global:ConfigDir -ChildPath "config.json"
@@ -26,7 +27,8 @@ $modulePaths = @(
     "$PSScriptRoot/Modules/GraphAPISharePoint.psm1",
     "$PSScriptRoot/Modules/GraphAPIM365Users.psm1",
     "$PSScriptRoot/Modules/PasswordGenerator.psm1",
-    "$PSScriptRoot/Modules/ModulesConnection.psm1"
+    "$PSScriptRoot/Modules/ModulesConnection.psm1",
+    "$PSScriptRoot/Modules/Config.psm1"
 )
 
 foreach ($path in $modulePaths) {
@@ -50,15 +52,20 @@ foreach ($path in $modulePaths) {
 . "$PSScriptRoot/GUI/LocalADPanel.ps1"
 . "$PSScriptRoot/GUI/PasswordGenerator.ps1"
 . "$PSScriptRoot/GUI/GUIHelpers.ps1"
+. "$PSScriptRoot/GUI/SettingsPanel.ps1"
+. "$PSScriptRoot/GUI/MassActionPanel.ps1"
 . "$PSScriptRoot/GUI/MainForm_Events.ps1"
 . "$PSScriptRoot/GUI/Events/IntunePanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/MailBoxPanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/SharePointPanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/LocalADPanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/UsersPanel_Events.ps1"
+. "$PSScriptRoot/GUI/Events/LogsPanel_Events.ps1"
+. "$PSScriptRoot/GUI/Events/PasswordGeneratorForm_Events.ps1"
+. "$PSScriptRoot/GUI/Events/SettingsPanel_Events.ps1"
 
 # Sprawdź załaduj jak nie ma utwórz katalog konfiguracyjny i plik konfiguracyjny
-Get-Configuration
+Ensure-HTConfig | Out-Null
 
 # Załaduj ikony do przycisków
 Get-AllIcons
@@ -72,5 +79,4 @@ try {
 catch {
     Write-Error "Błąd uruchamiania GUI: $_" 
 }
-
 [System.Windows.Forms.Application]::Exit()

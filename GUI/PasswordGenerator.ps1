@@ -118,7 +118,7 @@ $button_Copy.Size = '100,40'
 # Dolne przyciski
 $bottomButtons = @(
     @{ Name = 'Generate'; Text = "Wygeneruj nowe"; X = 10 },
-    @{ Name = 'Send'; Text = "Wyślij e-mailem"; X = 200 },
+    @{ Name = 'Send'; Text = "Wyślij e-mailem (SMS)"; X = 200 },
     @{ Name = 'Close'; Text = "Zamknij"; X = 390 }
 )
 
@@ -161,5 +161,3 @@ if (-not $HT_UI.PasswordGeneratorWindow.Initialized) {
 # Wyświetl ontop
 $form_PasswordGenerator.Topmost = $true
 $form_PasswordGenerator.KeyPreview = $true
-
-# Funkcja do ustawiania konfiguracji w GUI

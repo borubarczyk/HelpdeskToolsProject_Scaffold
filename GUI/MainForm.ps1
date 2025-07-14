@@ -16,7 +16,7 @@ $tabControl = New-Object System.Windows.Forms.TabControl
 $tabControl.Dock = 'Fill'
 
 # Tabs
-$tabNames = @("Dashboard", "Użytkownicy", "Skrzynki", "Intune", "SharePoint", "Lokalne AD", "Logi")
+$tabNames = @("Dashboard", "Użytkownicy", "Skrzynki", "Intune", "SharePoint", "Lokalne AD","Ustawienia" , "Akcje masowe", "Logi")
 $tabs = @{}
 # Tworzenie zakładek
 foreach ($name in $tabNames) {

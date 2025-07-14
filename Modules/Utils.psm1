@@ -2,7 +2,7 @@
 function Write-Log {
     param (
         [string]$Message,
-        [ValidateSet("Info", "Warn", "Error", "Error&Notification", "Warning&Notification")]
+        [ValidateSet("Info", "Warn", "Error","Info&Notification", "Error&Notification", "Warning&Notification")]
         [string]$Type = "Info"
     )
 
@@ -13,6 +13,11 @@ function Write-Log {
     switch ($Type) {
         "Info" {
             $Message = "ℹ️ $Message"
+            Add-LogToFile -Message $Message -Type "Info"
+        }
+        "Info&Notification" {
+            $Message = "ℹ️ $Message"
+            Show-Toast -Message $Message -Title "Informacja" -NotificationType "Info"
             Add-LogToFile -Message $Message -Type "Info"
         }
         "Warn" {
@@ -156,101 +161,6 @@ function Set-ButtonsEnabled {
     }
 }
 
-# Funkcja do wczytywania konfiguracji z pliku config.json
-function Get-Configuration {
-    [CmdletBinding()]
-    param (
-        [string]$Path = $Global:ConfigPath
-    )
-
-    if (-not (Test-Path $Path)) {
-        Write-Log -Message "Plik konfiguracyjny nie istnieje: $Path" -Type "Warn"
-
-        $response = Show-Dialog -Message "Plik konfiguracyjny nie istnieje:`n$Path`nCzy chcesz go utworzyć?" `
-            -Buttons "YesNo" -Type "Question" -Title "Brak pliku konfiguracyjnego"
-
-        if ($response -ne 'Yes') {
-            Write-Log -Message "Użytkownik anulował ładowanie konfiguracji." -Type "Info"
-            return
-        }
-        else {
-            Write-Log -Message "Tworzenie nowego pliku konfiguracyjnego: $Path" -Type "Info"
-            New-ConfigFile -Path $Path
-
-            # Po utworzeniu pliku, spróbuj ponownie go wczytać
-            if (-not (Test-Path $Path)) {
-                Write-Log -Message "Nie udało się utworzyć pliku konfiguracyjnego: $Path" -Type 'Error&Notification'
-                return
-            }
-        }
-
-        return
-    }
-
-    try {
-        $configContent = Get-Content -Raw -Path $Path | ConvertFrom-Json
-
-        $Global:PasswordEmailAdress = $configContent.PasswordEmailAdress
-        $Global:PasswordEmailTitle = $configContent.PasswordEmailTitle
-        $Global:PasswordSpecialCharacters = $configContent.PasswordSpecialCharacters
-        $Global:PasswordUseWordBased = $configContent.PasswordUseWordBased
-        $Global:LogPasswordGeneration = $configContent.LogPasswordGeneration
-
-        Write-Log -Message "Wczytano konfigurację z pliku: $Path" -Type "Info"
-        Show-Toast -Message "Konfiguracja została wczytana pomyślnie." -NotificationType "Info"
-        Set-LoadedConfiguration
-        Set-ConfigurationToUI
-    }
-    catch {
-        Write-Log -Message "Błąd przy ładowaniu config.json: $($_.Exception.Message)" -Type "Error&Notification"
-    }
-}
-
-# Funkcja do ustawiania globalnych zmiennych na podstawie wczytanej konfiguracji
-function Set-LoadedConfiguration {
-    Write-Log "Konfiguracja wczytana:" "Info"
-    Write-Log " - Email nadawcy: $Global:PasswordEmailAdress" "Info"
-    Write-Log " - Tytuł e-maila: $Global:PasswordEmailTitle" "Info"
-    Write-Log " - Znaki specjalne: $Global:PasswordSpecialCharacters" "Info"
-    Write-Log " - Hasła słowne: $Global:PasswordUseWordBased" "Info"
-    Write-Log " - Loguj generowanie haseł: $Global:LogPasswordGeneration" "Info"
-}
-
-# Funkcja do ustawiania konfiguracji w interfejsie użytkownika
-function Set-ConfigurationToUI {
-    if ($HT_UI -and $HT_UI.PasswordGeneratorWindow.SpecialCharacters) {
-        $HT_UI.PasswordGeneratorWindow.SpecialCharacters.Text = $Global:PasswordSpecialCharacters
-    }
-}
-
-# Funkcja do tworzenia pliku konfiguracyjnego
-function New-ConfigFile {
-    [CmdletBinding()]
-    param (
-        [string]$Path = $Global:ConfigPath
-    )
-
-    $defaultConfig = @{
-        PasswordEmailAdress       = ""
-        PasswordEmailTitle        = "Nowe hasło"
-        PasswordSpecialCharacters = "!@#$%^&*?"
-        PasswordUseWordBased      = $false
-        LogPasswordGeneration     = $true
-    }
-    
-    try {
-        $jsonContent = $defaultConfig | ConvertTo-Json -Depth 5
-        if (-not (Test-Path (Split-Path $Path))) {
-            New-Item -ItemType Directory -Path (Split-Path $Path) | Out-Null
-        }
-        Set-Content -Path $Path -Value $jsonContent -Encoding UTF8
-        Write-Log -Message "Utworzono plik konfiguracyjny: $Path" -Type "Info"
-    }
-    catch {
-        Write-Log -Message "Błąd przy tworzeniu pliku konfiguracyjnego: $($_.Exception.Message)" -Type "Error&Notification"
-    }
-}
-
 # Funkcja do podejmowania decyzji tak/nie/cancel oraz do wyświetlania komunikatów
 function Show-Dialog {
     param (
@@ -349,6 +259,7 @@ function Add-LogToFile {
 
     if (-not (Test-Path $Path)) {
         try {
+            New-Item -ItemType Directory -Path "$Global:ConfigDir" -ErrorAction SilentlyContinue | Out-Null
             New-Item -ItemType File -Path $Path | Out-Null
             Write-Log -Message "Utworzono nowy plik logów: $Path" -Type "Info"
         }
@@ -523,6 +434,221 @@ function Set-ButtonsState {
     Set-StateRecursive -Parent $panel
 }
 
+# Funkcja do walidacji i podświetlania składni JSON w RichTextBox
+function Test-AndHighlightJson {
+    param (
+        [Parameter(Mandatory)] [System.Windows.Forms.RichTextBox]$RichTextBox,
+        [Parameter(Mandatory=$false)] [System.Windows.Forms.ToolTip]$ErrorToolTip,
+        [Parameter(Mandatory=$false)] [switch]$ShowDialogOnError
+    )
 
+    $RichTextBox.SuspendLayout()
 
+    # Pamiętaj pozycję kursora
+    $originalSelectionStart = $RichTextBox.SelectionStart
+    $originalSelectionLength = $RichTextBox.SelectionLength
 
+    try {
+        # Reset stylów
+        $RichTextBox.SelectAll()
+        $RichTextBox.SelectionBackColor = [System.Drawing.Color]::White
+        $RichTextBox.SelectionColor = [System.Drawing.Color]::Black
+        $RichTextBox.SelectionFont = New-Object System.Drawing.Font(
+            $RichTextBox.Font.FontFamily,
+            $RichTextBox.Font.Size,
+            [System.Drawing.FontStyle]::Regular
+        )
+
+        # === 1) Prosty pre-check ===
+        $text = $RichTextBox.Text
+
+        $braceCount = ($text -split '[{}]').Length - 1
+        $bracketCount = ($text -split '[\[\]]').Length - 1
+        $quoteCount = ($text -split '"').Length - 1
+
+        $preCheckOk = $true
+        $errorMsg = ""
+
+        if ($braceCount % 2 -ne 0) {
+            $preCheckOk = $false
+            $errorMsg = "Niezamknięta klamra { }"
+        } elseif ($bracketCount % 2 -ne 0) {
+            $preCheckOk = $false
+            $errorMsg = "Niezamknięty nawias [ ]"
+        } elseif ($quoteCount % 2 -ne 0) {
+            $preCheckOk = $false
+            $errorMsg = "Nieparzysta liczba cudzysłowów"
+        }
+
+        if (-not $preCheckOk) {
+            # Podświetl wszystko na LightYellow
+            $RichTextBox.SelectAll()
+            $RichTextBox.SelectionBackColor = [System.Drawing.Color]::LightYellow
+
+            if ($ShowDialogOnError) {
+                Show-Dialog -Message $errorMsg -Type "Error" -Title "Pre-check JSON"
+            }
+            if ($ErrorToolTip) {
+                $ErrorToolTip.SetToolTip($RichTextBox, $errorMsg)
+            }
+            Write-Log -Message "Pre-check błąd: $errorMsg" -Type "Warning"
+            return $false
+        }
+
+        # === 2) Głębsze sprawdzenie ConvertFrom-Json ===
+        $parsed = $text | ConvertFrom-Json
+
+        # Syntax highlighting
+        $patterns = @{
+            Key         = '"([^"]*)"\s*:'
+            StringValue = ':\s*"([^"]*)"'
+            Number      = ':\s*([-]?\d+(\.\d+)?)'
+            Boolean     = ':\s*(true|false)\b'
+            Null        = ':\s*(null)\b'
+            Brackets    = '[{}[\]]'
+            Comma       = ','
+        }
+        $colors = @{
+            Key         = [System.Drawing.Color]::DarkBlue
+            StringValue = [System.Drawing.Color]::DarkGreen
+            Number      = [System.Drawing.Color]::DarkRed
+            Boolean     = [System.Drawing.Color]::Purple
+            Null        = [System.Drawing.Color]::Gray
+            Brackets    = [System.Drawing.Color]::Navy
+            Comma       = [System.Drawing.Color]::DarkGray
+        }
+
+        $lines = $RichTextBox.Lines
+        $currentIndex = 0
+
+        for ($lineNumber = 0; $lineNumber -lt $lines.Length; $lineNumber++) {
+            $line = $lines[$lineNumber]
+            $startIndex = $currentIndex
+
+            foreach ($type in $patterns.Keys) {
+                [regex]::Matches($line, $patterns[$type]) | ForEach-Object {
+                    $offset = $startIndex + $_.Index
+                    $length = $_.Length
+
+                    if ($type -in @('Key', 'StringValue')) {
+                        $offset += $_.Groups[1].Index - $_.Index
+                        $length = $_.Groups[1].Length
+                    }
+
+                    if ($length -gt 0) {
+                        $RichTextBox.Select($offset, $length)
+                        $RichTextBox.SelectionColor = $colors[$type]
+                        if ($type -eq 'Key') {
+                            $RichTextBox.SelectionFont = New-Object System.Drawing.Font(
+                                $RichTextBox.Font.FontFamily,
+                                $RichTextBox.Font.Size,
+                                [System.Drawing.FontStyle]::Bold
+                            )
+                        } else {
+                            $RichTextBox.SelectionFont = New-Object System.Drawing.Font(
+                                $RichTextBox.Font.FontFamily,
+                                $RichTextBox.Font.Size,
+                                [System.Drawing.FontStyle]::Regular
+                            )
+                        }
+                    }
+                }
+            }
+
+            $currentIndex += $line.Length + 1
+        }
+
+        return $true
+        }
+    catch {
+        $errorMsg = $_.Exception.Message
+
+        $lineNumber = -1
+        $position = -1
+
+        if ($errorMsg -match "line (\d+), position (\d+)") {
+            $lineNumber = [int]$matches[1] - 1
+            $position = [int]$matches[2] - 1
+
+            # Sprytne przesunięcie TYLKO gdy błąd parsera to brak separatora lub koniec
+            if ($errorMsg -match "Expected" -or $errorMsg -match "Unexpected end") {
+                if ($lineNumber -gt 0) { $lineNumber-- }
+            }
+        }
+
+        if ($lineNumber -ge 0 -and $lineNumber -lt $RichTextBox.Lines.Length) {
+            $startIndex = $RichTextBox.GetFirstCharIndexFromLine($lineNumber)
+            $lineText = $RichTextBox.Lines[$lineNumber]
+            $length = $lineText.Length
+            $RichTextBox.Select($startIndex, $length)
+            $RichTextBox.SelectionBackColor = [System.Drawing.Color]::LightPink
+        } else {
+            $RichTextBox.SelectAll()
+            $RichTextBox.SelectionBackColor = [System.Drawing.Color]::LightPink
+        }
+
+        if ($ShowDialogOnError) {
+            Show-Dialog -Message $errorMsg -Type "Error" -Title "Błąd JSON"
+        }
+        if ($ErrorToolTip) {
+            $ErrorToolTip.SetToolTip($RichTextBox, $errorMsg)
+        }
+
+        Write-Log -Message "Parser JSON: $errorMsg" -Type "Error"
+        return $false
+    }
+    finally {
+        # Przywróć pozycję kursora!
+        $RichTextBox.SelectionStart = $originalSelectionStart
+        $RichTextBox.SelectionLength = $originalSelectionLength
+        $RichTextBox.ResumeLayout()
+    }
+}
+
+# Funkcja do usuwania wewnętrznych białych znaków z ciągu znaków
+function Remove-InnerWhitespace {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$InputString,
+        [switch]$TrimEnds # Dodatkowo: czy przyciąć początek/koniec
+    )
+
+    $result = $InputString -replace '\s',''
+    if ($TrimEnds) {
+        $result = $result.Trim()
+    }
+    return $result
+}
+
+# Generator haseł - Funkcja do generowania
+function Set-GeneratedPassword {
+    $pgw = $HT_UI.PasswordGeneratorWindow
+
+    $length = $pgw.Length.Value
+    $symbols = $pgw.SpecialCharacters.Text
+    $useNumbers = $pgw.Checkboxes.UseNumbers.Checked
+    $useSymbols = $pgw.Checkboxes.UseSymbols.Checked
+
+    if ($pgw.Checkboxes.Words.Checked) {
+        $pgw.Password.Text = New-WordBasedPassword `
+            -Length $length `
+            -UseNumbers $useNumbers `
+            -UseSymbols $useSymbols `
+            -SpecialCharacters $symbols
+    }
+    else {
+        $pgw.Password.Text = New-Password `
+            -Length $length `
+            -SpecialCharacters $symbols `
+            -StartWithLetter $pgw.Checkboxes.StartLetter.Checked `
+            -IncludeNumbers $useNumbers `
+            -IncludeSymbols $useSymbols `
+            -NoSimilarChars $pgw.Checkboxes.NoSimilar.Checked `
+            -FriendlyMode $pgw.Checkboxes.Friendly.Checked
+    }
+
+    if ($Global:LogPasswordGeneration) {
+        Write-Log -Message "Wygenerowano hasło: $($pgw.Password.Text)" -Type "Info"
+    }
+}
