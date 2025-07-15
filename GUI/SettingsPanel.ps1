@@ -52,14 +52,13 @@ $HT_UI.Tabs["Ustawienia"].Controls.Add($panel_Settings)
 
 # Funkcja do wczytania konfiguracji
 function Load-Config {
-    $config = Ensure-HTConfig -Path $Global:ConfigPath
-
-    if ($null -ne $config) {
-        Apply-HTConfig -Config $config
-        $richtextbox_ConfigEditor.Text = $config | ConvertTo-Json -Depth 10
+    if ($null -ne $Global:HTConfig) {
+        Apply-HTConfig -Config $Global:HTConfig
+        $richtextbox_ConfigEditor.Text = $Global:HTConfig | ConvertTo-Json -Depth 10
         Test-AndHighlightJson -RichTextBox $richtextbox_ConfigEditor
         Write-Log -Message "Konfiguracja wczytana i ustawiona w UI." -Type "Info&Notification"
-    } else {
+    }
+    else {
         Write-Log -Message "Nie wczytano konfiguracji — brak pliku." -Type "Warn"
     }
     return $null

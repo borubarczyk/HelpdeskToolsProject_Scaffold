@@ -114,6 +114,7 @@ function Get-AllIcons {
                     "Wyeksportuj dane"  = "CSV.png"
                     "Przenieś OU"       = "Organization.png"
                     "Usuń konto"        = "Remove.png"
+                    "Akcje specjalne"   = "Screwdriver.png"
                 }
                 "Komputery"   = @{
                     "Odśwież"      = "Refresh.png"
@@ -123,6 +124,7 @@ function Get-AllIcons {
                     "Wyłącz konto" = "Denied.png"
                     "Wyczyść SID"  = "Refresh.png"
                     "Usuń konto"   = "Remove.png"
+                    "Akcje specjalne" = "Screwdriver.png"
                 }
                 "Grupy"       = @{
                     "Odśwież"         = "Refresh.png"
@@ -132,6 +134,7 @@ function Get-AllIcons {
                     "Zmień typ grupy" = "Admin Settings Male.png"
                     "Zmień zakres"    = "Group Objects.png"
                     "Usuń grupę"      = "Remove.png"
+                    "Akcje specjalne" = "Screwdriver.png"
                 }
             }
 

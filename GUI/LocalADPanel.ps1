@@ -7,7 +7,7 @@ $combobox_LocalAD_List = New-Object System.Windows.Forms.ComboBox
 $combobox_LocalAD_List.Location = '10,10'
 $combobox_LocalAD_List.Width = 660
 $combobox_LocalAD_List.DropDownStyle = 'DropDownList'
-$combobox_LocalAD_List.Items.Add('Lista niezaładowana - kliknij "Odśwież"')
+$combobox_LocalAD_List.Items.Add('Lista niezaładowana - kliknij "Odśwież" / Wybierz obiekt z sekcji')
 $combobox_LocalAD_List.SelectedIndex = 0
 
 # ComboBox do wyboru sekcji (Użytkownicy, Komputery, Grupy)
@@ -22,6 +22,7 @@ $richtextbox_LocalAD_Info = New-Object System.Windows.Forms.RichTextBox
 $richtextbox_LocalAD_Info.Location = '10,50'
 $richtextbox_LocalAD_Info.Size = '660,600'
 $richtextbox_LocalAD_Info.ReadOnly = $true
+$richtextbox_LocalAD_Info.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 
 # Panel boczny z przyciskami
 $panel_LocalAD_Actions = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -42,15 +43,15 @@ function New-LocalADActionButton($text) {
 $LocalAD_ActionSets = @{
     "Użytkownicy" = @(
         "Odśwież", "Resetuj hasło", "Zablokuj/Odblokuj", "Zmień grupy",
-        "Przypisz profil", "Wyeksportuj dane", "Przenieś OU", "Usuń konto"
+        "Przypisz profil", "Wyeksportuj dane", "Przenieś OU", "Usuń konto", "Akcje specjalne"
     )
     "Komputery"   = @(
         "Odśwież", "Zrestartuj", "Zablokuj", "Zmień OU", "Wyłącz konto",
-        "Wyczyść SID", "Usuń konto"
+        "Wyczyść SID", "Usuń konto", "Akcje specjalne"
     )
     "Grupy"       = @(
         "Odśwież", "Dodaj członków", "Usuń członków", "Zmień nazwę",
-        "Zmień typ grupy", "Zmień zakres", "Usuń grupę"
+        "Zmień typ grupy", "Zmień zakres", "Usuń grupę", "Akcje specjalne"
     )
 }
 

@@ -1,7 +1,6 @@
 function Get-HTConfig {
     [CmdletBinding()]
     param ([string]$Path = $Global:ConfigPath)
-
     if (Test-Path $Path) {
         try {
             return Get-Content -Raw -Path $Path | ConvertFrom-Json

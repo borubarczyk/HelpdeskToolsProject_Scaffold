@@ -31,6 +31,9 @@ $modulePaths = @(
     "$PSScriptRoot/Modules/Config.psm1"
 )
 
+# Sprawdź załaduj jak nie ma utwórz katalog konfiguracyjny i plik konfiguracyjny przy starcie
+$Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
+
 foreach ($path in $modulePaths) {
     if (Test-Path $path) {
         Import-Module $path -Force -ErrorAction Stop
@@ -54,7 +57,7 @@ foreach ($path in $modulePaths) {
 . "$PSScriptRoot/GUI/GUIHelpers.ps1"
 . "$PSScriptRoot/GUI/SettingsPanel.ps1"
 . "$PSScriptRoot/GUI/MassActionPanel.ps1"
-. "$PSScriptRoot/GUI/MainForm_Events.ps1"
+. "$PSScriptRoot/GUI/Events/MainForm_Events.ps1"
 . "$PSScriptRoot/GUI/Events/IntunePanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/MailBoxPanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/SharePointPanel_Events.ps1"
@@ -64,8 +67,7 @@ foreach ($path in $modulePaths) {
 . "$PSScriptRoot/GUI/Events/PasswordGeneratorForm_Events.ps1"
 . "$PSScriptRoot/GUI/Events/SettingsPanel_Events.ps1"
 
-# Sprawdź załaduj jak nie ma utwórz katalog konfiguracyjny i plik konfiguracyjny
-Ensure-HTConfig | Out-Null
+
 
 # Załaduj ikony do przycisków
 Get-AllIcons
@@ -79,4 +81,6 @@ try {
 catch {
     Write-Error "Błąd uruchamiania GUI: $_" 
 }
+
+# Zamykanie aplikacji
 [System.Windows.Forms.Application]::Exit()
