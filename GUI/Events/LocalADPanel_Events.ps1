@@ -37,7 +37,7 @@ foreach ($panelName in $LocalAD_ActionSets.Keys) {
         if ($button -and $LocalAD_ActionHandlers.ContainsKey($action)) {
             $button.Add_Click($LocalAD_ActionHandlers[$action])
         } else {
-            Write-Log "⚠️ Brak handlera lub przycisku: $panelName -> $action" -Type 'Error&Notification'
+            #Write-Log "⚠️ Brak handlera lub przycisku: $panelName -> $action" -Type 'Error&Notification'
         }
     }
 }
@@ -122,63 +122,11 @@ $HT_UI.LocalADTab.ObjectBox.Add_SelectedIndexChanged({
 
 # === Zmiana sekcji ===
 $HT_UI.LocalADTab.SectionBox.Add_SelectedIndexChanged({
-    # 1️⃣ Wyczysc listę obiektów
+    Show-LocalADButtons
     $HT_UI.LocalADTab.ObjectBox.Items.Clear()
-
-    # 2️⃣ Opcjonalnie ustaw placeholder
     $HT_UI.LocalADTab.ObjectBox.Items.Add('Lista niezaładowana - kliknij "Odśwież" / Wybierz obiekt z sekcji')
-
-    # 3️⃣ Zresetuj szczegóły
     $HT_UI.LocalADTab.DetailsBox.Clear()
-
     Write-Log -Message "📂 Zmieniono sekcję na: $($HT_UI.LocalADTab.SectionBox.SelectedItem). Lista wyczyszczona." -Type "Info"
-
-    Start-Sleep -Seconds 1
     Invoke-LocalADRefresh
     $HT_UI.LocalADTab.ObjectBox.SelectedIndex = 0
 })
-
-# === Odśwież dane z AD ===
-function Invoke-LocalADRefresh {
-    try {
-        $section = $HT_UI.LocalADTab.SectionBox.SelectedItem
-        if (-not $section) {
-            Write-Log -Message "⚠️ Wybierz sekcję (Użytkownicy, Komputery, Grupy)!" -Type "Warn"
-            return
-        }
-
-        Write-Log -Message "🔄 Odświeżanie: $section ..." -Type "Info"
-
-        switch ($section) {
-            "Użytkownicy" {
-                $Global:LocalAD_Objects = Get-ADUser -Filter * |
-                    Select-Object -ExpandProperty SamAccountName |
-                    ForEach-Object { $_.Trim() }
-            }
-            "Komputery" {
-                $Global:LocalAD_Objects = Get-ADComputer -Filter * |
-                    Select-Object -ExpandProperty Name |
-                    ForEach-Object { $_.Trim() }
-            }
-            "Grupy" {
-                $Global:LocalAD_Objects = Get-ADGroup -Filter * |
-                    Select-Object -ExpandProperty Name |
-                    ForEach-Object { $_.Trim() }
-            }
-            default {
-                Write-Log -Message "⚠️ Nieobsługiwana sekcja: $section" -Type "Warn"
-                return
-            }
-        }
-
-        $HT_UI.LocalADTab.ObjectBox.Items.Clear()
-        $HT_UI.LocalADTab.ObjectBox.Items.AddRange($Global:LocalAD_Objects)
-
-        $HT_UI.LocalADTab.DetailsBox.Clear()
-
-        Write-Log -Message "✅ Załadowano: $($Global:LocalAD_Objects.Count) obiektów." -Type "Info&Notification"
-    }
-    catch {
-        Write-Log -Message "❌ Błąd odświeżania: $_" -Type "Error"
-    }
-}

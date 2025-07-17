@@ -32,6 +32,7 @@ $panel_LocalAD_Actions.FlowDirection = 'TopDown'
 $panel_LocalAD_Actions.WrapContents = $false
 $panel_LocalAD_Actions.AutoScroll = $true
 
+# Funkcja pomocnicza tworząca przycisk
 function New-LocalADActionButton($text) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Size = '170,45'
@@ -40,6 +41,7 @@ function New-LocalADActionButton($text) {
     return $btn
 }
 
+# Zestaw przycisków dla każdej sekcji
 $LocalAD_ActionSets = @{
     "Użytkownicy" = @(
         "Odśwież", "Resetuj hasło", "Zablokuj/Odblokuj", "Zmień grupy",
@@ -55,6 +57,7 @@ $LocalAD_ActionSets = @{
     )
 }
 
+# Globalna struktura UI — DOPIERO TERAZ ją inicjalizujemy
 $buttons_LocalAD = @{ }
 $HT_UI.LocalADTab = [ordered]@{
     Panel      = $panel_LocalAD
@@ -64,32 +67,39 @@ $HT_UI.LocalADTab = [ordered]@{
     Views      = @{}
 }
 
+# Tworzenie i dodanie przycisków (razowo, potem ukrywane/pokazywane)
 foreach ($section in $LocalAD_ActionSets.Keys) {
     $btnSet = @{}
+
     foreach ($label in $LocalAD_ActionSets[$section]) {
         $btn = New-LocalADActionButton $label
+        $btn.Visible = $false
+        $btn.Tag = $section
+        $panel_LocalAD_Actions.Controls.Add($btn)
+        $buttons_LocalAD[$label] = $btn
         $btnSet[$label] = $btn
     }
+
     $HT_UI.LocalADTab.Views[$section] = @{ Buttons = $btnSet }
 }
 
+# Funkcja pokazująca tylko przyciski dla wybranej sekcji
 function Show-LocalADButtons {
-    $panel_LocalAD_Actions.Controls.Clear()
-    $buttons_LocalAD.Clear()
-
     $selected = $combobox_LocalAD_Section.SelectedItem
-    $btns = $HT_UI.LocalADTab.Views[$selected].Buttons
+    if (-not $selected -or -not $LocalAD_ActionSets.ContainsKey($selected)) {
+            return
+    }
+
+    foreach ($btn in $panel_LocalAD_Actions.Controls) {
+        $btn.Visible = $false
+    }
+
     foreach ($label in $LocalAD_ActionSets[$selected]) {
-        $btn = $btns[$label]
-        $buttons_LocalAD[$label] = $btn
-        $panel_LocalAD_Actions.Controls.Add($btn)
+        if ($buttons_LocalAD.ContainsKey($label)) {
+            $buttons_LocalAD[$label].Visible = $true
+        }
     }
 }
-
-# Obsługa zmiany sekcji
-$combobox_LocalAD_Section.add_SelectedIndexChanged({
-        Show-LocalADButtons
-    })
 
 # Dodanie kontrolek do panelu głównego
 $panel_LocalAD.Controls.AddRange(@(
@@ -99,10 +109,10 @@ $panel_LocalAD.Controls.AddRange(@(
         $panel_LocalAD_Actions
     ))
 
-# Podłączenie do zakładki
+# Podłączenie do zakładki (upewnij się, że $HT_UI.Tabs["Lokalne AD"] istnieje wcześniej)
 $HT_UI.Tabs["Lokalne AD"].Controls.Clear()
 $HT_UI.Tabs["Lokalne AD"].Controls.Add($panel_LocalAD)
 
-# Inicjalne pokazanie przycisków dla domyślnej sekcji
+# Ustawienie domyślnej sekcji i pokazanie jej przycisków
 $combobox_LocalAD_Section.SelectedIndex = 0
 Show-LocalADButtons

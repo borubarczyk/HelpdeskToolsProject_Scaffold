@@ -31,9 +31,6 @@ $modulePaths = @(
     "$PSScriptRoot/Modules/Config.psm1"
 )
 
-# Sprawdź załaduj jak nie ma utwórz katalog konfiguracyjny i plik konfiguracyjny przy starcie
-$Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
-
 foreach ($path in $modulePaths) {
     if (Test-Path $path) {
         Import-Module $path -Force -ErrorAction Stop
@@ -43,9 +40,11 @@ foreach ($path in $modulePaths) {
     }
 }
 
+# Sprawdź załaduj jak nie ma utwórz katalog konfiguracyjny i plik konfiguracyjny przy starcie
+$Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
+
 # Załaduj komponenty GUI
 . "$PSScriptRoot/GUI/MainForm.ps1"
-. "$PSScriptRoot/GUI/Icons.ps1"
 . "$PSScriptRoot/GUI/UsersPanel.ps1"
 . "$PSScriptRoot/GUI/DashboardPanel.ps1"
 . "$PSScriptRoot/GUI/IntunePanel.ps1"
@@ -53,10 +52,11 @@ foreach ($path in $modulePaths) {
 . "$PSScriptRoot/GUI/SharePointPanel.ps1"
 . "$PSScriptRoot/GUI/LogsPanel.ps1"
 . "$PSScriptRoot/GUI/LocalADPanel.ps1"
-. "$PSScriptRoot/GUI/PasswordGenerator.ps1"
 . "$PSScriptRoot/GUI/GUIHelpers.ps1"
 . "$PSScriptRoot/GUI/SettingsPanel.ps1"
 . "$PSScriptRoot/GUI/MassActionPanel.ps1"
+. "$PSScriptRoot/GUI/Icons.ps1"
+. "$PSScriptRoot/GUI/PasswordGenerator.ps1"
 . "$PSScriptRoot/GUI/Events/MainForm_Events.ps1"
 . "$PSScriptRoot/GUI/Events/IntunePanel_Events.ps1"
 . "$PSScriptRoot/GUI/Events/MailBoxPanel_Events.ps1"
