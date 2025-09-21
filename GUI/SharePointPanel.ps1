@@ -8,6 +8,7 @@ $textbox_SiteUrl.Location = '10,10'
 $textbox_SiteUrl.Size = '660,25'
 $textbox_SiteUrl.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 $textbox_SiteUrl.PlaceholderText = "https://twojtenant.sharepoint.com/sites/..."
+$textbox_SiteUrl.Text = $Global:DefaultSharepointSite
 
 # TreeView z folderami SharePoint
 $treeview_SharePoint = New-Object System.Windows.Forms.TreeView

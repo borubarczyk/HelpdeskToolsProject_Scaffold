@@ -95,7 +95,7 @@ function Connect-Module {
                 }
             }
             'ExchangeOnlineManagement' {
-                Connect-ExchangeOnline -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
+                Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
                 $tenant = (Get-OrganizationConfig).DisplayName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
@@ -129,8 +129,14 @@ function Connect-Module {
                     Set-ButtonsState -Action "Unlock"
                     return $false
                 }
-                Connect-PnPOnline -Url $url -Interactive -ErrorAction Stop
-                $title = (Get-PnPContext).Web.Title
+                $clientId = Show-InputBox -Prompt "Client ID" -Title "Client ID" -ValidationType "text"
+                if (-not $clientId) {
+                    Write-Log "Brak Client ID" -Type "Warn"
+                    Set-ButtonsState -Action "Unlock"
+                    return $false
+                }
+                Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop
+                $title = (Get-PnPConnection).Url
                 $Global:ConnectedToSharepointPnP = $true
                 Update-ConnectionButtonText -Service "SharePoint" -TenantName $title
                 Write-Log "Połączono z PnP PowerShell ($title)" "Info"

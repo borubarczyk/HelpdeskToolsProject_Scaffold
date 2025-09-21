@@ -68,4 +68,3 @@ $HT_UI.Form.Add_FormClosing({
         # Oczyść zmienne globalne
         Get-Variable -Scope Global | Where-Object { $_.Options -notmatch 'Constant|ReadOnly' } | Remove-Variable -Force -Scope Global -ErrorAction SilentlyContinue
     })
-

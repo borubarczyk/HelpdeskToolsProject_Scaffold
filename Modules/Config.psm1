@@ -4,7 +4,8 @@ function Get-HTConfig {
     if (Test-Path $Path) {
         try {
             return Get-Content -Raw -Path $Path | ConvertFrom-Json
-        } catch {
+        }
+        catch {
             Write-Log -Message "Błąd parsowania JSON: $_" -Type "Error&Notification"
             return $null
         }
@@ -41,6 +42,9 @@ function New-HTConfig {
         PasswordSpecialCharacters = "!@#$%^&*?"
         PasswordUseWordBased      = $false
         LogPasswordGeneration     = $true
+        LogClientIDForPnP         = $false
+        LastUsedClientID          = $null
+        DefaultSharepointSite     = "https://contoso.sharepoint.com/sites/DefaultSite"
     }
 
     try {
@@ -49,7 +53,8 @@ function New-HTConfig {
         }
         $defaultConfig | ConvertTo-Json -Depth 5 | Set-Content -Path $Path -Encoding UTF8
         Write-Log -Message "Utworzono plik konfiguracyjny: $Path" -Type "Info"
-    } catch {
+    }
+    catch {
         Write-Log -Message "Błąd przy tworzeniu pliku konfiguracyjnego: $($_.Exception.Message)" -Type "Error&Notification"
     }
 }
@@ -84,11 +89,14 @@ function Apply-HTConfig {
         return
     }
 
-    $Global:PasswordEmailAdress       = $Config.PasswordEmailAdress
-    $Global:PasswordEmailTitle        = $Config.PasswordEmailTitle
+    $Global:PasswordEmailAdress = $Config.PasswordEmailAdress
+    $Global:PasswordEmailTitle = $Config.PasswordEmailTitle
     $Global:PasswordSpecialCharacters = $Config.PasswordSpecialCharacters
-    $Global:PasswordUseWordBased      = $Config.PasswordUseWordBased
-    $Global:LogPasswordGeneration     = $Config.LogPasswordGeneration
+    $Global:PasswordUseWordBased = $Config.PasswordUseWordBased
+    $Global:LogPasswordGeneration = $Config.LogPasswordGeneration
+    $Global:LogClientIDForPnP = $Config.LogClientIDForPnP
+    $Global:LastUsedClientID = $Config.LastUsedClientID
+    $Global:DefaultSharepointSite = $Config.DefaultSharepointSite   
 
     Write-Log -Message "Zastosowano konfigurację:" -Type "Info"
     Write-Log -Message " - Email: $($Global:PasswordEmailAdress)" -Type "Info"
@@ -96,6 +104,9 @@ function Apply-HTConfig {
     Write-Log -Message " - Znaki: $($Global:PasswordSpecialCharacters)" -Type "Info"
     Write-Log -Message " - Hasła słowne: $($Global:PasswordUseWordBased)" -Type "Info"
     Write-Log -Message " - Loguj generowanie: $($Global:LogPasswordGeneration)" -Type "Info"
+    Write-Log -Message " - Loguj ClientID PnP: $($Global:LogClientIDForPnP)" -Type "Info"
+    Write-Log -Message " - Ostatni użyty ClientID: $($Global:LastUsedClientID)" -Type "Info"
+    Write-Log -Message " - Domyślna witryna SharePoint: $($Global:DefaultSharepointSite)" -Type "Info"
 
     if ($HT_UI -and $HT_UI.PasswordGeneratorWindow.SpecialCharacters) {
         $HT_UI.PasswordGeneratorWindow.SpecialCharacters.Text = $Global:PasswordSpecialCharacters

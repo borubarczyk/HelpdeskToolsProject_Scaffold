@@ -18,9 +18,14 @@ $Global:ConnectedToGraphAPI = $false
 $Global:ConnectedToSharepoint = $false
 $Global:ConnectedToSharepointPnP = $false
 $Global:LogPasswordGeneration = $false
+$Global:LogClientIDForPnP = $false
+$Global:LastUsedClientID = $null
+$Global:IsModuleActiveDirectoryLoaded = $false
+$Global:DefaultSharepointSite = $null
 
 # Import modułów
 $modulePaths = @(
+    "$PSScriptRoot/Modules/Startup.psm1",
     "$PSScriptRoot/Modules/Utils.psm1",
     "$PSScriptRoot/Modules/LocalActiveDirectory.psm1",
     "$PSScriptRoot/Modules/MailboxesExchangeOnline.psm1",
@@ -72,10 +77,15 @@ $Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
 # Załaduj ikony do przycisków
 Get-AllIcons
 
+# Inizjalizacja ustawień formularza
+Initialize-HelpdeskTools
+
+
 # Uruchom GUI
 try {
     [System.Threading.Thread]::CurrentThread.SetApartmentState([System.Threading.ApartmentState]::STA)
     [void][System.Windows.Forms.Application]::EnableVisualStyles()
+    Start-Sleep -Milliseconds 1500  # Tymczasowe opóźnienie
     [System.Windows.Forms.Application]::Run($mainForm)
 }
 catch {
@@ -83,4 +93,4 @@ catch {
 }
 
 # Zamykanie aplikacji
-[System.Windows.Forms.Application]::Exit()
+#[System.Windows.Forms.Application]::Exit()

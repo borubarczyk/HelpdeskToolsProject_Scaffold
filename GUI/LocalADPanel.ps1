@@ -53,8 +53,7 @@ $LocalAD_ActionSets = @{
     )
     "Grupy"       = @(
         "Odśwież", "Dodaj członków", "Usuń członków", "Zmień nazwę",
-        "Zmień typ grupy", "Zmień zakres", "Usuń grupę", "Akcje specjalne"
-    )
+        "Zmień typ grupy", "Zmień zakres", "Usuń grupę", "Akcje specjalne"    )
 }
 
 # Globalna struktura UI — DOPIERO TERAZ ją inicjalizujemy
@@ -70,33 +69,27 @@ $HT_UI.LocalADTab = [ordered]@{
 # Tworzenie i dodanie przycisków (razowo, potem ukrywane/pokazywane)
 foreach ($section in $LocalAD_ActionSets.Keys) {
     $btnSet = @{}
-
     foreach ($label in $LocalAD_ActionSets[$section]) {
         $btn = New-LocalADActionButton $label
         $btn.Visible = $false
         $btn.Tag = $section
         $panel_LocalAD_Actions.Controls.Add($btn)
-        $buttons_LocalAD[$label] = $btn
+        $buttons_LocalAD["$section|$label"] = $btn
         $btnSet[$label] = $btn
     }
-
     $HT_UI.LocalADTab.Views[$section] = @{ Buttons = $btnSet }
 }
 
 # Funkcja pokazująca tylko przyciski dla wybranej sekcji
 function Show-LocalADButtons {
     $selected = $combobox_LocalAD_Section.SelectedItem
-    if (-not $selected -or -not $LocalAD_ActionSets.ContainsKey($selected)) {
-            return
-    }
-
     foreach ($btn in $panel_LocalAD_Actions.Controls) {
         $btn.Visible = $false
     }
-
     foreach ($label in $LocalAD_ActionSets[$selected]) {
-        if ($buttons_LocalAD.ContainsKey($label)) {
-            $buttons_LocalAD[$label].Visible = $true
+        $key = "$selected|$label"
+        if ($buttons_LocalAD.ContainsKey($key)) {
+            $buttons_LocalAD[$key].Visible = $true
         }
     }
 }

@@ -1,1 +1,3 @@
-# SharePoint Online functions
+function Get-SharePointFolders {
+
+}

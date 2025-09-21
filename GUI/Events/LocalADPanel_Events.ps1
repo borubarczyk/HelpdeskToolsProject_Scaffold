@@ -42,82 +42,10 @@ foreach ($panelName in $LocalAD_ActionSets.Keys) {
     }
 }
 
-# === Wybór obiektu z listy ===
+
+# Obsługa zmiany zaznaczenia
 $HT_UI.LocalADTab.ObjectBox.Add_SelectedIndexChanged({
-    $selectedObject = $HT_UI.LocalADTab.ObjectBox.SelectedItem
-    $section = $HT_UI.LocalADTab.SectionBox.SelectedItem
-
-    if (-not $selectedObject) {
-        return
-    }
-
-    try {
-        switch ($section) {
-            "Użytkownicy" {
-                $details = Get-ADUser -Identity $selectedObject -Properties * |
-                    Select-Object Name,
-                                  SamAccountName,
-                                  UserPrincipalName,
-                                  Enabled,
-                                  Department,
-                                  Title,
-                                  Company,
-                                  EmailAddress,
-                                  PasswordLastSet,
-                                  PasswordNeverExpires,
-                                  LastLogonDate,
-                                  DistinguishedName |
-                    Format-List | Out-String
-
-                $details = $details.Trim()
-            }
-
-            "Komputery" {
-                $details = Get-ADComputer -Identity $selectedObject -Properties * |
-                    Select-Object Name,
-                                  DNSHostName,
-                                  OperatingSystem,
-                                  OperatingSystemVersion,
-                                  IPv4Address,
-                                  LastLogonDate,
-                                  Enabled,
-                                  WhenCreated,
-                                  DistinguishedName |
-                    Format-List | Out-String
-
-                $details = $details.Trim()
-            }
-
-            "Grupy" {
-                $members = Get-ADGroupMember -Identity $selectedObject | 
-                    Select-Object -ExpandProperty SamAccountName |
-                    ForEach-Object { $_.Trim() }
-
-                $details = Get-ADGroup -Identity $selectedObject -Properties * |
-                    Select-Object Name,
-                                  SamAccountName,
-                                  GroupScope,
-                                  GroupCategory,
-                                  ManagedBy,
-                                  WhenCreated,
-                                  DistinguishedName |
-                    Format-List | Out-String
-
-                $details = $details.Trim()
-                $details += "`n=== Members ===`n" + ($members -join "`n")
-            }
-
-            default {
-                $details = "❌ Nieobsługiwany typ obiektu."
-            }
-        }
-
-        $HT_UI.LocalADTab.DetailsBox.Text = $details
-        Write-Log -Message "✅ Załadowano szczegóły dla: $selectedObject" -Type "Info"
-    }
-    catch {
-        Write-Log -Message "❌ Błąd ładowania szczegółów: $_" -Type "Error"
-    }
+    Get-ObjectDetails -selectedObject $HT_UI.LocalADTab.ObjectBox.SelectedItem
 })
 
 # === Zmiana sekcji ===
@@ -126,7 +54,6 @@ $HT_UI.LocalADTab.SectionBox.Add_SelectedIndexChanged({
     $HT_UI.LocalADTab.ObjectBox.Items.Clear()
     $HT_UI.LocalADTab.ObjectBox.Items.Add('Lista niezaładowana - kliknij "Odśwież" / Wybierz obiekt z sekcji')
     $HT_UI.LocalADTab.DetailsBox.Clear()
-    Write-Log -Message "📂 Zmieniono sekcję na: $($HT_UI.LocalADTab.SectionBox.SelectedItem). Lista wyczyszczona." -Type "Info"
-    Invoke-LocalADRefresh
+    Write-Log -Message "Zmieniono sekcję na: $($HT_UI.LocalADTab.SectionBox.SelectedItem). Lista wyczyszczona." -Type "Info"
     $HT_UI.LocalADTab.ObjectBox.SelectedIndex = 0
 })
