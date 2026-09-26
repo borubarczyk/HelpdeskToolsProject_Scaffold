@@ -1,163 +1,178 @@
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+﻿# Okno generatora haseł
+$theme = $Global:HTTheme
 
 $form_PasswordGenerator = New-Object System.Windows.Forms.Form
 $form_PasswordGenerator.Text = "Generator haseł"
-$form_PasswordGenerator.Size = '600,450'
-$form_PasswordGenerator.StartPosition = "CenterParent"
-$form_PasswordGenerator.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-$form_PasswordGenerator.FormBorderStyle = 'FixedDialog'
+$form_PasswordGenerator.ClientSize = New-Object System.Drawing.Size(580, 470)
+$form_PasswordGenerator.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+$form_PasswordGenerator.Font = $theme.Font
+$form_PasswordGenerator.BackColor = $theme.Surface
+$form_PasswordGenerator.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
 $form_PasswordGenerator.MaximizeBox = $false
-
-# GroupBox - ustawienia
-$groupbox_Settings = New-Object System.Windows.Forms.GroupBox
-$groupbox_Settings.Text = "Ustawienia hasła"
-$groupbox_Settings.Location = '10,10'
-$groupbox_Settings.Size = '560,220'
-
-# TableLayoutPanel dla checkboxów
-$tableLayoutPanel = New-Object System.Windows.Forms.TableLayoutPanel
-$tableLayoutPanel.Location = '10,20'
-$tableLayoutPanel.Size = '540,140'
-$tableLayoutPanel.ColumnCount = 2
-$tableLayoutPanel.RowCount = 3
-$tableLayoutPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
-$tableLayoutPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
-for ($i = 0; $i -lt 3; $i++) {
-    $tableLayoutPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50)))
+$form_PasswordGenerator.MinimizeBox = $false
+$form_PasswordGenerator.ShowInTaskbar = $false
+$form_PasswordGenerator.KeyPreview = $true
+if (Test-Path $Global:AppIconPath) {
+    $form_PasswordGenerator.Icon = New-Object System.Drawing.Icon($Global:AppIconPath)
 }
 
-# CheckBoxy - dane wejściowe
+# Pole z wynikiem
+$textbox_Password = New-Object System.Windows.Forms.TextBox
+$textbox_Password.Location = New-Object System.Drawing.Point(16, 18)
+$textbox_Password.Size = New-Object System.Drawing.Size(430, 36)
+$textbox_Password.ReadOnly = $true
+$textbox_Password.BackColor = $theme.Background
+$textbox_Password.Font = New-Object System.Drawing.Font("Consolas", 16)
+$textbox_Password.TextAlign = [System.Windows.Forms.HorizontalAlignment]::Center
+
+$button_Copy = New-HTButton -Text "Kopiuj" -Icon "Copy.png" -Width 110 -Height 36 -ToolTip "Kopiuj hasło do schowka (Ctrl+C)"
+$button_Copy.Location = New-Object System.Drawing.Point(454, 18)
+
+# Wskaźnik siły hasła
+$panel_StrengthTrack = New-Object System.Windows.Forms.Panel
+$panel_StrengthTrack.Location = New-Object System.Drawing.Point(16, 64)
+$panel_StrengthTrack.Size = New-Object System.Drawing.Size(430, 6)
+$panel_StrengthTrack.BackColor = $theme.Border
+
+$panel_StrengthBar = New-Object System.Windows.Forms.Panel
+$panel_StrengthBar.Location = New-Object System.Drawing.Point(0, 0)
+$panel_StrengthBar.Size = New-Object System.Drawing.Size(0, 6)
+$panel_StrengthBar.BackColor = $theme.Success
+$panel_StrengthTrack.Controls.Add($panel_StrengthBar)
+
+$label_Strength = New-Object System.Windows.Forms.Label
+$label_Strength.Location = New-Object System.Drawing.Point(14, 74)
+$label_Strength.AutoSize = $true
+$label_Strength.ForeColor = $theme.Muted
+$label_Strength.Font = $theme.FontSmall
+
+# Tryb hasła
+$groupbox_Mode = New-Object System.Windows.Forms.GroupBox
+$groupbox_Mode.Text = "Rodzaj hasła"
+$groupbox_Mode.Location = New-Object System.Drawing.Point(16, 102)
+$groupbox_Mode.Size = New-Object System.Drawing.Size(548, 62)
+
+$modes = [ordered]@{}
+$modeX = 14
+foreach ($mode in @(
+        @{ Name = "Classic"; Text = "Klasyczne"; Tip = "Losowe litery, cyfry i znaki specjalne" }
+        @{ Name = "Friendly"; Text = "Przyjazne (sylaby)"; Tip = "Łatwe do przeczytania i podyktowania, np. Bak4Tor7Mil!" }
+        @{ Name = "Words"; Text = "Słownikowe"; Tip = "Połączone słowa, np. SzybkiKotDom42!" }
+    )) {
+    $radio = New-Object System.Windows.Forms.RadioButton
+    $radio.Text = $mode.Text
+    $radio.AutoSize = $true
+    $radio.Location = New-Object System.Drawing.Point($modeX, 26)
+    Set-HTToolTip -Control $radio -Text $mode.Tip
+    $groupbox_Mode.Controls.Add($radio)
+    $modes[$mode.Name] = $radio
+    $modeX += 170
+}
+
+# Opcje
+$groupbox_Settings = New-Object System.Windows.Forms.GroupBox
+$groupbox_Settings.Text = "Opcje"
+$groupbox_Settings.Location = New-Object System.Drawing.Point(16, 172)
+$groupbox_Settings.Size = New-Object System.Drawing.Size(548, 132)
+
 $checkboxDefinitions = @(
-    @{ Name = 'UseSymbols'; Text = "Używaj znaków specjalnych:"; Checked = $true },
-    @{ Name = 'NoSimilar'; Text = "Nie używaj podobnych znaków"; Checked = $true },
-    @{ Name = 'StartLetter'; Text = "Rozpoczynaj od litery"; Checked = $true },
-    @{ Name = 'Friendly'; Text = "Przyjazne hasła"; Checked = $false },
-    @{ Name = 'Words'; Text = "Słownikowe hasła"; Checked = $false },
-    @{ Name = 'UseNumbers'; Text = "Używaj liczb"; Checked = $true }
+    @{ Name = 'UseNumbers'; Text = "Używaj cyfr"; Checked = $true; X = 14; Y = 26 }
+    @{ Name = 'UseSymbols'; Text = "Używaj znaków specjalnych"; Checked = $true; X = 14; Y = 54 }
+    @{ Name = 'NoSimilar'; Text = "Bez podobnych znaków (l, 1, O, 0)"; Checked = $true; X = 280; Y = 26 }
+    @{ Name = 'StartLetter'; Text = "Rozpoczynaj od litery"; Checked = $true; X = 280; Y = 54 }
 )
 
 $checkboxes = @{}
-$index = 0
 foreach ($item in $checkboxDefinitions) {
     $cb = New-Object System.Windows.Forms.CheckBox
     $cb.Text = $item.Text
     $cb.AutoSize = $true
     $cb.Checked = $item.Checked
-    $cb.Margin = New-Object System.Windows.Forms.Padding(5)
-    $tableLayoutPanel.Controls.Add($cb, [math]::Floor($index / 3), $index % 3)
+    $cb.Location = New-Object System.Drawing.Point($item.X, $item.Y)
+    $groupbox_Settings.Controls.Add($cb)
     $checkboxes[$item.Name] = $cb
-    $index++
-}
-$checkboxes['Friendly'].Checked = $true # Domyślnie ustawiamy Friendly na true
-
-if ($Global:PasswordUseWordBased -eq "True") {
-    $checkboxes['Words'].Checked = $true
-    $checkboxes['Friendly'].Checked = $false
 }
 
-# TextBox dla znaków specjalnych
 $label_SpecialChars = New-Object System.Windows.Forms.Label
 $label_SpecialChars.Text = "Znaki specjalne:"
-$label_SpecialChars.Location = '10,170'
-$label_SpecialChars.Size = '100,20'
+$label_SpecialChars.Location = New-Object System.Drawing.Point(14, 92)
+$label_SpecialChars.AutoSize = $true
 
 $textbox_SpecialChars = New-Object System.Windows.Forms.TextBox
 $textbox_SpecialChars.Text = $Global:PasswordSpecialCharacters
-$textbox_SpecialChars.Location = '120,170' 
-$textbox_SpecialChars.Size = '420,25'
+$textbox_SpecialChars.Location = New-Object System.Drawing.Point(130, 89)
+$textbox_SpecialChars.Size = New-Object System.Drawing.Size(400, 25)
+$textbox_SpecialChars.Font = $theme.FontMono
 
-$groupbox_Settings.Controls.AddRange(@($tableLayoutPanel, $label_SpecialChars, $textbox_SpecialChars))
+$groupbox_Settings.Controls.AddRange(@($label_SpecialChars, $textbox_SpecialChars))
 
-# Label, TrackBar i NumericUpDown
+# Długość hasła
 $label_Length = New-Object System.Windows.Forms.Label
 $label_Length.Text = "Długość hasła:"
-$label_Length.Location = '10,240'
-$label_Length.Size = '100,20'
+$label_Length.Location = New-Object System.Drawing.Point(16, 322)
+$label_Length.AutoSize = $true
 
 $numericupdown_Length = New-Object System.Windows.Forms.NumericUpDown
-$numericupdown_Length.Location = '120,240'
-$numericupdown_Length.Size = '60,25'
+$numericupdown_Length.Location = New-Object System.Drawing.Point(120, 319)
+$numericupdown_Length.Size = New-Object System.Drawing.Size(60, 25)
 $numericupdown_Length.Minimum = 8
 $numericupdown_Length.Maximum = 64
-$numericupdown_Length.Value = 8
+$numericupdown_Length.Value = 12
 
 $trackbar_Length = New-Object System.Windows.Forms.TrackBar
-$trackbar_Length.Location = '190,235'
-$trackbar_Length.Size = '380,40'
+$trackbar_Length.Location = New-Object System.Drawing.Point(190, 314)
+$trackbar_Length.Size = New-Object System.Drawing.Size(374, 40)
 $trackbar_Length.Minimum = 8
 $trackbar_Length.Maximum = 64
-$trackbar_Length.Value = 8
-$trackbar_Length.TickFrequency = 5
+$trackbar_Length.Value = 12
+$trackbar_Length.TickFrequency = 4
 $trackbar_Length.SmallChange = 1
 $trackbar_Length.LargeChange = 4
 
-$trackbar_Length.add_Scroll({
-        $numericupdown_Length.Value = $trackbar_Length.Value
-    })
-    
-$numericupdown_Length.add_ValueChanged({
-        $trackbar_Length.Value = $numericupdown_Length.Value
-    })
-
-# Pole z wynikiem
-$richtextbox_Password = New-Object System.Windows.Forms.RichTextBox
-$richtextbox_Password.Location = '10,290'
-$richtextbox_Password.Size = '450,40'
-$richtextbox_Password.ReadOnly = $true
-$richtextbox_Password.BackColor = 'White'
-$richtextbox_Password.ForeColor = 'Black'
-$richtextbox_Password.Multiline = $false
-$richtextbox_Password.Font = New-Object System.Drawing.Font("Segoe UI", 14)
-
-$button_Copy = New-Object System.Windows.Forms.Button
-$button_Copy.Text = "Kopiuj"
-$button_Copy.Location = '470,290'
-$button_Copy.Size = '100,40'
-
 # Dolne przyciski
-$bottomButtons = @(
-    @{ Name = 'Generate'; Text = "Wygeneruj nowe"; X = 10 },
-    @{ Name = 'Send'; Text = "Wyślij e-mailem (SMS)"; X = 200 },
-    @{ Name = 'Close'; Text = "Zamknij"; X = 390 }
-)
+$panel_PasswordButtons = New-Object System.Windows.Forms.FlowLayoutPanel
+$panel_PasswordButtons.Dock = [System.Windows.Forms.DockStyle]::Bottom
+$panel_PasswordButtons.Height = 60
+$panel_PasswordButtons.FlowDirection = [System.Windows.Forms.FlowDirection]::LeftToRight
+$panel_PasswordButtons.Padding = New-Object System.Windows.Forms.Padding(14, 12, 14, 10)
+$panel_PasswordButtons.BackColor = $theme.Background
 
-$buttons = @{}
-foreach ($btn in $bottomButtons) {
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text = $btn.Text
-    $b.Size = '180,40'
-    $b.Location = "$($btn.X),350"
-    $b.FlatStyle = 'Standard'
-    $form_PasswordGenerator.Controls.Add($b)
-    $buttons[$btn.Name] = $b
+$buttons = @{
+    Generate = New-HTButton -Text "Wygeneruj nowe" -Icon "Password Reset.png" -Style "Primary" -Width 180 -Height 36 -ToolTip "Nowe hasło (F5)"
+    Send     = New-HTButton -Text "Wyślij e-mailem (SMS)" -Icon "Email.png" -Width 200 -Height 36 -ToolTip "Otwiera klienta poczty z hasłem w treści"
+    Close    = New-HTButton -Text "Zamknij" -Icon "close.png" -Width 130 -Height 36
+}
+foreach ($key in @("Generate", "Send", "Close")) {
+    $buttons[$key].Margin = New-Object System.Windows.Forms.Padding(0, 0, 8, 0)
+    $panel_PasswordButtons.Controls.Add($buttons[$key])
 }
 
 # Dodaj wszystko do formularza
 $form_PasswordGenerator.Controls.AddRange(@(
+        $textbox_Password,
+        $button_Copy,
+        $panel_StrengthTrack,
+        $label_Strength,
+        $groupbox_Mode,
         $groupbox_Settings,
         $label_Length,
         $numericupdown_Length,
         $trackbar_Length,
-        $richtextbox_Password,
-        $button_Copy
+        $panel_PasswordButtons
     ))
 
 $HT_UI.PasswordGeneratorWindow = [ordered]@{
-    Form    = $form_PasswordGenerator
-    CheckBoxes = $checkboxes  # ten hashtable z UseSymbols, NoSimilar, StartLetter, Friendly, Words, UseNumbers
-    Actions = $buttons  # ten hashtable z Generate, Send, Close
-    CopyButton = $button_Copy
+    Form              = $form_PasswordGenerator
+    Modes             = $modes      # Classic, Friendly, Words
+    Checkboxes        = $checkboxes # UseNumbers, UseSymbols, NoSimilar, StartLetter
+    Actions           = $buttons    # Generate, Send, Close
+    CopyButton        = $button_Copy
     SpecialCharacters = $textbox_SpecialChars
-    Password = $richtextbox_Password
-    Length = $numericupdown_Length
+    Password          = $textbox_Password
+    Length            = $numericupdown_Length
+    LengthSlider      = $trackbar_Length
+    StrengthBar       = $panel_StrengthBar
+    StrengthTrack     = $panel_StrengthTrack
+    StrengthLabel     = $label_Strength
+    Initialized       = $false
 }
-
-if (-not $HT_UI.PasswordGeneratorWindow.Initialized) {
-    Set-PasswordGeneratorIcons
-    $HT_UI.PasswordGeneratorWindow.Initialized = $true
-}
-
-# Wyświetl ontop
-$form_PasswordGenerator.Topmost = $true
-$form_PasswordGenerator.KeyPreview = $true

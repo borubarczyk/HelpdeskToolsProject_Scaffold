@@ -1,13 +1,15 @@
+﻿# Generator haseł: hasła klasyczne, "przyjazne" (sylabowe) i słownikowe.
+# Losowanie oparte o kryptograficzny generator liczb losowych (RandomNumberGenerator).
+
 # Rozszerzony, bezpieczny zestaw przymiotników
 $Script:adjectives = @(
 	'Szybki', 'Wesoly', 'Maly', 'Duzy', 'Ciekawy', 'Spokojny', 'Glosny', 'Cichy', 'Jasny', 'Ciemny',
 	'Zielony', 'Czerwony', 'Niebieski', 'Zolty', 'Bialy', 'Czarny', 'Miekki', 'Twardy', 'Lekki', 'Ciezki',
-	'Piekny', 'Brzydki', 'Nowy', 'Stary', 'Dobry', 'Zly', 'Smutny', 'Radosny', 'Czysty', 'Brudny',
-	'Wysoki', 'Niski', 'Szeroki', 'Waski', 'Dlugi', 'Krotki', 'Gruby', 'Chudy', 'Slodki', 'Gorzki',
-	'Kwasny', 'Ostry', 'Slony', 'Pachnacy', 'Cierpliwy', 'Niespokojny', 'Madry', 'Glupi', 'Zabawny', 'Powazny',
-	'Cieply', 'Zimny', 'Wilgotny', 'Suchy', 'Gladki', 'Szorstki', 'Ciezki', 'Lsniacy', 'Matowy', 'Kolorowy',
-	'Elastyczny', 'Szklany', 'Drewniany', 'Metalowy', 'Skorzany', 'Twardawy', 'Rowny', 'Krzywy', 'Wklesly',
-	'Wypukly', 'Rozmyty', 'Przyjazny', 'Wrogi', 'Senny', 'Zwawy', 'Leniwy', 'Aktywny', 'Blyszczacy', 'Mocny'
+	'Piekny', 'Nowy', 'Stary', 'Dobry', 'Radosny', 'Czysty', 'Wysoki', 'Niski', 'Szeroki', 'Waski',
+	'Dlugi', 'Krotki', 'Gruby', 'Chudy', 'Slodki', 'Gorzki', 'Kwasny', 'Ostry', 'Slony', 'Pachnacy',
+	'Cierpliwy', 'Madry', 'Zabawny', 'Powazny', 'Cieply', 'Zimny', 'Wilgotny', 'Suchy', 'Gladki', 'Szorstki',
+	'Lsniacy', 'Matowy', 'Kolorowy', 'Elastyczny', 'Szklany', 'Drewniany', 'Metalowy', 'Skorzany', 'Rowny', 'Krzywy',
+	'Wklesly', 'Wypukly', 'Rozmyty', 'Przyjazny', 'Senny', 'Zwawy', 'Leniwy', 'Aktywny', 'Blyszczacy', 'Mocny'
 )
 
 # Rozszerzony, bezpieczny zestaw rzeczowników
@@ -22,21 +24,43 @@ $Script:nouns = @(
 	'Plyta', 'Talerz', 'Widelec', 'Noz', 'Lyzka', 'Butelka', 'Lina', 'Cegla', 'Walizka', 'Pojemnik'
 )
 
-# Funkcja do generowania losowych znaków
-function Get-RandomCharFrom($chars) {
-	return $chars | Get-Random
+# Kryptograficznie bezpieczna liczba losowa z zakresu [0, Max)
+function Get-HTRandomInt {
+	param ([Parameter(Mandatory)][int]$Max)
+	if ($Max -le 1) { return 0 }
+	return [System.Security.Cryptography.RandomNumberGenerator]::GetInt32($Max)
 }
 
-# Funkcja do Sprawdzenia, czy tekst zawiera podobne znaki
+# Funkcja do losowania elementu (znaku) z kolekcji
+function Get-RandomCharFrom($chars) {
+	$array = @($chars)
+	if ($array.Count -eq 0) { return $null }
+	return $array[(Get-HTRandomInt -Max $array.Count)]
+}
+
+# Losowe przemieszanie tablicy (Fisher-Yates)
+function Get-HTShuffled {
+	param ([object[]]$Items)
+	$array = @($Items)
+	for ($i = $array.Count - 1; $i -gt 0; $i--) {
+		$j = Get-HTRandomInt -Max ($i + 1)
+		$tmp = $array[$i]; $array[$i] = $array[$j]; $array[$j] = $tmp
+	}
+	return , $array
+}
+
+# Funkcja do sprawdzenia, czy tekst zawiera sekwencje (abc, 123 ...)
 function Test-SequentialChars($text) {
 	$sequences = @(
-		'abc', 'bcd', 'cde', 'def', 'efg', 'fgh', 'ghi', 'hij', 'ijk', 'jkl', 'klm', 'mno',
+		'abc', 'bcd', 'cde', 'def', 'efg', 'fgh', 'ghi', 'hij', 'ijk', 'jkl', 'klm', 'lmn', 'mno',
 		'nop', 'opq', 'pqr', 'qrs', 'rst', 'stu', 'tuv', 'uvw', 'vwx', 'wxy', 'xyz',
-		'ABC', 'BCD', 'CDE', 'DEF', 'EFG', 'FGH', 'GHI', 'HIJ', 'IJK', 'JKL', 'KLM', 'MNO',
-		'NOP', 'OPQ', 'PQR', 'QRS', 'RST', 'STU', 'TUV', 'UVW', 'VWX', 'WXY', 'XYZ',
-		'123', '234', '345', '456', '567', '678', '789'
+		'012', '123', '234', '345', '456', '567', '678', '789'
 	)
-	return $null -ne ($sequences | Where-Object { $text -like "*$_*" })
+	$lower = "$text".ToLowerInvariant()
+	foreach ($sequence in $sequences) {
+		if ($lower.Contains($sequence)) { return $true }
+	}
+	return $false
 }
 
 # Funkcja generująca hasło
@@ -56,152 +80,158 @@ function New-Password {
 		[bool]$FriendlyMode = $false
 	)
 
-	# Funkcja do generowania przyjaznych haseł
+	if (-not $SpecialCharacters) { $SpecialCharacters = "!@#$%^&*?" }
+
+	# Tryb "przyjazny" - sylaby spółgłoska-samogłoska-spółgłoska, cyfry i jeden znak specjalny na końcu
 	if ($FriendlyMode) {
-		$consonants = 'bcdfghjklmnprstwz'.ToCharArray()
-		$vowels = 'aeiouy'.ToCharArray()
-		$numbers = '123456789'.ToCharArray()
-		$symbols = if ($IncludeSymbols -and $SpecialCharacters) {
-			$SpecialCharacters.ToCharArray()
-		}
-		else { @() }
+		$consonants = 'bcdfghjkmnprstwz'.ToCharArray()
+		$vowels = 'aeiuy'.ToCharArray()
+		$numbers = '23456789'.ToCharArray()
+		$symbols = if ($IncludeSymbols) { $SpecialCharacters.ToCharArray() } else { @() }
 
-		$syllables = 1..50 | ForEach-Object {
-			$syl = (Get-RandomCharFrom $consonants) + (Get-RandomCharFrom $vowels) + (Get-RandomCharFrom $consonants)
-			$syl.Substring(0, 1).ToUpper() + $syl.Substring(1)
-		}
-
+		$targetLength = if ($symbols.Count -gt 0) { $Length - 1 } else { $Length }
 		$password = ""
 
-		# Ile znaków ma zostać wygenerowane zanim dodamy symbol (lub nie)
-		$targetLength = if ($symbols.Count -gt 0) { $Length - 1 } else { $Length }
-
 		while ($password.Length -lt $targetLength) {
-			$password += Get-RandomCharFrom $syllables
+			$syllable = "$(Get-RandomCharFrom $consonants)$(Get-RandomCharFrom $vowels)$(Get-RandomCharFrom $consonants)"
+			$password += $syllable.Substring(0, 1).ToUpper() + $syllable.Substring(1)
 			if ($IncludeNumbers -and $password.Length -lt $targetLength) {
 				$password += Get-RandomCharFrom $numbers
 			}
 		}
 
-		# Obetnij do targetu
-		$password = $password.Substring(0, [Math]::Min($targetLength, $password.Length))
-
-		# Dodaj symbol tylko jeśli checkbox zaznaczony
+		$password = $password.Substring(0, $targetLength)
 		if ($symbols.Count -gt 0) {
 			$password += Get-RandomCharFrom $symbols
 		}
-
 		return $password
 	}
 
-
-	# Tryb klasyczny
+	# Tryb klasyczny (bez znaków łatwych do pomylenia: i, l, o, I, L, O, 0, 1)
 	$lower = 'abcdefghjkmnpqrstuvwxyz'
 	$upper = 'ABCDEFGHJKMNPQRSTUVWXYZ'
-	$nums = '123456789'
-	$syms = if ($IncludeSymbols -and $SpecialCharacters) { $SpecialCharacters } else { '' }
+	$nums = '23456789'
+	$syms = if ($IncludeSymbols) { $SpecialCharacters } else { '' }
 
-	if ($NoSimilarChars) {
-		$lower = $lower -replace '[ilo]', ''
-		$upper = $upper -replace '[ILO]', ''
-		$nums = $nums -replace '[01]', ''
-		$syms = $syms -replace '[1lI0Oo]', ''
+	if (-not $NoSimilarChars) {
+		$lower = 'abcdefghijkmnopqrstuvwxyz'
+		$upper = 'ABCDEFGHIJKLMNPQRSTUVWXYZ'
+		$nums = '0123456789'
+	}
+	else {
+		$syms = $syms -replace '[|lI10Oo]', ''
 	}
 
-	$charPool = ''
-	if ($IncludeLowercase) { $charPool += $lower }
-	if ($IncludeUppercase) { $charPool += $upper }
-	if ($IncludeNumbers) { $charPool += $nums }
-	if ($IncludeSymbols -and $syms) { $charPool += $syms }
+	$classes = @()
+	if ($IncludeLowercase) { $classes += , $lower }
+	if ($IncludeUppercase) { $classes += , $upper }
+	if ($IncludeNumbers) { $classes += , $nums }
+	if ($IncludeSymbols -and $syms) { $classes += , $syms }
 
-	if (-not $charPool) {
+	if ($classes.Count -eq 0) {
 		Write-Log -Message "Brak znaków do generowania hasła." -Type "Error"
 		return $null
 	}
 
-	$attempts = 100
-	for ($i = 0; $i -lt $attempts; $i++) {
-		$chars = [System.Collections.ArrayList]::new()
-		if ($StartWithLetter) {
-			$first = ($lower + $upper).ToCharArray() | Get-Random
-			$null = $chars.Add($first)
+	$charPool = ($classes -join '').ToCharArray()
+	$letters = ($lower + $upper).ToCharArray()
+
+	for ($attempt = 0; $attempt -lt 200; $attempt++) {
+		# Po jednym znaku z każdej wymaganej klasy + dopełnienie z całej puli
+		$chars = New-Object System.Collections.Generic.List[char]
+		foreach ($class in $classes) { $chars.Add((Get-RandomCharFrom $class.ToCharArray())) }
+		while ($chars.Count -lt $Length) { $chars.Add((Get-RandomCharFrom $charPool)) }
+
+		$shuffled = Get-HTShuffled -Items $chars.ToArray()
+		if ($shuffled.Count -gt $Length) { $shuffled = $shuffled[0..($Length - 1)] }
+
+		if ($StartWithLetter -and $letters -notcontains $shuffled[0]) {
+			$letterIndex = -1
+			for ($k = 1; $k -lt $shuffled.Count; $k++) {
+				if ($letters -ccontains $shuffled[$k]) { $letterIndex = $k; break }
+			}
+			if ($letterIndex -gt 0) {
+				$tmp = $shuffled[0]; $shuffled[0] = $shuffled[$letterIndex]; $shuffled[$letterIndex] = $tmp
+			}
+			else {
+				$shuffled[0] = Get-RandomCharFrom $letters
+			}
 		}
 
-		$rest = $Length - $chars.Count
-		for ($j = 0; $j -lt $rest; $j++) {
-			$null = $chars.Add((Get-RandomCharFrom ($charPool.ToCharArray())))
+		$password = -join $shuffled
+
+		$okDuplicates = -not $NoDuplicateChars -or (@($password.ToCharArray() | Select-Object -Unique).Count -eq $password.Length)
+		$okSequence = -not $NoSequentialChars -or -not (Test-SequentialChars $password)
+		$okClasses = $true
+		foreach ($class in $classes) {
+			if ($password.IndexOfAny($class.ToCharArray()) -lt 0) { $okClasses = $false; break }
 		}
 
-		$password = -join $chars
-
-		$hasLower = !$IncludeLowercase -or $password -cmatch '[a-z]'
-		$hasUpper = !$IncludeUppercase -or $password -cmatch '[A-Z]'
-		$hasDigit = !$IncludeNumbers -or $password -cmatch '\d'
-		$hasSym = !$IncludeSymbols -or $password -match "[$([regex]::Escape($syms))]"
-		$hasDup = !$NoDuplicateChars -or (($password.ToCharArray() | Select-Object -Unique).Count -eq $password.Length)
-		$noSeq = !$NoSequentialChars -or !(Contains-SequentialChars $password)
-
-		if ($hasLower -and $hasUpper -and $hasDigit -and $hasSym -and $hasDup -and $noSeq) {
+		if ($okDuplicates -and $okSequence -and $okClasses) {
 			return $password
 		}
 	}
 
-	Write-Log -Message "Zbyt restrykcyjne warunki - próbuję z uproszczeniem." -Type "Warn"
+	Write-Log -Message "Zbyt restrykcyjne warunki - generuję hasło bez ograniczeń duplikatów i sekwencji." -Type "Warn"
 	return New-Password -Length $Length -SpecialCharacters $SpecialCharacters -StartWithLetter $StartWithLetter `
 		-IncludeNumbers $IncludeNumbers -IncludeLowercase $IncludeLowercase -IncludeUppercase $IncludeUppercase `
-		-IncludeSymbols $IncludeSymbols -NoSimilarChars:$false -NoDuplicateChars:$false -NoSequentialChars:$false `
-		-FriendlyMode:$false
+		-IncludeSymbols $IncludeSymbols -NoSimilarChars $NoSimilarChars -NoDuplicateChars $false -NoSequentialChars $false
 }
 
-# Funkcja do generowania hasła opartego na słowach
+# Funkcja do generowania hasła opartego na słowach (np. SzybkiKotDom42!)
 function New-WordBasedPassword {
-    [CmdletBinding()]
-    param (
-        [ValidateRange(8, 64)]
-        [int]$Length = 12,
-        [string]$SpecialCharacters = $Global:PasswordSpecialCharacters,
-        [bool]$UseSymbols = $true,
-        [bool]$UseNumbers = $true
-    )
+	[CmdletBinding()]
+	param (
+		[ValidateRange(8, 64)]
+		[int]$Length = 12,
+		[string]$SpecialCharacters = $Global:PasswordSpecialCharacters,
+		[bool]$UseSymbols = $true,
+		[bool]$UseNumbers = $true
+	)
 
-    # Pomocnicza funkcja
-    function Get-RandomCharFrom { param($Array); return $Array | Get-Random }
+	if (-not $SpecialCharacters) { $SpecialCharacters = "!@#$%^&*?" }
 
-    $adjectives = @('Szybki','Wesoly','Maly','Duzy','Ciekawy','Spokojny','Glosny','Cichy','Jasny','Ciemny','Zielony','Czerwony','Niebieski','Zolty','Bialy','Czarny','Miekki','Twardy','Lekki','Ciezki','Piekny','Brzydki','Nowy','Stary','Dobre','Zle','Smutny','Radosny','Czysty','Brudny','Wysoki','Niski','Szeroki','Waski','Dlugi','Krotki','Gruby','Chudy','Slodki','Gorzki','Kwasny','Ostry','Slony','Pachnacy','Cierpliwy','Niespokojny','Madry','Glupi','Zabawny','Powazny')
-    $nouns = @('Dom','Pies','Kot','Las','Rzeka','Gora','Morze','Jezioro','Pole','Dolina','Drzewo','Kwiat','Trawa','Kamien','Piasek','Snieg','Deszcz','Slonce','Ksiezyc','Gwiazda','Chmura','Wiatr','Ogien','Dym','Cien','Swiatlo','Mrok','Droga','Sciezka','Most')
+	# Rezerwacja miejsca na końcowe znaki
+	$endPart = ""
+	if ($UseNumbers) { $endPart += (10 + (Get-HTRandomInt -Max 90)).ToString() }
+	if ($UseSymbols) { $endPart += Get-RandomCharFrom $SpecialCharacters.ToCharArray() }
 
-    # Rezerwacja miejsca na końcowe znaki
-    $endPart = ""
-    if ($UseNumbers) {
-        $endPart += (Get-Random -Min 10 -Max 99).ToString()
-    }
-    if ($UseSymbols -and $SpecialCharacters) {
-        $endPart += (Get-RandomCharFrom $SpecialCharacters.ToCharArray())
-    }
+	$maxMainLength = $Length - $endPart.Length
 
-    $maxMainLength = $Length - $endPart.Length
-    if ($maxMainLength -lt 5) {
-        # Jeżeli za mało miejsca – skróć endPart do 1 cyfra i 1 znak specjalny
-        $endPart = ""
-        if ($UseNumbers) { $endPart += (Get-Random -Min 0 -Max 9).ToString() }
-        if ($UseSymbols -and $SpecialCharacters) { $endPart += (Get-RandomCharFrom $SpecialCharacters.ToCharArray()) }
-        $maxMainLength = $Length - $endPart.Length
-    }
+	$password = Get-RandomCharFrom $Script:adjectives
+	$usedNouns = New-Object System.Collections.Generic.List[string]
+	while ($password.Length -lt $maxMainLength) {
+		$available = @($Script:nouns | Where-Object { -not $usedNouns.Contains($_) })
+		if ($available.Count -eq 0) { $available = $Script:nouns }
+		$noun = Get-RandomCharFrom $available
+		$usedNouns.Add($noun)
+		$password += $noun
+	}
 
-    # Generuj przymiotnik
-    $adj = Get-RandomCharFrom $adjectives
-    $adj = $adj.Substring(0,1).ToUpper() + $adj.Substring(1).ToLower()
-    $password = $adj
+	return $password.Substring(0, $maxMainLength) + $endPart
+}
 
-    # Dodawaj rzeczowniki aż do osiągnięcia maxMainLength
-    $usedNouns = @()
-    while ($password.Length -lt $maxMainLength) {
-        $noun = ($nouns | Where-Object { $usedNouns -notcontains $_ }) | Get-Random
-        $usedNouns += $noun
-        $password += $noun
-    }
+# Szacowanie siły hasła (entropia w bitach i ocena opisowa)
+function Get-HTPasswordStrength {
+	param ([AllowEmptyString()][AllowNull()][string]$Password)
 
-    # Skróć główną część jeśli trzeba i dodaj zakończenie
-    $main = $password.Substring(0, $maxMainLength)
-    return $main + $endPart
+	if (-not $Password) {
+		return [PSCustomObject]@{ Score = 0; Entropy = 0; Label = "Brak hasła" }
+	}
+
+	$pool = 0
+	if ($Password -cmatch '[a-z]') { $pool += 26 }
+	if ($Password -cmatch '[A-Z]') { $pool += 26 }
+	if ($Password -match '\d') { $pool += 10 }
+	if ($Password -match '[^a-zA-Z0-9]') { $pool += 32 }
+
+	$entropy = [Math]::Round($Password.Length * [Math]::Log([Math]::Max(2, $pool), 2), 1)
+	$score = if ($entropy -lt 40) { 1 } elseif ($entropy -lt 60) { 2 } elseif ($entropy -lt 80) { 3 } else { 4 }
+	$label = @("Brak hasła", "Słabe", "Średnie", "Silne", "Bardzo silne")[$score]
+
+	return [PSCustomObject]@{
+		Score   = $score
+		Entropy = $entropy
+		Label   = $label
+	}
 }

@@ -1,79 +1,36 @@
+﻿# Panel główny dla zakładki "Użytkownicy" (Microsoft 365 / Entra ID)
 
-# Panel główny dla zakładki "Użytkownicy"
-$panel_Users = New-Object System.Windows.Forms.Panel
-$panel_Users.Dock = 'Fill'
-
-# ComboBox z użytkownikami
-$combobox_UsersList = New-Object System.Windows.Forms.ComboBox
-$combobox_UsersList.Location = '10,10'
-$combobox_UsersList.Width = 660
-$combobox_UsersList.DropDownStyle = 'DropDownList'
-$combobox_UsersList.Items.Add('Lista niezaładowana - kliknij "Odśwież"')
-$combobox_UsersList.SelectedIndex = 0
-
-# RichTextBox z informacjami
-$richtextbox_UserDetails = New-Object System.Windows.Forms.RichTextBox
-$richtextbox_UserDetails.Location = '10,50'
-$richtextbox_UserDetails.Size = '660,600'
-$richtextbox_UserDetails.ReadOnly = $true
-
-# Panel boczny z przyciskami
-$panel_UserActions = New-Object System.Windows.Forms.FlowLayoutPanel
-$panel_UserActions.Location = '680,50'
-$panel_UserActions.Size = '190,700'
-$panel_UserActions.FlowDirection = 'TopDown'
-$panel_UserActions.WrapContents = $false
-$panel_UserActions.AutoScroll = $true
-
-function New-UserActionButton($text) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Size = '170,45'
-    $btn.Text = $text
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    return $btn
-}
-
-$buttons_UserActions = @{
-    Refresh        = New-UserActionButton "Odśwież"
-    ResetPassword  = New-UserActionButton "Reset hasła"
-    ToggleBlock    = New-UserActionButton "Zablokuj/Odblokuj"
-    ChangeLicense  = New-UserActionButton "Zmień licencję"
-    AddToGroup     = New-UserActionButton "Dodaj do grupy"
-    RemoveFromGroup= New-UserActionButton "Usuń z grupy"
-    ChangeMFA      = New-UserActionButton "Zmień MFA"
-    EditContact    = New-UserActionButton "Zmień dane kotnatkowe"
-    Mailbox        = New-UserActionButton "Skrzynka"
-    Devices        = New-UserActionButton "Urządzenia"
-}
-
-$panel_UserActions.Controls.AddRange(@(
-    $buttons_UserActions.Refresh,
-    $buttons_UserActions.ResetPassword,
-    $buttons_UserActions.ToggleBlock,
-    $buttons_UserActions.ChangeLicense,
-    $buttons_UserActions.AddToGroup,
-    $buttons_UserActions.RemoveFromGroup,
-    $buttons_UserActions.ChangeMFA,
-    $buttons_UserActions.EditContact,
-    $buttons_UserActions.Mailbox,
-    $buttons_UserActions.Devices
-))
-
-
-# Dodaj wszystkie kontrolki do panelu głównego
-$panel_Users.Controls.AddRange(@(
-    $combobox_UsersList,
-    $richtextbox_UserDetails,
-    $panel_UserActions
-))
+$view_Users = New-HTSectionView -SearchPlaceholder "Szukaj po nazwie, UPN, dziale, licencji... (Esc - wyczyść)" -Columns @(
+    @{ Text = "Nazwa"; Property = "DisplayName"; Width = 190 }
+    @{ Text = "UPN"; Property = "UserPrincipalName"; Width = 230 }
+    @{ Text = "Włączone"; Property = "AccountEnabled"; Width = 70 }
+    @{ Text = "Dział"; Property = "Department"; Width = 120 }
+    @{ Text = "Stanowisko"; Property = "JobTitle"; Width = 120 }
+    @{ Text = "Licencje"; Property = "Licenses"; Width = 200 }
+    @{ Text = "Typ"; Property = "UserType"; Width = 70 }
+) -Actions @(
+    @{ Group = "Konto" }
+    @{ Key = "ResetPassword"; Text = "Reset hasła"; Icon = "Password Reset.png"; ToolTip = "Ustawia nowe hasło (z generatora lub własne)" }
+    @{ Key = "ToggleBlock"; Text = "Zablokuj / odblokuj"; Icon = "Denied.png"; ToolTip = "Blokuje lub odblokowuje logowanie" }
+    @{ Key = "RevokeSessions"; Text = "Unieważnij sesje"; Icon = "Restart.png"; ToolTip = "Wylogowuje użytkownika ze wszystkich sesji" }
+    @{ Key = "ChangeMFA"; Text = "Metody MFA"; Icon = "Microsoft Authenticator.png"; ToolTip = "Przegląd, usuwanie i dodawanie metod uwierzytelniania, Temporary Access Pass" }
+    @{ Key = "EditContact"; Text = "Dane kontaktowe"; Icon = "Info.png"; ToolTip = "Stanowisko, dział, telefony, adres" }
+    @{ Group = "Dostęp" }
+    @{ Key = "ChangeLicense"; Text = "Licencje"; Icon = "Software License.png"; ToolTip = "Przypisz lub usuń licencje" }
+    @{ Key = "AddToGroup"; Text = "Dodaj do grupy"; Icon = "Add Male User Group.png" }
+    @{ Key = "RemoveFromGroup"; Text = "Usuń z grupy"; Icon = "Minus.png" }
+    @{ Group = "Powiązane" }
+    @{ Key = "Mailbox"; Text = "Skrzynka"; Icon = "Email.png"; ToolTip = "Przejdź do skrzynki użytkownika (Exchange)" }
+    @{ Key = "Devices"; Text = "Urządzenia"; Icon = "Multiple Devices.png"; ToolTip = "Urządzenia Intune i Entra ID użytkownika" }
+    @{ Group = "Inne" }
+    @{ Key = "NewUser"; Text = "Nowy użytkownik"; Icon = "add.png" }
+    @{ Key = "Export"; Text = "Eksport listy (CSV)"; Icon = "CSV.png" }
+)
 
 # Dołącz panel do zakładki "Użytkownicy"
-$HT_UI.Tabs["Użytkownicy"].Controls.Add($panel_Users)
+$HT_UI.Tabs["Użytkownicy"].Controls.Clear()
+$HT_UI.Tabs["Użytkownicy"].Controls.Add($view_Users.Panel)
 
 # Eksport referencji do globalnego słownika
-$global:HT_UI.UsersTab = [ordered]@{
-    Panel      = $panel_Users
-    ComboBox   = $combobox_UsersList
-    DetailsBox = $richtextbox_UserDetails
-    Actions    = $buttons_UserActions
-}
+$global:HT_UI.UsersTab = $view_Users
+$HT_UI.RefreshButtons["Użytkownicy"] = $view_Users.RefreshButton
