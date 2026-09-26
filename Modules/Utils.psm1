@@ -1,93 +1,99 @@
+﻿# Funkcje pomocnicze aplikacji Helpdesk Tools: logowanie, powiadomienia, dialogi, eksport, walidacja JSON
+
+# Historia logów przechowywana w module (dostęp przez Get-HTLogHistory / Clear-HTLogHistory)
+$script:LogHistory = [System.Collections.Generic.List[object]]::new()
+# Lista funkcji (scriptblocków) wywoływanych po każdym wpisie logu (np. odświeżenie zakładki "Logi")
+$script:LogSinks = [System.Collections.Generic.List[scriptblock]]::new()
+# Ikona w zasobniku używana do powiadomień (tworzona leniwie)
+$script:NotifyIcon = $null
+# Blokada ponownego wejścia w podświetlanie JSON
+$script:IsHighlightingJson = $false
+
 # Funkcja do logowania i zarządzania historią logów w aplikacji Helpdesk Tools
 function Write-Log {
+    [CmdletBinding()]
     param (
+        [Parameter(Position = 0)]
+        [AllowEmptyString()]
         [string]$Message,
-        [ValidateSet("Info", "Warn", "Error","Info&Notification", "Error&Notification", "Warning&Notification")]
+
+        [Parameter(Position = 1)]
+        [ValidateSet("Info", "Warn", "Warning", "Error", "Info&Notification", "Warn&Notification", "Warning&Notification", "Error&Notification")]
         [string]$Type = "Info"
     )
 
-    if (-not $global:LogHistory) {
-        $global:LogHistory = New-Object System.Collections.Generic.List[object]
+    $level = switch -Wildcard ($Type) {
+        "Info*" { "Info" }
+        "Warn*" { "Warn" }
+        "Error*" { "Error" }
+    }
+    $icon = switch ($level) {
+        "Info" { "ℹ️" }
+        "Warn" { "⚠️" }
+        "Error" { "❌" }
     }
 
-    switch ($Type) {
-        "Info" {
-            $Message = "ℹ️ $Message"
-            Add-LogToFile -Message $Message -Type "Info"
-        }
-        "Info&Notification" {
-            $Message = "ℹ️ $Message"
-            Show-Toast -Message $Message -Title "Informacja" -NotificationType "Info"
-            Add-LogToFile -Message $Message -Type "Info"
-        }
-        "Warn" {
-            $Message = "⚠️ $Message"
-            Add-LogToFile -Message $Message -Type "Warn"
-        }
-        "Warning&Notification" {
-            $Message = "⚠️ $Message"
-            Show-Toast -Message $Message -Title "Ostrzeżenie" -NotificationType "Warning"
-            Add-LogToFile -Message $Message -Type "Warn"
-        }
-        "Error" {
-            $Message = "❌ $Message"
-            Add-LogToFile -Message $Message -Type "Error"
-        }
-        "Error&Notification" {
-            $Message = "❌ $Message"
-            Show-Toast -Message $Message -Title "Błąd" -NotificationType "Error"
-            Add-LogToFile -Message $Message -Type "Error"
-        }
-        default {
-            $Message = "[UNKNOWN] $Message"
-        }
+    $entry = [PSCustomObject]@{
+        Time    = Get-Date
+        Type    = $level
+        Message = "$icon $Message"
     }
 
-    $logEntry = [PSCustomObject]@{
-        Time    = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        Type    = $Type
-        Message = $Message
+    $script:LogHistory.Add($entry)
+    Add-LogToFile -Message $entry.Message -Type $level
+
+    if ($Type -like "*&Notification") {
+        $title = switch ($level) {
+            "Info" { "Informacja" }
+            "Warn" { "Ostrzeżenie" }
+            "Error" { "Błąd" }
+        }
+        $notificationType = switch ($level) {
+            "Info" { "Info" }
+            "Warn" { "Warning" }
+            "Error" { "Error" }
+        }
+        Show-Toast -Message $Message -Title $title -NotificationType $notificationType
     }
 
-    $global:LogHistory.Add($logEntry)
-    Update-LogView
+    foreach ($sink in @($script:LogSinks)) {
+        try { & $sink $entry | Out-Null } catch { Write-Verbose "Błąd odbiorcy logów: $_" }
+    }
 }
 
-# Funkcja do aktualizacji widoku logów w GUI
-function Update-LogView {
-    # Sprawdź czy kontrolki są dostępne
-    if (-not $HT_UI.LogsTab.FilterBox -or -not $HT_UI.LogsTab.FilterType -or -not $HT_UI.LogsTab.TextBox) {
-        return
-    }
+# Rejestracja funkcji wywoływanej po każdym wpisie logu (np. aktualizacja GUI)
+function Register-HTLogSink {
+    param ([Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    $script:LogSinks.Add($ScriptBlock)
+}
 
-    $filterText = $HT_UI.LogsTab.FilterBox.Text
-    $selectedType = $HT_UI.LogsTab.FilterType.SelectedItem
+# Zwraca kopię historii logów
+function Get-HTLogHistory {
+    return @($script:LogHistory)
+}
 
-    # Filtrowanie danych
-    $filtered = $global:LogHistory | Where-Object {
-        ($_.Message -like "*$filterText*") -and
-        ($selectedType -eq "Wszystkie" -or $_.Type -eq $selectedType)
-    }
+# Czyści historię logów w pamięci (plik logu pozostaje bez zmian)
+function Clear-HTLogHistory {
+    $script:LogHistory.Clear()
+}
 
-    $textbox = $HT_UI.LogsTab.TextBox
+# Formatowanie pojedynczego wpisu logu
+function Format-HTLogEntry {
+    param ([Parameter(Mandatory)][object]$Entry)
+    $time = if ($Entry.Time -is [datetime]) { $Entry.Time.ToString("yyyy-MM-dd HH:mm:ss") } else { "$($Entry.Time)" }
+    return "$time [$($Entry.Type)] $($Entry.Message)"
+}
 
-    # Aktualizacja RichTextBoxa
-    if ($textbox.InvokeRequired) {
-        $textbox.Invoke([Action] {
-                $textbox.Clear()
-                foreach ($entry in $filtered) {
-                    $textbox.AppendText("$($entry.Time) [$($entry.Type)] $($entry.Message)`r`n")
-                }
-                $textbox.ScrollToCaret()
-            })
-    }
-    else {
-        $textbox.Clear()
-        foreach ($entry in $filtered) {
-            $textbox.AppendText("$($entry.Time) [$($entry.Type)] $($entry.Message)`r`n")
-        }
-        $textbox.ScrollToCaret()
-    }
+# Sprawdza, czy wpis logu pasuje do filtra tekstowego i typu
+function Test-HTLogEntryMatch {
+    param (
+        [Parameter(Mandatory)][object]$Entry,
+        [string]$FilterText,
+        [string]$FilterType = "Wszystkie"
+    )
+    if ($FilterType -and $FilterType -ne "Wszystkie" -and $Entry.Type -ne $FilterType) { return $false }
+    if ($FilterText -and $Entry.Message.IndexOf($FilterText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
+    return $true
 }
 
 # Funkcja do wyświetlania powiadomień w systemie
@@ -96,68 +102,51 @@ function Show-Toast {
         [Parameter(Mandatory = $true)]
         [string]$Message,
         [string]$Title = "Helpdesk Tools",
-        # Domyślny tytuł zmieniony na nazwę aplikacji
-        [int]$Timeout = 2000,
-        # Domyślny czas wyświetlania w milisekundach
+        [int]$Timeout = 3000,
         [ValidateSet("Info", "Warning", "Error")]
-        [string]$NotificationType = "Info" # Typ komunikatu dla Write-ToTextBox
+        [string]$NotificationType = "Info"
     )
-	
+
+    if ($Global:ShowNotifications -eq $false) { return }
+
     try {
-        # Ładowanie wymaganych assembly
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         Add-Type -AssemblyName System.Drawing -ErrorAction Stop
-		
-        # Tworzenie obiektu NotifyIcon
-        $notify = New-Object System.Windows.Forms.NotifyIcon
-		
-        # Pobieranie ikony z bieżącego procesu lub domyślnej ikony systemowej
-        try {
-            $path = (Get-Process -Id $pid).Path
-            if ($path -and (Test-Path $path)) {
-                $notify.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
+
+        if (-not $script:NotifyIcon) {
+            $script:NotifyIcon = New-Object System.Windows.Forms.NotifyIcon
+            $script:NotifyIcon.Text = "Helpdesk Tools"
+            if ($Global:AppIconPath -and (Test-Path $Global:AppIconPath)) {
+                $script:NotifyIcon.Icon = New-Object System.Drawing.Icon($Global:AppIconPath)
             }
             else {
-                $notify.Icon = [System.Drawing.SystemIcons]::Information
+                $script:NotifyIcon.Icon = [System.Drawing.SystemIcons]::Information
             }
         }
-        catch {
-            $notify.Icon = [System.Drawing.SystemIcons]::Information
+
+        $tipIcon = switch ($NotificationType) {
+            "Info" { [System.Windows.Forms.ToolTipIcon]::Info }
+            "Warning" { [System.Windows.Forms.ToolTipIcon]::Warning }
+            "Error" { [System.Windows.Forms.ToolTipIcon]::Error }
         }
-		
-        # Konfiguracja powiadomienia
-        $notify.BalloonTipTitle = $Title
-        $notify.BalloonTipText = $Message
-        $notify.Visible = $true
-		
-        # Wyświetlenie powiadomienia
-        $notify.ShowBalloonTip($Timeout)		
-		
-        # Czyszczenie
-        $notify.Visible = $false
-        $notify.Dispose()
+
+        # Balloon ma limit długości tekstu
+        if ($Message.Length -gt 250) { $Message = $Message.Substring(0, 247) + "..." }
+
+        $script:NotifyIcon.Visible = $true
+        $script:NotifyIcon.ShowBalloonTip($Timeout, $Title, $Message, $tipIcon)
     }
     catch {
-        Write-ToTextBox "Błąd podczas wyświetlania powiadomienia: $_"
+        Write-Verbose "Błąd podczas wyświetlania powiadomienia: $_"
     }
 }
 
-# Funkcja do sprawdzania, czy moduł jest zainstalowany
-function Test-InstalledModule {
-    param (
-        [string]$ModuleName
-    )
-    return @(Get-Module -ListAvailable -Name $ModuleName).Count -gt 0
-}
-
-# Funkcja do ustawiania stanu wszystkich przycisków w GUI
-function Set-ButtonsEnabled {
-    param (
-        [bool]$Enabled
-    )
-
-    $HT_UI.Buttons.Values | ForEach-Object {
-        $_.Enabled = $Enabled
+# Zwalnia ikonę powiadomień (wywoływane przy zamykaniu aplikacji)
+function Remove-HTNotifyIcon {
+    if ($script:NotifyIcon) {
+        $script:NotifyIcon.Visible = $false
+        $script:NotifyIcon.Dispose()
+        $script:NotifyIcon = $null
     }
 }
 
@@ -184,35 +173,61 @@ function Show-Dialog {
         "Question" { [System.Windows.Forms.MessageBoxIcon]::Question }
     }
 
+    $owner = if ($Global:HT_UI -and $Global:HT_UI.Form -and $Global:HT_UI.Form.Visible) { $Global:HT_UI.Form } else { $null }
+    if ($owner) {
+        return [System.Windows.Forms.MessageBox]::Show($owner, $Message, $Title, $buttonEnum, $iconEnum)
+    }
     return [System.Windows.Forms.MessageBox]::Show($Message, $Title, $buttonEnum, $iconEnum)
+}
+
+# Pytanie Tak/Nie zwracające wartość logiczną
+function Show-HTConfirm {
+    param (
+        [Parameter(Mandatory)][string]$Message,
+        [string]$Title = "Potwierdzenie",
+        [switch]$Warning
+    )
+    $type = if ($Warning) { "Warning" } else { "Question" }
+    return ((Show-Dialog -Message $Message -Title $Title -Buttons "YesNo" -Type $type) -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+
+# Domyślny katalog eksportu
+function Get-HTExportDirectory {
+    $path = if ($Global:ExportPath) { $Global:ExportPath }
+    elseif ($Global:ConfigDir) { Join-Path $Global:ConfigDir "Exports" }
+    else { [Environment]::GetFolderPath("MyDocuments") }
+
+    if (-not (Test-Path $path)) {
+        try { New-Item -ItemType Directory -Path $path -Force | Out-Null } catch { $path = [Environment]::GetFolderPath("MyDocuments") }
+    }
+    return $path
 }
 
 # Funkcja do zapisywania danych do pliku
 function Save-ContentToFile {
     param (
         [Parameter(Mandatory)]
-        [array]$Data,
+        [AllowEmptyCollection()]
+        [object[]]$Data,
 
         [Parameter(Mandatory)]
         [ValidateSet("txt", "csv", "json")]
         [string]$Format,
 
-        [string]$Path, # <-- opcjonalna ścieżka
+        [string]$Path,
 
         [string]$Title = "Zapisz plik",
         [string]$DefaultName = "output",
-        [string]$DefaultPath = "$PSScriptRoot\Exports"
+        [string]$DefaultPath
     )
 
-    if (-not $Data -or !$Data.Count) {
+    if (-not $Data -or $Data.Count -eq 0) {
         Write-Log -Message "Brak danych do zapisania!" -Type "Warn"
-        return
+        return $null
     }
 
     if (-not $Path) {
-        if (-not (Test-Path $DefaultPath)) {
-            New-Item -ItemType Directory -Path $DefaultPath | Out-Null
-        }
+        if (-not $DefaultPath) { $DefaultPath = Get-HTExportDirectory }
 
         $dialog = New-Object System.Windows.Forms.SaveFileDialog
         $dialog.Title = $Title
@@ -224,52 +239,87 @@ function Save-ContentToFile {
         $dialog.InitialDirectory = $DefaultPath
         $dialog.FileName = "$($DefaultName)_$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss').$Format"
 
-        if ($dialog.ShowDialog() -ne "OK") {
-            Write-Log -Message "Zapis anulowany przez użytkownika." -Type "Warn"
-            return
+        try {
+            if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+                Write-Log -Message "Zapis anulowany przez użytkownika." -Type "Warn"
+                return $null
+            }
+            $Path = $dialog.FileName
         }
-
-        $Path = $dialog.FileName
+        finally {
+            $dialog.Dispose()
+        }
     }
 
     try {
         switch ($Format) {
-            "txt" { $Data | Out-File -FilePath $Path -Encoding UTF8 }
-            "csv" { $Data | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 }
-            "json" { $Data | ConvertTo-Json -Depth 5 | Out-File -FilePath $Path -Encoding UTF8 }
+            "txt" { $Data | Out-File -FilePath $Path -Encoding utf8 }
+            "csv" { $Data | Export-Csv -Path $Path -NoTypeInformation -Encoding utf8BOM -Delimiter ";" }
+            "json" { ConvertTo-Json -InputObject @($Data) -Depth 6 | Out-File -FilePath $Path -Encoding utf8 }
         }
-        Write-Log -Message "Zapisano dane do pliku: $Path" -Type "Info"
+        Write-Log -Message "Zapisano dane do pliku: $Path" -Type "Info&Notification"
+        return $Path
     }
     catch {
         Write-Log -Message "Błąd zapisu: $($_.Exception.Message)" -Type "Error&Notification"
+        return $null
     }
 }
 
-# Funkcja dopisywania logów do pliku
+# Funkcja dopisywania logów do pliku (z prostą rotacją)
 function Add-LogToFile {
     param (
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [ValidateSet("Info", "Warn", "Error")]
         [string]$Type = "Info",
 
-        [string]$Path = "$Global:ConfigDir\logs.txt"
+        [string]$Path
     )
 
-    if (-not (Test-Path $Path)) {
-        try {
-            New-Item -ItemType Directory -Path "$Global:ConfigDir" -ErrorAction SilentlyContinue | Out-Null
-            New-Item -ItemType File -Path $Path | Out-Null
-            Write-Log -Message "Utworzono nowy plik logów: $Path" -Type "Info"
-        }
-        catch {
-            Write-Log -Message "Błąd przy tworzeniu pliku logów: $($_.Exception.Message)" -Type "Error&Notification"
-            return
-        }
+    if (-not $Path) {
+        if (-not $Global:ConfigDir) { return }
+        $Path = Join-Path $Global:ConfigDir "logs.txt"
     }
-    $logEntry = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Type] $Message`r`n"
-    Add-Content -Path $Path -Value $logEntry
+
+    try {
+        $dir = Split-Path -Path $Path -Parent
+        if ($dir -and -not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+
+        $maxSizeMB = if ($Global:LogFileMaxSizeMB -gt 0) { [double]$Global:LogFileMaxSizeMB } else { 5 }
+        if ((Test-Path $Path) -and ((Get-Item $Path).Length -gt ($maxSizeMB * 1MB))) {
+            $archive = Join-Path $dir ("logs_{0}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+            Move-Item -Path $Path -Destination $archive -Force
+        }
+
+        $logEntry = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Type] $Message"
+        Add-Content -Path $Path -Value $logEntry -Encoding utf8
+    }
+    catch {
+        Write-Verbose "Nie udało się zapisać logu do pliku: $($_.Exception.Message)"
+    }
+}
+
+# Walidacja wartości wprowadzanej w polach tekstowych
+function Test-HTInputValue {
+    param (
+        [AllowEmptyString()][string]$Value,
+        [ValidateSet("Text", "Email", "Phone", "Url", "Upn", "Guid")]
+        [string]$ValidationType = "Text"
+    )
+
+    switch ($ValidationType) {
+        "Email" { return $Value -match '^[\w\.\+\-'']+@[\w\.-]+\.\w{2,}$' }
+        "Upn" { return $Value -match '^[\w\.\+\-'']+@[\w\.-]+\.\w{2,}$' }
+        "Phone" { return $Value -match '^\+?[0-9\s\-\(\)]{9,}$' }
+        "Url" { return $Value -match '^https?://[\w\-\.]+\.\w{2,}(/.*)?$' }
+        "Guid" { return $Value -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' }
+        default { return -not [string]::IsNullOrWhiteSpace($Value) }
+    }
 }
 
 # Funkcja do wyświetlania okna wejściowego z polem tekstowym
@@ -278,331 +328,194 @@ function Show-InputBox {
         [Parameter(Mandatory)]
         [string]$Prompt,
 
-        [string]$Title = "Input",
+        [string]$Title = "Wprowadź wartość",
 
-        [ValidateSet("Text", "Email", "Phone", "Url")]
-        [string]$ValidationType = "Text"
+        [ValidateSet("Text", "Email", "Phone", "Url", "Upn", "Guid")]
+        [string]$ValidationType = "Text",
+
+        [string]$DefaultText = "",
+
+        # Pozwala zatwierdzić puste pole (np. pola opcjonalne)
+        [switch]$AllowEmpty,
+
+        # Ukrywa wpisywane znaki
+        [switch]$Password
     )
 
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-
-    $form = New-Object Windows.Forms.Form
+    $form = New-Object System.Windows.Forms.Form
     $form.Text = $Title
-    $form.Size = '500,180'
+    $form.ClientSize = New-Object System.Drawing.Size(480, 150)
     $form.StartPosition = 'CenterParent'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MinimizeBox = $false
     $form.MaximizeBox = $false
-    $form.TopMost = $true
+    $form.ShowInTaskbar = $false
+    $form.Font = New-Object System.Drawing.Font("Segoe UI", 9.75)
+    if (-not ($Global:HT_UI -and $Global:HT_UI.Form -and $Global:HT_UI.Form.Visible)) {
+        $form.StartPosition = 'CenterScreen'
+        $form.TopMost = $true
+    }
 
-    $label = New-Object Windows.Forms.Label
+    $label = New-Object System.Windows.Forms.Label
     $label.Text = $Prompt
-    $label.Location = '10,10'
-    $label.AutoSize = $true
+    $label.Location = New-Object System.Drawing.Point(12, 12)
+    $label.Size = New-Object System.Drawing.Size(456, 38)
 
-    $textbox = New-Object Windows.Forms.TextBox
-    $textbox.Location = '10,40'
-    $textbox.Width = 460
+    $textbox = New-Object System.Windows.Forms.TextBox
+    $textbox.Location = New-Object System.Drawing.Point(12, 52)
+    $textbox.Width = 456
+    $textbox.Text = $DefaultText
+    $textbox.UseSystemPasswordChar = [bool]$Password
 
-    $errorLabel = New-Object Windows.Forms.Label
-    $errorLabel.ForeColor = 'Red'
-    $errorLabel.Location = '10,65'
-    $errorLabel.Size = '460,20'
-    $errorLabel.Text = ''
+    $errorLabel = New-Object System.Windows.Forms.Label
+    $errorLabel.ForeColor = [System.Drawing.Color]::Firebrick
+    $errorLabel.Location = New-Object System.Drawing.Point(12, 80)
+    $errorLabel.Size = New-Object System.Drawing.Size(456, 20)
 
-    $ok = New-Object Windows.Forms.Button
+    $ok = New-Object System.Windows.Forms.Button
     $ok.Text = 'OK'
-    $ok.Location = '280,95'
-    $ok.Size = '90,30'
-    $ok.Enabled = $true
+    $ok.Location = New-Object System.Drawing.Point(282, 108)
+    $ok.Size = New-Object System.Drawing.Size(90, 30)
 
-    $cancel = New-Object Windows.Forms.Button
+    $cancel = New-Object System.Windows.Forms.Button
     $cancel.Text = 'Anuluj'
-    $cancel.Location = '380,95'
-    $cancel.Size = '90,30'
+    $cancel.Location = New-Object System.Drawing.Point(378, 108)
+    $cancel.Size = New-Object System.Drawing.Size(90, 30)
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $form.CancelButton = $cancel
 
-    # Funkcja walidująca
-    $validate = {
-        $value = $textbox.Text
-        $isValid = $true
-        $ValidationError = ""
-
-        switch ($ValidationType) {
-            "Email" {
-                if ($value -notmatch '^[\w\.-]+@[\w\.-]+\.\w+$') {
-                    $isValid = $false
-                    $ValidationError = "Nieprawidłowy adres e-mail."
-                }
-            }
-            "Phone" {
-                if ($value -notmatch '^\+?[0-9\s\-]{9,}$') {
-                    $isValid = $false
-                    $ValidationError = "Nieprawidłowy numer telefonu."
-                }
-            }
-            "Url" {
-                if ($value -notmatch '^https?://[\w\-\.]+\.\w{2,}.*$') {
-                    $isValid = $false
-                    $ValidationError = "Nieprawidłowy adres URL."
-                }
-            }
-        }
-
-        $ok.Enabled = $isValid
-        $errorLabel.Text = $ValidationError
+    $messages = @{
+        Text  = "Pole nie może być puste."
+        Email = "Nieprawidłowy adres e-mail."
+        Upn   = "Nieprawidłowa nazwa UPN (np. jan.kowalski@firma.pl)."
+        Phone = "Nieprawidłowy numer telefonu."
+        Url   = "Nieprawidłowy adres URL (https://...)."
+        Guid  = "Nieprawidłowy identyfikator GUID."
     }
 
-    $textbox.add_TextChanged($validate)
+    $validate = {
+        $value = $textbox.Text.Trim()
+        $isValid = if ($AllowEmpty -and -not $value) { $true } else { Test-HTInputValue -Value $value -ValidationType $ValidationType }
+        $ok.Enabled = $isValid
+        $errorLabel.Text = if ($isValid -or -not $value) { "" } else { $messages[$ValidationType] }
+    }
+
+    $textbox.Add_TextChanged($validate)
     $ok.Add_Click({
             $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
             $form.Close()
         })
-
-    $textbox.add_KeyDown({
-            if ($_.KeyCode -eq 'Enter') {
-                $validate.Invoke()
-                if ($ok.Enabled) {
-                    $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
-                    $form.Close()
-                }
-            }
-        })
+    $form.AcceptButton = $ok
 
     $form.Controls.AddRange(@($label, $textbox, $errorLabel, $ok, $cancel))
+    & $validate
 
-    if ($form.ShowDialog() -eq 'OK') {
-        return $textbox.Text
-    }
-
-    return $null
-}
-
-# Funkcja do ustawiania stanu przycisków w GUI
-function Set-ButtonsState {
-    param (
-        [Parameter(Mandatory = $true)]
-        [ValidateSet("Lock", "Unlock")]
-        [string]$Action,
-
-        [Parameter(Mandatory = $false)]
-        [string]$PanelName = $HT_UI.TabControl.SelectedTab.Text,
-
-        [Parameter(Mandatory = $false)]
-        [bool]$LockMainButtons = $true
-    )
-
-    if ($LockMainButtons -eq $true) {
-        if ($HT_UI.Buttons) {
-            foreach ($btn in $HT_UI.Buttons.Values) {
-                if ($btn -is [System.Windows.Forms.Button]) {
-                    $btn.Enabled = ($Action -eq "Unlock")
-                }
-            }
+    try {
+        if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            return $textbox.Text.Trim()
         }
+        return $null
     }
-
-    if (-not $HT_UI.Tabs.Contains($PanelName)) {
-        Write-Log "Panel '$PanelName' nie istnieje w HT_UI.Tabs." "Error"
-        return
+    finally {
+        $form.Dispose()
     }
-
-    $panel = $HT_UI.Tabs[$PanelName]
-
-    if (-not $panel.Controls) {
-        Write-Log "Panel '$PanelName' nie zawiera kontrolek." "Error"
-        return
-    }
-
-    function Set-StateRecursive {
-        param (
-            [System.Windows.Forms.Control]$Parent
-        )
-
-        foreach ($ctrl in $Parent.Controls) {
-            if ($ctrl -is [System.Windows.Forms.Button]) {
-                $ctrl.Enabled = ($Action -eq "Unlock")
-            }
-            if ($ctrl.HasChildren) {
-                Set-StateRecursive -Parent $ctrl
-            }
-        }
-    }
-
-    Set-StateRecursive -Parent $panel
 }
 
 # Funkcja do walidacji i podświetlania składni JSON w RichTextBox
 function Test-AndHighlightJson {
     param (
         [Parameter(Mandatory)] [System.Windows.Forms.RichTextBox]$RichTextBox,
-        [Parameter(Mandatory=$false)] [System.Windows.Forms.ToolTip]$ErrorToolTip,
-        [Parameter(Mandatory=$false)] [switch]$ShowDialogOnError
+        [Parameter(Mandatory = $false)] [System.Windows.Forms.ToolTip]$ErrorToolTip,
+        [Parameter(Mandatory = $false)] [switch]$ShowDialogOnError,
+        # Nie zapisuje błędów parsowania do logu (np. podczas pisania)
+        [Parameter(Mandatory = $false)] [switch]$Quiet
     )
 
-    $RichTextBox.SuspendLayout()
+    if ($script:IsHighlightingJson) { return $true }
+    $script:IsHighlightingJson = $true
 
-    # Pamiętaj pozycję kursora
+    $RichTextBox.SuspendLayout()
     $originalSelectionStart = $RichTextBox.SelectionStart
     $originalSelectionLength = $RichTextBox.SelectionLength
+
+    $regularFont = New-Object System.Drawing.Font($RichTextBox.Font, [System.Drawing.FontStyle]::Regular)
+    $boldFont = New-Object System.Drawing.Font($RichTextBox.Font, [System.Drawing.FontStyle]::Bold)
 
     try {
         # Reset stylów
         $RichTextBox.SelectAll()
-        $RichTextBox.SelectionBackColor = [System.Drawing.Color]::White
+        $RichTextBox.SelectionBackColor = $RichTextBox.BackColor
         $RichTextBox.SelectionColor = [System.Drawing.Color]::Black
-        $RichTextBox.SelectionFont = New-Object System.Drawing.Font(
-            $RichTextBox.Font.FontFamily,
-            $RichTextBox.Font.Size,
-            [System.Drawing.FontStyle]::Regular
+        $RichTextBox.SelectionFont = $regularFont
+
+        $text = $RichTextBox.Text
+        if ([string]::IsNullOrWhiteSpace($text)) { throw "Pusta konfiguracja." }
+
+        $null = $text | ConvertFrom-Json -ErrorAction Stop
+
+        # Kolejność ma znaczenie - klucze nadpisują dopasowania wartości tekstowych
+        $rules = @(
+            @{ Pattern = '[{}\[\]]'; Group = 0; Color = [System.Drawing.Color]::Navy; Bold = $false }
+            @{ Pattern = ':\s*(-?\d+(\.\d+)?)'; Group = 1; Color = [System.Drawing.Color]::DarkRed; Bold = $false }
+            @{ Pattern = '\b(true|false)\b'; Group = 1; Color = [System.Drawing.Color]::Purple; Bold = $false }
+            @{ Pattern = '\bnull\b'; Group = 0; Color = [System.Drawing.Color]::Gray; Bold = $false }
+            @{ Pattern = '"(?:[^"\\]|\\.)*"'; Group = 0; Color = [System.Drawing.Color]::DarkGreen; Bold = $false }
+            @{ Pattern = '("(?:[^"\\]|\\.)*")\s*:'; Group = 1; Color = [System.Drawing.Color]::DarkBlue; Bold = $true }
         )
 
-        # === 1) Prosty pre-check ===
-        $text = $RichTextBox.Text
-
-        $braceCount = ($text -split '[{}]').Length - 1
-        $bracketCount = ($text -split '[\[\]]').Length - 1
-        $quoteCount = ($text -split '"').Length - 1
-
-        $preCheckOk = $true
-        $errorMsg = ""
-
-        if ($braceCount % 2 -ne 0) {
-            $preCheckOk = $false
-            $errorMsg = "Niezamknięta klamra { }"
-        } elseif ($bracketCount % 2 -ne 0) {
-            $preCheckOk = $false
-            $errorMsg = "Niezamknięty nawias [ ]"
-        } elseif ($quoteCount % 2 -ne 0) {
-            $preCheckOk = $false
-            $errorMsg = "Nieparzysta liczba cudzysłowów"
-        }
-
-        if (-not $preCheckOk) {
-            # Podświetl wszystko na LightYellow
-            $RichTextBox.SelectAll()
-            $RichTextBox.SelectionBackColor = [System.Drawing.Color]::LightYellow
-
-            if ($ShowDialogOnError) {
-                Show-Dialog -Message $errorMsg -Type "Error" -Title "Pre-check JSON"
+        foreach ($rule in $rules) {
+            foreach ($match in [regex]::Matches($text, $rule.Pattern)) {
+                $group = $match.Groups[$rule.Group]
+                if ($group.Length -le 0) { continue }
+                $RichTextBox.Select($group.Index, $group.Length)
+                $RichTextBox.SelectionColor = $rule.Color
+                $RichTextBox.SelectionFont = if ($rule.Bold) { $boldFont } else { $regularFont }
             }
-            if ($ErrorToolTip) {
-                $ErrorToolTip.SetToolTip($RichTextBox, $errorMsg)
-            }
-            Write-Log -Message "Pre-check błąd: $errorMsg" -Type "Warning"
-            return $false
         }
 
-        # === 2) Głębsze sprawdzenie ConvertFrom-Json ===
-        $parsed = $text | ConvertFrom-Json
-
-        # Syntax highlighting
-        $patterns = @{
-            Key         = '"([^"]*)"\s*:'
-            StringValue = ':\s*"([^"]*)"'
-            Number      = ':\s*([-]?\d+(\.\d+)?)'
-            Boolean     = ':\s*(true|false)\b'
-            Null        = ':\s*(null)\b'
-            Brackets    = '[{}[\]]'
-            Comma       = ','
-        }
-        $colors = @{
-            Key         = [System.Drawing.Color]::DarkBlue
-            StringValue = [System.Drawing.Color]::DarkGreen
-            Number      = [System.Drawing.Color]::DarkRed
-            Boolean     = [System.Drawing.Color]::Purple
-            Null        = [System.Drawing.Color]::Gray
-            Brackets    = [System.Drawing.Color]::Navy
-            Comma       = [System.Drawing.Color]::DarkGray
-        }
-
-        $lines = $RichTextBox.Lines
-        $currentIndex = 0
-
-        for ($lineNumber = 0; $lineNumber -lt $lines.Length; $lineNumber++) {
-            $line = $lines[$lineNumber]
-            $startIndex = $currentIndex
-
-            foreach ($type in $patterns.Keys) {
-                [regex]::Matches($line, $patterns[$type]) | ForEach-Object {
-                    $offset = $startIndex + $_.Index
-                    $length = $_.Length
-
-                    if ($type -in @('Key', 'StringValue')) {
-                        $offset += $_.Groups[1].Index - $_.Index
-                        $length = $_.Groups[1].Length
-                    }
-
-                    if ($length -gt 0) {
-                        $RichTextBox.Select($offset, $length)
-                        $RichTextBox.SelectionColor = $colors[$type]
-                        if ($type -eq 'Key') {
-                            $RichTextBox.SelectionFont = New-Object System.Drawing.Font(
-                                $RichTextBox.Font.FontFamily,
-                                $RichTextBox.Font.Size,
-                                [System.Drawing.FontStyle]::Bold
-                            )
-                        } else {
-                            $RichTextBox.SelectionFont = New-Object System.Drawing.Font(
-                                $RichTextBox.Font.FontFamily,
-                                $RichTextBox.Font.Size,
-                                [System.Drawing.FontStyle]::Regular
-                            )
-                        }
-                    }
-                }
-            }
-
-            $currentIndex += $line.Length + 1
-        }
-
+        if ($ErrorToolTip) { $ErrorToolTip.SetToolTip($RichTextBox, "") }
         return $true
-        }
+    }
     catch {
         $errorMsg = $_.Exception.Message
-
         $lineNumber = -1
-        $position = -1
 
         if ($errorMsg -match "line (\d+), position (\d+)") {
             $lineNumber = [int]$matches[1] - 1
-            $position = [int]$matches[2] - 1
-
-            # Sprytne przesunięcie TYLKO gdy błąd parsera to brak separatora lub koniec
-            if ($errorMsg -match "Expected" -or $errorMsg -match "Unexpected end") {
-                if ($lineNumber -gt 0) { $lineNumber-- }
-            }
         }
 
         if ($lineNumber -ge 0 -and $lineNumber -lt $RichTextBox.Lines.Length) {
             $startIndex = $RichTextBox.GetFirstCharIndexFromLine($lineNumber)
-            $lineText = $RichTextBox.Lines[$lineNumber]
-            $length = $lineText.Length
-            $RichTextBox.Select($startIndex, $length)
-            $RichTextBox.SelectionBackColor = [System.Drawing.Color]::LightPink
-        } else {
-            $RichTextBox.SelectAll()
-            $RichTextBox.SelectionBackColor = [System.Drawing.Color]::LightPink
+            $RichTextBox.Select($startIndex, [Math]::Max(1, $RichTextBox.Lines[$lineNumber].Length))
         }
+        else {
+            $RichTextBox.SelectAll()
+        }
+        $RichTextBox.SelectionBackColor = [System.Drawing.Color]::MistyRose
 
         if ($ShowDialogOnError) {
-            Show-Dialog -Message $errorMsg -Type "Error" -Title "Błąd JSON"
+            Show-Dialog -Message $errorMsg -Type "Error" -Title "Błąd JSON" | Out-Null
         }
         if ($ErrorToolTip) {
             $ErrorToolTip.SetToolTip($RichTextBox, $errorMsg)
         }
-
-        Write-Log -Message "Parser JSON: $errorMsg" -Type "Error"
+        if (-not $Quiet) {
+            Write-Log -Message "Parser JSON: $errorMsg" -Type "Error"
+        }
         return $false
     }
     finally {
-        # Przywróć pozycję kursora!
         $RichTextBox.SelectionStart = $originalSelectionStart
         $RichTextBox.SelectionLength = $originalSelectionLength
+        $RichTextBox.SelectionColor = [System.Drawing.Color]::Black
         $RichTextBox.ResumeLayout()
+        $script:IsHighlightingJson = $false
     }
+}
+
+# Czy trwa podświetlanie składni (zmiany formatowania mogą wywoływać TextChanged)
+function Test-HTJsonHighlighting {
+    return [bool]$script:IsHighlightingJson
 }
 
 # Funkcja do usuwania wewnętrznych białych znaków z ciągu znaków
@@ -610,45 +523,74 @@ function Remove-InnerWhitespace {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$InputString,
         [switch]$TrimEnds # Dodatkowo: czy przyciąć początek/koniec
     )
 
-    $result = $InputString -replace '\s',''
+    $result = $InputString -replace '\s', ''
     if ($TrimEnds) {
         $result = $result.Trim()
     }
     return $result
 }
 
-# Generator haseł - Funkcja do generowania
-function Set-GeneratedPassword {
-    $pgw = $HT_UI.PasswordGeneratorWindow
+# Konwersja wartości do postaci czytelnej w GUI
+function ConvertTo-HTDisplayValue {
+    param ([AllowNull()][object]$Value)
 
-    $length = $pgw.Length.Value
-    $symbols = $pgw.SpecialCharacters.Text
-    $useNumbers = $pgw.Checkboxes.UseNumbers.Checked
-    $useSymbols = $pgw.Checkboxes.UseSymbols.Checked
+    if ($null -eq $Value) { return "" }
+    if ($Value -is [bool]) { return $(if ($Value) { "Tak" } else { "Nie" }) }
+    if ($Value -is [datetime]) { return $Value.ToString("yyyy-MM-dd HH:mm") }
+    if ($Value -is [datetimeoffset]) { return $Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm") }
+    if ($Value -is [string]) {
+        # Daty ISO 8601 zwracane przez Graph jako tekst
+        if ($Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}') {
+            $parsed = [datetimeoffset]::MinValue
+            if ([datetimeoffset]::TryParse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+                return $parsed.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+            }
+        }
+        return $Value
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        return (@($Value.Keys | ForEach-Object { "$_=$($Value[$_])" }) -join "; ")
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return (@($Value | ForEach-Object { ConvertTo-HTDisplayValue $_ }) -join ", ")
+    }
+    return "$Value"
+}
 
-    if ($pgw.Checkboxes.Words.Checked) {
-        $pgw.Password.Text = New-WordBasedPassword `
-            -Length $length `
-            -UseNumbers $useNumbers `
-            -UseSymbols $useSymbols `
-            -SpecialCharacters $symbols
-    }
-    else {
-        $pgw.Password.Text = New-Password `
-            -Length $length `
-            -SpecialCharacters $symbols `
-            -StartWithLetter $pgw.Checkboxes.StartLetter.Checked `
-            -IncludeNumbers $useNumbers `
-            -IncludeSymbols $useSymbols `
-            -NoSimilarChars $pgw.Checkboxes.NoSimilar.Checked `
-            -FriendlyMode $pgw.Checkboxes.Friendly.Checked
-    }
+# Rozbija tekst (np. wklejoną listę) na unikalne, niepuste wpisy
+function Split-HTInputList {
+    param ([AllowEmptyString()][AllowNull()][string]$Text)
+    if (-not $Text) { return @() }
+    return @($Text -split '[\r\n,;\t]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+}
 
-    if ($Global:LogPasswordGeneration) {
-        Write-Log -Message "Wygenerowano hasło: $($pgw.Password.Text)" -Type "Info"
+# Formatuje rozmiar w bajtach
+function Format-HTBytes {
+    param ([AllowNull()][object]$Bytes)
+    if ($null -eq $Bytes -or "$Bytes" -eq "") { return "" }
+    $value = [double]$Bytes
+    $units = @("B", "KB", "MB", "GB", "TB")
+    $i = 0
+    while ($value -ge 1024 -and $i -lt $units.Count - 1) { $value /= 1024; $i++ }
+    return ("{0:N1} {1}" -f $value, $units[$i])
+}
+
+# Usuwa polskie i inne znaki diakrytyczne (np. do tworzenia loginów)
+function ConvertTo-HTAsciiName {
+    param ([AllowEmptyString()][AllowNull()][string]$Text)
+    if (-not $Text) { return "" }
+    $text = $Text.Replace("ł", "l").Replace("Ł", "L")
+    $normalized = $text.Normalize([System.Text.NormalizationForm]::FormD)
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($char in $normalized.ToCharArray()) {
+        if ([System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($char) -ne [System.Globalization.UnicodeCategory]::NonSpacingMark) {
+            [void]$builder.Append($char)
+        }
     }
+    return $builder.ToString().Normalize([System.Text.NormalizationForm]::FormC)
 }

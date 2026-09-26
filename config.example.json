@@ -1,0 +1,30 @@
+{
+  "PasswordEmailAdress": "",
+  "PasswordEmailTitle": "Nowe hasło",
+  "PasswordSpecialCharacters": "!@#$%^&*?",
+  "PasswordUseWordBased": false,
+  "PasswordDefaultLength": 12,
+  "LogPasswordGeneration": false,
+  "LogClientIDForPnP": false,
+  "LastUsedClientID": null,
+  "DefaultSharepointSite": "https://contoso.sharepoint.com/sites/DefaultSite",
+  "DefaultUsageLocation": "PL",
+  "GraphScopes": [
+    "User.ReadWrite.All",
+    "Directory.AccessAsUser.All",
+    "Group.ReadWrite.All",
+    "GroupMember.ReadWrite.All",
+    "UserAuthenticationMethod.ReadWrite.All",
+    "Organization.Read.All",
+    "AuditLog.Read.All",
+    "Device.Read.All",
+    "DeviceManagementManagedDevices.ReadWrite.All",
+    "DeviceManagementManagedDevices.PrivilegedOperations.All",
+    "BitlockerKey.Read.All",
+    "DeviceLocalCredential.Read.All",
+    "Sites.Read.All"
+  ],
+  "ShowNotifications": true,
+  "LogFileMaxSizeMB": 5,
+  "ExportPath": ""
+}

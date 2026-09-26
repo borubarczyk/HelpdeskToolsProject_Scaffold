@@ -1,111 +1,124 @@
-# Panel "Lokalne AD"
-$panel_LocalAD = New-Object System.Windows.Forms.Panel
-$panel_LocalAD.Dock = 'Fill'
-
-# ComboBox z listą obiektów (dynamicznie ładowana)
-$combobox_LocalAD_List = New-Object System.Windows.Forms.ComboBox
-$combobox_LocalAD_List.Location = '10,10'
-$combobox_LocalAD_List.Width = 660
-$combobox_LocalAD_List.DropDownStyle = 'DropDownList'
-$combobox_LocalAD_List.Items.Add('Lista niezaładowana - kliknij "Odśwież" / Wybierz obiekt z sekcji')
-$combobox_LocalAD_List.SelectedIndex = 0
+﻿# Panel "Lokalne AD": użytkownicy, komputery i grupy (przełączane listą rozwijaną)
 
 # ComboBox do wyboru sekcji (Użytkownicy, Komputery, Grupy)
 $combobox_LocalAD_Section = New-Object System.Windows.Forms.ComboBox
-$combobox_LocalAD_Section.Location = '680,10'
-$combobox_LocalAD_Section.Width = 190
-$combobox_LocalAD_Section.DropDownStyle = 'DropDownList'
+$combobox_LocalAD_Section.Width = 150
+$combobox_LocalAD_Section.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 $combobox_LocalAD_Section.Items.AddRange(@("Użytkownicy", "Komputery", "Grupy"))
 
-# RichTextBox z informacjami
-$richtextbox_LocalAD_Info = New-Object System.Windows.Forms.RichTextBox
-$richtextbox_LocalAD_Info.Location = '10,50'
-$richtextbox_LocalAD_Info.Size = '660,600'
-$richtextbox_LocalAD_Info.ReadOnly = $true
-$richtextbox_LocalAD_Info.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-
-# Panel boczny z przyciskami
-$panel_LocalAD_Actions = New-Object System.Windows.Forms.FlowLayoutPanel
-$panel_LocalAD_Actions.Location = '680,50'
-$panel_LocalAD_Actions.Size = '190,700'
-$panel_LocalAD_Actions.FlowDirection = 'TopDown'
-$panel_LocalAD_Actions.WrapContents = $false
-$panel_LocalAD_Actions.AutoScroll = $true
-
-# Funkcja pomocnicza tworząca przycisk
-function New-LocalADActionButton($text) {
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Size = '170,45'
-    $btn.Text = $text
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 10)
-    return $btn
-}
-
-# Zestaw przycisków dla każdej sekcji
-$LocalAD_ActionSets = @{
+# Kolumny listy dla każdej sekcji
+$LocalAD_Columns = @{
     "Użytkownicy" = @(
-        "Odśwież", "Resetuj hasło", "Zablokuj/Odblokuj", "Zmień grupy",
-        "Przypisz profil", "Wyeksportuj dane", "Przenieś OU", "Usuń konto", "Akcje specjalne"
+        @{ Text = "Nazwa"; Property = "Name"; Width = 180 }
+        @{ Text = "Login"; Property = "SamAccountName"; Width = 120 }
+        @{ Text = "UPN"; Property = "UserPrincipalName"; Width = 220 }
+        @{ Text = "Włączone"; Property = "Enabled"; Width = 70 }
+        @{ Text = "Zablokowane"; Property = "LockedOut"; Width = 85 }
+        @{ Text = "Dział"; Property = "Department"; Width = 120 }
+        @{ Text = "Ostatnie logowanie"; Property = "LastLogonDate"; Width = 130 }
     )
     "Komputery"   = @(
-        "Odśwież", "Zrestartuj", "Zablokuj", "Zmień OU", "Wyłącz konto",
-        "Wyczyść SID", "Usuń konto", "Akcje specjalne"
+        @{ Text = "Nazwa"; Property = "Name"; Width = 160 }
+        @{ Text = "System"; Property = "OperatingSystem"; Width = 210 }
+        @{ Text = "Włączone"; Property = "Enabled"; Width = 70 }
+        @{ Text = "Ostatnie logowanie"; Property = "LastLogonDate"; Width = 130 }
+        @{ Text = "Opis"; Property = "Description"; Width = 200 }
+        @{ Text = "DNS"; Property = "DNSHostName"; Width = 200 }
     )
     "Grupy"       = @(
-        "Odśwież", "Dodaj członków", "Usuń członków", "Zmień nazwę",
-        "Zmień typ grupy", "Zmień zakres", "Usuń grupę", "Akcje specjalne"    )
+        @{ Text = "Nazwa"; Property = "Name"; Width = 220 }
+        @{ Text = "Typ"; Property = "GroupCategory"; Width = 100 }
+        @{ Text = "Zakres"; Property = "GroupScope"; Width = 100 }
+        @{ Text = "Opis"; Property = "Description"; Width = 320 }
+    )
 }
 
-# Globalna struktura UI — DOPIERO TERAZ ją inicjalizujemy
-$buttons_LocalAD = @{ }
-$HT_UI.LocalADTab = [ordered]@{
-    Panel      = $panel_LocalAD
-    SectionBox = $combobox_LocalAD_Section
-    ObjectBox  = $combobox_LocalAD_List
-    DetailsBox = $richtextbox_LocalAD_Info
-    Views      = @{}
+# Zestawy akcji dla każdej sekcji
+$LocalAD_ActionSets = [ordered]@{
+    "Użytkownicy" = @(
+        @{ Group = "Konto" }
+        @{ Key = "ResetPassword"; Text = "Resetuj hasło"; Icon = "Password Reset.png" }
+        @{ Key = "LockUnlock"; Text = "Włącz / wyłącz / odblokuj"; Icon = "Denied.png" }
+        @{ Key = "EditAttributes"; Text = "Edytuj dane"; Icon = "Writer male_1.png" }
+        @{ Key = "AssignProfile"; Text = "Profil i katalog domowy"; Icon = "Opened Folder.png" }
+        @{ Key = "Special"; Text = "Akcje specjalne"; Icon = "Screwdriver.png" }
+        @{ Group = "Organizacja" }
+        @{ Key = "ChangeGroups"; Text = "Zmień grupy"; Icon = "Add Male User Group.png" }
+        @{ Key = "MoveOU"; Text = "Przenieś do OU"; Icon = "Organization.png" }
+        @{ Group = "Inne" }
+        @{ Key = "NewUser"; Text = "Nowy użytkownik"; Icon = "add.png" }
+        @{ Key = "Export"; Text = "Eksport listy (CSV)"; Icon = "CSV.png" }
+        @{ Key = "Delete"; Text = "Usuń konto"; Icon = "Remove.png"; Style = "Danger" }
+    )
+    "Komputery"   = @(
+        @{ Group = "Diagnostyka" }
+        @{ Key = "Ping"; Text = "Test połączenia"; Icon = "validation.png" }
+        @{ Key = "Restart"; Text = "Zrestartuj"; Icon = "Restart.png" }
+        @{ Group = "Konto" }
+        @{ Key = "ToggleEnabled"; Text = "Włącz / wyłącz konto"; Icon = "Denied.png" }
+        @{ Key = "EditDescription"; Text = "Zmień opis"; Icon = "Rename.png" }
+        @{ Key = "Groups"; Text = "Zmień grupy"; Icon = "User Groups.png" }
+        @{ Key = "MoveOU"; Text = "Przenieś do OU"; Icon = "Organization.png" }
+        @{ Group = "Bezpieczeństwo" }
+        @{ Key = "LAPS"; Text = "Hasło LAPS"; Icon = "Key Security.png" }
+        @{ Key = "BitLocker"; Text = "Klucze BitLocker"; Icon = "Secure.png" }
+        @{ Group = "Inne" }
+        @{ Key = "Export"; Text = "Eksport listy (CSV)"; Icon = "CSV.png" }
+        @{ Key = "Delete"; Text = "Usuń konto"; Icon = "Remove.png"; Style = "Danger" }
+    )
+    "Grupy"       = @(
+        @{ Group = "Członkowie" }
+        @{ Key = "AddMembers"; Text = "Dodaj członków"; Icon = "Add Male User Group.png" }
+        @{ Key = "RemoveMembers"; Text = "Usuń członków"; Icon = "Minus.png" }
+        @{ Key = "ExportMembers"; Text = "Eksport członków"; Icon = "CSV.png" }
+        @{ Group = "Ustawienia" }
+        @{ Key = "Rename"; Text = "Zmień nazwę"; Icon = "Rename.png" }
+        @{ Key = "ChangeType"; Text = "Zmień typ grupy"; Icon = "Admin Settings Male.png" }
+        @{ Key = "ChangeScope"; Text = "Zmień zakres"; Icon = "Group Objects.png" }
+        @{ Key = "MoveOU"; Text = "Przenieś do OU"; Icon = "Organization.png" }
+        @{ Group = "Inne" }
+        @{ Key = "NewGroup"; Text = "Nowa grupa"; Icon = "add.png" }
+        @{ Key = "Export"; Text = "Eksport listy (CSV)"; Icon = "CSV.png" }
+        @{ Key = "Delete"; Text = "Usuń grupę"; Icon = "Remove.png"; Style = "Danger" }
+    )
 }
 
-# Tworzenie i dodanie przycisków (razowo, potem ukrywane/pokazywane)
-foreach ($section in $LocalAD_ActionSets.Keys) {
-    $btnSet = @{}
-    foreach ($label in $LocalAD_ActionSets[$section]) {
-        $btn = New-LocalADActionButton $label
-        $btn.Visible = $false
-        $btn.Tag = $section
-        $panel_LocalAD_Actions.Controls.Add($btn)
-        $buttons_LocalAD["$section|$label"] = $btn
-        $btnSet[$label] = $btn
-    }
-    $HT_UI.LocalADTab.Views[$section] = @{ Buttons = $btnSet }
-}
+$view_LocalAD = New-HTSectionView -ToolbarControls @($combobox_LocalAD_Section) -Columns $LocalAD_Columns["Użytkownicy"] -Actions $LocalAD_ActionSets["Użytkownicy"]
 
-# Funkcja pokazująca tylko przyciski dla wybranej sekcji
+# Dodatkowe panele akcji dla komputerów i grup (widoczny jest tylko panel bieżącej sekcji)
+$LocalAD_ActionPanels = @{
+    "Użytkownicy" = @{ Panel = $view_LocalAD.ActionPanel; Buttons = $view_LocalAD.Actions }
+}
+foreach ($section in @("Komputery", "Grupy")) {
+    $actionPanel = New-HTActionPanel -Actions $LocalAD_ActionSets[$section]
+    $actionPanel.Panel.Visible = $false
+    $view_LocalAD.Panel.Controls.Add($actionPanel.Panel)
+    $LocalAD_ActionPanels[$section] = $actionPanel
+}
+$view_LocalAD.ToolbarHost.SendToBack()
+$view_LocalAD.Split.BringToFront()
+
+# Pokazuje panel akcji i kolumny wybranej sekcji
 function Show-LocalADButtons {
-    $selected = $combobox_LocalAD_Section.SelectedItem
-    foreach ($btn in $panel_LocalAD_Actions.Controls) {
-        $btn.Visible = $false
-    }
-    foreach ($label in $LocalAD_ActionSets[$selected]) {
-        $key = "$selected|$label"
-        if ($buttons_LocalAD.ContainsKey($key)) {
-            $buttons_LocalAD[$key].Visible = $true
-        }
+    $selected = $HT_UI.LocalADTab.SectionBox.SelectedItem
+    if (-not $selected) { return }
+    foreach ($section in $HT_UI.LocalADTab.ActionPanels.Keys) {
+        $HT_UI.LocalADTab.ActionPanels[$section].Panel.Visible = ($section -eq $selected)
     }
 }
 
-# Dodanie kontrolek do panelu głównego
-$panel_LocalAD.Controls.AddRange(@(
-        $combobox_LocalAD_List,
-        $combobox_LocalAD_Section,
-        $richtextbox_LocalAD_Info,
-        $panel_LocalAD_Actions
-    ))
-
-# Podłączenie do zakładki (upewnij się, że $HT_UI.Tabs["Lokalne AD"] istnieje wcześniej)
+# Dołącz panel do zakładki
 $HT_UI.Tabs["Lokalne AD"].Controls.Clear()
-$HT_UI.Tabs["Lokalne AD"].Controls.Add($panel_LocalAD)
+$HT_UI.Tabs["Lokalne AD"].Controls.Add($view_LocalAD.Panel)
 
-# Ustawienie domyślnej sekcji i pokazanie jej przycisków
+# Globalna struktura UI
+$view_LocalAD.SectionBox = $combobox_LocalAD_Section
+$view_LocalAD.ActionPanels = $LocalAD_ActionPanels
+$view_LocalAD.ColumnSets = $LocalAD_Columns
+$view_LocalAD.Loaded = @{}
+$global:HT_UI.LocalADTab = $view_LocalAD
+$HT_UI.RefreshButtons["Lokalne AD"] = $view_LocalAD.RefreshButton
+
+# Ustawienie domyślnej sekcji
 $combobox_LocalAD_Section.SelectedIndex = 0
 Show-LocalADButtons
