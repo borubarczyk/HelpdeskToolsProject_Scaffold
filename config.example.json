@@ -35,5 +35,9 @@
   "AadSyncServer": "",
   "ConfirmBeforeClose": true,
   "ConfigVersion": 2,
-  "LoginTimeoutMinutes": 5
+  "LoginTimeoutMinutes": 5,
+  "AutoLockMinutes": 15,
+  "PinHash": "",
+  "PinSalt": "",
+  "PinLength": 0
 }

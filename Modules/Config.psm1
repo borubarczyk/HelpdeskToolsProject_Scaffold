@@ -44,6 +44,10 @@ function Get-HTDefaultConfig {
         InactiveDays              = 90
         AadSyncServer             = ""
         LoginTimeoutMinutes       = 5
+        AutoLockMinutes           = 15
+        PinHash                   = ""
+        PinSalt                   = ""
+        PinLength                 = 0
         ConfirmBeforeClose        = $true
         ConfigVersion             = $script:ConfigVersion
     }
@@ -225,12 +229,14 @@ function Apply-HTConfig {
     $Global:InactiveDays = [int]$Config.InactiveDays
     $Global:AadSyncServer = $Config.AadSyncServer
     $Global:LoginTimeoutMinutes = [int]$Config.LoginTimeoutMinutes
+    $Global:AutoLockMinutes = [int]$Config.AutoLockMinutes
     $Global:ConfirmBeforeClose = [bool]$Config.ConfirmBeforeClose
 
     if ($Global:PasswordDefaultLength -lt 8 -or $Global:PasswordDefaultLength -gt 64) { $Global:PasswordDefaultLength = 12 }
     if ($Global:GraphScopes.Count -eq 0) { $Global:GraphScopes = $script:DefaultGraphScopes }
     if ($Global:InactiveDays -lt 1 -or $Global:InactiveDays -gt 3650) { $Global:InactiveDays = 90 }
     if ($Global:LoginTimeoutMinutes -lt 1 -or $Global:LoginTimeoutMinutes -gt 60) { $Global:LoginTimeoutMinutes = 5 }
+    if ($Global:AutoLockMinutes -lt 0 -or $Global:AutoLockMinutes -gt 480) { $Global:AutoLockMinutes = 15 }
 
     Write-Log -Message "Zastosowano konfigurację (e-mail: '$($Global:PasswordEmailAdress)', hasła słowne: $($Global:PasswordUseWordBased), domyślna witryna SharePoint: $($Global:DefaultSharepointSite))." -Type "Info"
 

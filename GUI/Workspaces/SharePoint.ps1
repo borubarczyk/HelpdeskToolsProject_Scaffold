@@ -1,7 +1,7 @@
 ﻿# Przestrzeń robocza: SharePoint - biblioteki i foldery witryny (PnP.PowerShell)
 
 Register-HTWorkspace -Key 'SharePoint' -Title 'SharePoint' -Icon 'E8F1' -Panel 'spTree' -Service 'SharePoint' `
-    -Description 'Witryna SharePoint: uprawnienia bibliotek i folderów, grupy, kosz, pliki, raport uprawnień i wyszukiwanie witryn' `
+    -Description 'Połączona witryna SharePoint (PnP): uprawnienia bibliotek i folderów, grupy, kosz, pliki, raport uprawnień, aplikacja PnP' `
     -Categories @('Uprawnienia', 'Zawartość', 'Witryna', 'Raporty')
 
 $panel = New-HTTargetPanel -Key 'spTree' -Title 'Biblioteki i foldery' -Tree -EmptyIcon 'E8F1' -EmptyText 'Połącz z witryną SharePoint (przycisk w prawym górnym rogu).' -Describe { param($n) @{ Key = $n.ServerRelativeUrl; Title = $n.Title } }
@@ -216,25 +216,37 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.site' -Ti
     Add-HTButton -Parent $row -Module $m -Text 'Otwórz witrynę' -Icon 'E8A7' -OnClick { param($m) if (Assert-HTConnection -Service 'SharePoint') { Start-Process (Get-PnPConnection).Url } } | Out-Null
 }
 
-Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.sites' -Title 'Witryny w organizacji' -Icon 'E721' -Service 'Graph' `
-    -Description 'Wyszukiwanie witryn SharePoint w tenancie (Microsoft Graph). Prawy przycisk - połączenie z witryną lub otwarcie w przeglądarce.' -Build {
+Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.app' -Title 'Aplikacja PnP (Client ID)' -Icon 'E8D7' -Service '' `
+    -Description 'PnP PowerShell wymaga własnej rejestracji aplikacji w Entra ID. Tu utworzysz ją jednym kliknięciem (Client ID zapisze się w ustawieniach) i wygenerujesz klucz tajny.' -Build {
     param($m)
+    $m.SecretColumns = @('Wartość')
     $row = Add-HTToolbarRow -Module $m
-    $m.C.Search = Add-HTTextBox -Parent $row -Width 280 -Placeholder 'Szukaj witryn (puste = wszystkie)'
-    Add-HTButton -Parent $row -Module $m -Text 'Szukaj' -Icon 'E721' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz Client ID…' -Icon 'E710' -Primary -OnClick {
         param($m)
-        $search = $m.C.Search.Text.Trim()
-        Invoke-HTQuery -Module $m -Name 'Witryny' -ScriptBlock { Find-HTSPSites -Search $search }
-    } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Połącz z witryną' -Icon 'E703' -Action {
-        param($m, $rows)
-        $site = @($rows)[0]
-        if (Connect-Module -Name 'PnP.PowerShell' -SiteUrl $site.Adres -NoPrompt) {
-            Clear-HTPanelItems -Service 'SharePoint'
-            Invoke-HTPanelLoad -Panel (Get-HTPanel 'spTree') -Quiet
+        $site = if ($Global:ConnectedToSharepointPnP) { (Get-PnPConnection).Url } else { $Global:DefaultSharepointSite }
+        $result = Show-HTPnPAppRegistrationDialog -SiteUrl $site
+        if ($result) {
+            Reset-HTResults -Module $m
+            Add-HTResultRows -Module $m -Objects @(
+                [PSCustomObject]@{ Pole = 'Aplikacja'; Wartość = $result.DisplayName }
+                [PSCustomObject]@{ Pole = 'Client ID'; Wartość = $result.ClientId }
+                [PSCustomObject]@{ Pole = 'Tenant'; Wartość = $result.TenantId }
+                [PSCustomObject]@{ Pole = 'Zgoda administratora'; Wartość = $result.ConsentGranted }
+            )
         }
-    }
-    Add-HTRowAction -Module $m -Text 'Otwórz w przeglądarce' -Icon 'E8A7' -Action { param($m, $rows) foreach ($r in @($rows | Select-Object -First 5)) { Start-Process $r.Adres } }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowy klucz tajny…' -Icon 'E8D7' -ToolTip 'Client secret dla istniejącej aplikacji (Microsoft Graph)' -OnClick { param($m) Show-HTAppSecretDialog } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Bieżący Client ID' -Icon 'E946' -OnClick {
+        param($m)
+        Reset-HTResults -Module $m
+        Add-HTResultRows -Module $m -Objects @(
+            [PSCustomObject]@{ Pole = 'Client ID (ustawienia)'; Wartość = "$($Global:LastUsedClientID)" }
+            [PSCustomObject]@{ Pole = 'Zapamiętywanie Client ID'; Wartość = [bool]$Global:LogClientIDForPnP }
+            [PSCustomObject]@{ Pole = 'Domyślna witryna'; Wartość = "$($Global:DefaultSharepointSite)" }
+        )
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Rejestracje aplikacji (Entra)' -Icon 'E8A7' -OnClick { param($m) Start-Process 'https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade' } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Przeglądanie witryn bez Client ID: przestrzeń «Witryny».' | Out-Null
 }
 #endregion
 

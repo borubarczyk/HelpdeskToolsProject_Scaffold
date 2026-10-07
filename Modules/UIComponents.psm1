@@ -1024,6 +1024,8 @@ function Invoke-HTDialog {
     # Pokazuje okno modalnie nad oknem głównym; zwraca $true, gdy zatwierdzono
     param([Parameter(Mandatory)][System.Windows.Window]$Window)
     if (-not ($Window.Tag -is [hashtable])) { $Window.Tag = @{} }
+    # Program zablokowany: okno (inne niż ekran PIN) pokaże się dopiero po odblokowaniu
+    if ($script:LockState.Locked -and -not $Window.Tag['LockScreen']) { Wait-HTUnlocked }
     $Window.Tag['Result'] = $false
     $Window.Tag['Modal'] = $true
     $main = $script:UI.Window
@@ -2029,6 +2031,9 @@ function Update-ConnectionButtonText {
     if ($button) {
         $button.ToolTip = if ($TenantName) { "$($names[$Service]): połączono ($TenantName). Kliknij, aby rozłączyć." } else { "$($names[$Service]): kliknij, aby połączyć." }
     }
+    # Nazwa tenantu zmienia szerokość nagłówka - ponowne dopasowanie układu
+    $script:UI.HeaderWidths = $null
+    if ($script:UI['HeaderChanged']) { try { & $script:UI.HeaderChanged } catch { Write-Verbose "Nagłówek: $_" } }
 }
 
 #endregion
@@ -4009,5 +4014,329 @@ function Select-HTOne {
     $selected = Show-HTSelectionDialog -Title $Title -Items $Items -Columns $Columns -Prompt $Prompt
     if (-not $selected) { return $null }
     return @($selected)[0]
+}
+#endregion
+
+#region Blokada programu (PIN) - jak w Domain Ops
+<#
+    Ekran PIN przed oknem głównym i blokada w trakcie pracy (przycisk z kłódką, Ctrl+Shift+L, automatycznie po
+    bezczynności). Blokada ukrywa zawartość okna głównego i czyści poufne dane ze schowka; połączenia z usługami trwają.
+    Skrót PIN-u (PBKDF2) jest w konfiguracji - zob. Modules/Security.psm1.
+#>
+$script:UnlockMaxAttempts = 5
+$script:UnlockCooldownSec = 30
+$script:LockState = @{ Locked = $false; LastActivity = [datetime]::Now; Timer = $null }
+
+$script:UnlockXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="340" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterScreen"
+        Background="#12171D" Foreground="#E4E8EF" FontFamily="Segoe UI" FontSize="13"
+        UseLayoutRounding="True" SnapsToDevicePixels="True" TextOptions.TextFormattingMode="Display">
+  <Grid Background="#12171D">
+    <StackPanel Margin="28,26,28,22">
+      <Border Width="52" Height="52" CornerRadius="14" HorizontalAlignment="Center">
+        <Border.Background>
+          <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#4C7DF0" Offset="0"/>
+            <GradientStop Color="#8A5CF0" Offset="1"/>
+          </LinearGradientBrush>
+        </Border.Background>
+        <TextBlock x:Name="lockIcon" Style="{StaticResource Glyph}" FontSize="22" Foreground="White" HorizontalAlignment="Center"/>
+      </Border>
+      <TextBlock Text="Helpdesk Tools" FontSize="18" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+      <TextBlock x:Name="lockHint" Text="Wpisz PIN, aby uruchomić program" Foreground="#8791A5" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="0,4,0,0"/>
+      <StackPanel x:Name="lockDots" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,22,0,0"/>
+      <TextBlock x:Name="lockMsg" Foreground="#FF7A86" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MinHeight="18" Margin="0,12,0,0"/>
+      <UniformGrid x:Name="lockPad" Columns="3" Margin="0,12,0,0"/>
+      <Button x:Name="lockClose" Content="Zamknij" Style="{StaticResource GhostButton}" HorizontalAlignment="Center" MinWidth="110" Margin="0,14,0,0" Focusable="False"/>
+    </StackPanel>
+  </Grid>
+</Window>
+'@
+
+$script:UnlockEvents = @{
+    Key     = { param($s, $e) Add-HTUnlockKey -Window ([System.Windows.Window]::GetWindow($s)) -Key ([string]$s.Tag) }
+    KeyDown = {
+        param($s, $e)
+        # Cyfry z górnego rzędu (bez Shift) i z klawiatury numerycznej; Backspace kasuje cyfrę, Esc i Delete wszystkie
+        $k = [string]$e.Key
+        $key = ''
+        if ($k -match '^NumPad(\d)$') { $key = $Matches[1] }
+        elseif ($k -match '^D(\d)$' -and -not ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Shift)) { $key = $Matches[1] }
+        elseif ($k -eq 'Back') { $key = 'Back' }
+        elseif ($k -eq 'Escape' -or $k -eq 'Delete') { $key = 'Clear' }
+        if (-not $key) { return }
+        $e.Handled = $true
+        Add-HTUnlockKey -Window $s -Key $key
+    }
+    Close   = { param($s, $e) Close-HTDialog -Window ([System.Windows.Window]::GetWindow($s)) -Ok $false }
+    # Okno blokady zamyka tylko poprawny PIN (krzyżyk, Alt+F4 są ignorowane)
+    Closing = { param($s, $e) if ($s.Tag.Mode -eq 'Lock' -and -not $s.Tag.Result) { $e.Cancel = $true } }
+}
+
+function New-HTUnlockWindow {
+    # -Lock: blokada w trakcie pracy (bez «Zamknij»; po wyczerpaniu prób przerwa zamiast zamknięcia programu)
+    param([switch]$Lock)
+    $w = New-HTUiElement $script:UnlockXaml
+    $w.Title = $(if ($Lock) { 'Helpdesk Tools - zablokowany' } else { 'Helpdesk Tools - odblokowanie' })
+    if ($Lock) {
+        $w.FindName('lockHint').Text = 'Program zablokowany - wpisz PIN'
+        $w.FindName('lockClose').Visibility = 'Collapsed'
+    }
+    $w.FindName('lockIcon').Text = Get-HTGlyph 'E72E'
+    $length = [Math]::Max(4, [int]$Global:HTConfig.PinLength)
+    $dots = $w.FindName('lockDots')
+    for ($i = 0; $i -lt $length; $i++) {
+        $d = New-Object System.Windows.Shapes.Ellipse
+        $d.Width = 14
+        $d.Height = 14
+        $d.Margin = New-Object System.Windows.Thickness(7, 0, 7, 0)
+        $d.StrokeThickness = 2
+        [void]$dots.Children.Add($d)
+    }
+    $pad = $w.FindName('lockPad')
+    foreach ($key in '1', '2', '3', '4', '5', '6', '7', '8', '9', 'Clear', '0', 'Back') {
+        $b = New-Object System.Windows.Controls.Button
+        $b.Tag = $key
+        $b.Height = 46
+        $b.Margin = New-Object System.Windows.Thickness(4)
+        # Bez fokusu: spacja lub Enter nie «klikają» ponownie ostatnio użytego przycisku
+        $b.Focusable = $false
+        if ($key -match '^\d$') {
+            $b.Content = $key
+            $b.FontSize = 18
+        }
+        else {
+            $b.Content = New-HTGlyphBlock -Code $(if ($key -eq 'Back') { 'E750' } else { 'E894' }) -Size 15
+            $b.ToolTip = $(if ($key -eq 'Back') { 'Usuń ostatnią cyfrę (Backspace)' } else { 'Wyczyść (Esc)' })
+        }
+        $b.add_Click($script:UnlockEvents.Key)
+        [void]$pad.Children.Add($b)
+    }
+    $w.FindName('lockClose').add_Click($script:UnlockEvents.Close)
+    $w.add_PreviewKeyDown($script:UnlockEvents.KeyDown)
+    $w.add_Closing($script:UnlockEvents.Closing)
+    $w.Tag = @{ Result = $false; Modal = $false; Pin = ''; PinLength = $length; Attempts = 0; Failed = 0; Error = $false; Locked = $false
+        Mode = $(if ($Lock) { 'Lock' } else { 'Start' }); LockScreen = $true; CooldownEnd = [datetime]::MinValue }
+    Update-HTUnlockView -Window $w
+    return $w
+}
+
+function Update-HTUnlockView {
+    param([Parameter(Mandatory)]$Window)
+    $st = $Window.Tag
+    $i = 0
+    foreach ($d in $Window.FindName('lockDots').Children) {
+        $filled = $i -lt $st.Pin.Length
+        $color = if ($st.Error) { '#FF7A86' } elseif ($filled) { '#8CB0FF' } else { '#3A4556' }
+        $d.Stroke = Get-HTBrush $color
+        $d.Fill = $(if ($filled) { Get-HTBrush $color } else { [System.Windows.Media.Brushes]::Transparent })
+        $i++
+    }
+}
+
+function Add-HTUnlockKey {
+    # Cyfra, 'Back' albo 'Clear'; po wpisaniu pełnego PIN-u od razu sprawdzenie
+    param([Parameter(Mandatory)]$Window, [Parameter(Mandatory)][string]$Key)
+    $st = $Window.Tag
+    if ($st.Locked) { return }
+    if ($st.Error) { $st.Error = $false }
+    switch -Regex ($Key) {
+        '^\d$' { if ($st.Pin.Length -lt $st.PinLength) { $st.Pin += $Key } }
+        '^Back$' { if ($st.Pin.Length) { $st.Pin = $st.Pin.Substring(0, $st.Pin.Length - 1) } }
+        '^Clear$' { $st.Pin = '' }
+    }
+    $msg = $Window.FindName('lockMsg')
+    if ($st.Pin.Length -lt $st.PinLength) { Update-HTUnlockView -Window $Window; return }
+    if (Test-HTPin -Pin $st.Pin) {
+        $st.Pin = ''
+        if ($st.Mode -eq 'Lock') { Restore-HTAfterLock }
+        Close-HTDialog -Window $Window -Ok $true
+        return
+    }
+    $st.Attempts++
+    $st.Failed++
+    $st.Pin = ''
+    $st.Error = $true
+    $left = $script:UnlockMaxAttempts - $st.Attempts
+    Update-HTUnlockView -Window $Window
+    Write-Log -Message "Nieprawidłowy PIN (próba $($st.Failed))." -Type 'Warn'
+    if ($left -le 0 -and $st.Mode -eq 'Lock') {
+        # Blokada w trakcie pracy: przerwa zamiast zamknięcia programu (połączenia z usługami trwają)
+        $st.Locked = $true
+        $st.CooldownEnd = (Get-Date).AddSeconds($script:UnlockCooldownSec)
+        $Window.FindName('lockPad').IsEnabled = $false
+        Update-HTUnlockCooldown -Window $Window | Out-Null
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromMilliseconds(250)
+        $t.Tag = $Window
+        $t.add_Tick({ param($s, $e) if (-not (Update-HTUnlockCooldown -Window $s.Tag)) { $s.Stop() } })
+        $t.Start()
+        return
+    }
+    if ($left -le 0) {
+        $msg.Text = 'Zbyt wiele błędnych prób - program zostanie zamknięty.'
+        $st.Locked = $true
+        $Window.FindName('lockPad').IsEnabled = $false
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromMilliseconds(1500)
+        $t.Tag = $Window
+        $t.add_Tick({ param($s, $e) $s.Stop(); Close-HTDialog -Window $s.Tag -Ok $false })
+        $t.Start()
+        return
+    }
+    $msg.Text = 'Nieprawidłowy PIN. Pozostało prób: {0}' -f $left
+}
+
+function Update-HTUnlockCooldown {
+    # Odliczanie przerwy po wyczerpaniu prób; $false, gdy przerwa minęła (klawiatura znów aktywna)
+    param([Parameter(Mandatory)]$Window)
+    $st = $Window.Tag
+    $left = ($st.CooldownEnd - (Get-Date)).TotalSeconds
+    $msg = $Window.FindName('lockMsg')
+    if ($left -gt 0) {
+        $msg.Text = 'Zbyt wiele błędnych prób. Spróbuj ponownie za {0} s.' -f [int][Math]::Ceiling($left)
+        return $true
+    }
+    $st.Locked = $false
+    $st.Attempts = 0
+    $st.Error = $false
+    $msg.Text = ''
+    $Window.FindName('lockPad').IsEnabled = $true
+    Update-HTUnlockView -Window $Window
+    return $false
+}
+
+function Show-HTPinSetupDialog {
+    # Ustawienie nowego PIN-u (4-8 cyfr, dwukrotnie); zwraca PIN albo $null
+    param([string]$Title = 'Ustaw PIN programu', [string]$Subtitle = 'PIN będzie wymagany przy każdym uruchomieniu programu i do odblokowania po blokadzie (kłódka, Ctrl+Shift+L, bezczynność).')
+    $body = @'
+<StackPanel>
+  <TextBlock Text="Nowy PIN (4-8 cyfr)" Foreground="#8791A5" FontSize="12" Margin="0,0,0,5"/>
+  <PasswordBox x:Name="pin1" MaxLength="8"/>
+  <TextBlock Text="Powtórz PIN" Foreground="#8791A5" FontSize="12" Margin="0,12,0,5"/>
+  <PasswordBox x:Name="pin2" MaxLength="8"/>
+</StackPanel>
+'@
+    $w = New-HTDialog -Title $Title -Subtitle $Subtitle -Body $body -Icon 'E72E' -OkText 'Zapisz PIN' -Width 460 -Validate {
+        param($w)
+        $p1 = $w.FindName('pin1').Password
+        if (-not (Test-HTPinFormat $p1)) { Show-HTWarning 'PIN musi składać się z 4-8 cyfr.'; return $false }
+        if ($p1 -ne $w.FindName('pin2').Password) { Show-HTWarning 'Wpisane PIN-y różnią się.'; return $false }
+        if ($p1 -match '^(\d)\1+$' -or '0123456789876543210'.Contains($p1)) { Show-HTWarning 'PIN jest zbyt prosty (powtórzona lub kolejne cyfry).'; return $false }
+        return $true
+    }
+    $w.add_ContentRendered({ param($s, $e) [void]$s.FindName('pin1').Focus() })
+    if (-not (Invoke-HTDialog $w)) { return $null }
+    return $w.FindName('pin1').Password
+}
+
+function Unlock-HTApplication {
+    # Start programu: PIN (przy pierwszym uruchomieniu - ustawienie PIN-u). $true - można uruchomić program.
+    if (-not (Test-HTPinConfigured)) {
+        $pin = Show-HTPinSetupDialog -Subtitle 'Pierwsze uruchomienie: ustaw PIN. Będzie wymagany przy każdym uruchomieniu programu i do odblokowania po blokadzie.'
+        if (-not $pin) { return $false }
+        Set-HTPin -Pin $pin
+        return $true
+    }
+    $w = New-HTUnlockWindow
+    $ok = Invoke-HTDialog $w
+    if (-not $ok -and $w.Tag.Failed -gt 0) { Write-Log -Message "Nie odblokowano programu (błędne próby: $($w.Tag.Failed))." -Type 'Warn' }
+    return $ok
+}
+
+function Restore-HTAfterLock {
+    $script:LockState.Locked = $false
+    $script:LockState.LastActivity = [datetime]::Now
+    $main = $script:UI.Window
+    if ($main -and $main.Content) { $main.Content.Visibility = 'Visible' }
+}
+
+function Test-HTLocked { return [bool]$script:LockState.Locked }
+
+function Lock-HTApplication {
+    <#
+        Blokada w trakcie pracy: zawartość okna głównego ukryta, nad nim okno PIN (modalne). Okna głównego nie ukrywamy -
+        jest pokazane przez ShowDialog, a ukrycie zakończyłoby program. Poufne dane w schowku są czyszczone.
+    #>
+    if ($script:LockState.Locked -or -not (Test-HTPinConfigured)) { return }
+    $main = $script:UI.Window
+    if (-not $main) { return }
+    $script:LockState.Locked = $true
+    Clear-HTClipboardSecret
+    Write-Log -Message 'Program zablokowany.' -Type 'Info'
+    if ($main.Content) { $main.Content.Visibility = 'Hidden' }
+    $w = New-HTUnlockWindow -Lock
+    try { [void](Invoke-HTDialog $w) }
+    finally { Restore-HTAfterLock }
+    $n = [int]$w.Tag.Failed
+    Write-Log -Message ('Program odblokowany{0}.' -f $(if ($n) { " (nieudane próby: $n)" } else { '' })) -Type $(if ($n) { 'Warn' } else { 'Info' })
+}
+
+function Update-HTActivity { $script:LockState.LastActivity = [datetime]::Now }
+
+function Start-HTAutoLock {
+    # Automatyczna blokada po bezczynności (AutoLockMinutes; 0 = wyłączona). Nie blokuje w trakcie operacji ani przy otwartym oknie dialogowym.
+    if ($script:LockState.Timer) { return }
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromSeconds(20)
+    $t.add_Tick({
+            param($s, $e)
+            try {
+                $minutes = [int]$Global:AutoLockMinutes
+                if ($minutes -le 0 -or $script:LockState.Locked -or $script:UI.BusyDepth -gt 0) { return }
+                $main = $script:UI.Window
+                if (-not $main -or $main.OwnedWindows.Count -gt 0) { return }
+                if (([datetime]::Now - $script:LockState.LastActivity).TotalMinutes -ge $minutes) {
+                    Write-Log -Message "Automatyczna blokada po $minutes min bezczynności." -Type 'Info'
+                    Lock-HTApplication
+                }
+            }
+            catch { Write-Verbose "Automatyczna blokada: $_" }
+        })
+    $script:LockState.Timer = $t
+    $t.Start()
+}
+
+function Wait-HTUnlocked {
+    # Okno otwierane w czasie blokady czeka na odblokowanie
+    if (-not $script:LockState.Locked) { return }
+    $frame = New-Object System.Windows.Threading.DispatcherFrame
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromMilliseconds(200)
+    $t.Tag = $frame
+    $t.add_Tick({ param($s, $e) if (-not $script:LockState.Locked) { $s.Stop(); $s.Tag.Continue = $false } })
+    $t.Start()
+    [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+}
+
+function Clear-HTClipboardSecret {
+    # Usuwa ze schowka skopiowaną wartość poufną (hasło, klucz), jeśli nadal tam jest
+    try {
+        if ($script:Clipboard.Secret -and [System.Windows.Clipboard]::ContainsText() -and [System.Windows.Clipboard]::GetText() -eq $script:Clipboard.Secret) {
+            [System.Windows.Clipboard]::Clear()
+        }
+    }
+    catch { Write-Verbose "Schowek: $_" }
+    $script:Clipboard.Secret = $null
+}
+#endregion
+
+#region Ponowne uruchomienie programu
+function Restart-HTApplication {
+    <#
+        Uruchamia program ponownie w nowym procesie PowerShell (np. po konflikcie bibliotek między modułami)
+        i zamyka bieżące okno. -Connect: usługa, z którą nowa sesja połączy się zaraz po starcie.
+    #>
+    param([ValidateSet('', 'Exchange', 'Graph', 'SharePoint')][string]$Connect = '')
+    $scriptPath = $Global:HTScriptPath
+    if (-not $scriptPath -or -not (Test-Path -LiteralPath $scriptPath)) { Show-HTWarning 'Nie można ustalić ścieżki programu - uruchom go ponownie ręcznie.'; return }
+    $arguments = @('-NoProfile', '-STA', '-File', ('"{0}"' -f $scriptPath))
+    if ($Connect) { $arguments += @('-Connect', $Connect) }
+    Write-Log -Message "Ponowne uruchamianie programu$(if ($Connect) { " (połączenie: $Connect)" })…" -Type 'Info'
+    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $arguments
+    $Global:HTRestarting = $true
+    if ($script:UI.Window) { $script:UI.Window.Close() }
 }
 #endregion

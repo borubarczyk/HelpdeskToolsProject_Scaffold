@@ -5,10 +5,20 @@
     Aplikacja WPF do zarządzania Active Directory, Microsoft 365 (Graph), Exchange Online, Intune i SharePoint.
     Wygląd i układ są wspólne z Domain Ops (AD-ManagerDiamond) i ServerReview.
     Uruchom w PowerShell 7 (pwsh) jako administrator: pwsh -File .\HelpdeskTools.ps1
+.PARAMETER Connect
+    Usługa, z którą program połączy się zaraz po uruchomieniu (używane przy ponownym uruchomieniu po konflikcie bibliotek).
+.NOTES
+    Pliki programu: konfiguracja %APPDATA%\HelpdeskTools\config.json, dziennik %LOCALAPPDATA%\HelpdeskTools\Logs,
+    eksport Dokumenty\HelpdeskTools\Eksport (zmiana w Ustawieniach).
 #>
 
 #Requires -RunAsAdministrator
 #Requires -Version 7
+
+param (
+    [ValidateSet("", "Exchange", "Graph", "SharePoint")]
+    [string]$Connect = ""
+)
 
 $ErrorActionPreference = "Continue"
 
@@ -28,7 +38,10 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
 
 # Zmienne globalne
 $Global:AppVersion = "3.0.0"
+$Global:HTScriptPath = $PSCommandPath
+$Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
+$Global:LogDir = Join-Path -Path $env:LOCALAPPDATA -ChildPath "HelpdeskTools\Logs"
 $Global:ConfigPath = Join-Path -Path $Global:ConfigDir -ChildPath "config.json"
 $Global:IconsPath = Join-Path -Path $PSScriptRoot -ChildPath "Resources/Icons"
 $Global:AppIconPath = Join-Path -Path $Global:IconsPath -ChildPath "Tools.ico"
@@ -49,6 +62,7 @@ $Global:ShowNotifications = $true
 # Import modułów (kolejność: najpierw moduły bazowe)
 $moduleNames = @(
     "Utils",
+    "Security",
     "UIComponents",
     "Config",
     "ModulesConnection",
@@ -74,6 +88,7 @@ foreach ($moduleName in $moduleNames) {
 
 # Dziennik operacji w oknie (wpisy sprzed utworzenia okna też trafią do panelu)
 Register-HTLogSink -ScriptBlock { param($entry) Add-HTLogItem -Entry $entry }
+Remove-HTOldLogs -Days 30
 Write-Log -Message "Uruchamianie Helpdesk Tools $($Global:AppVersion) (PowerShell $($PSVersionTable.PSVersion))" -Type "Info"
 
 # Interfejs: okno główne, przestrzenie robocze i moduły
@@ -85,6 +100,7 @@ $guiFiles = @(
     "GUI/Workspaces/M365Users.ps1",
     "GUI/Workspaces/Exchange.ps1",
     "GUI/Workspaces/Intune.ps1",
+    "GUI/Workspaces/Sites.ps1",
     "GUI/Workspaces/SharePoint.ps1",
     "GUI/Workspaces/ActiveDirectory.ps1"
 )
@@ -100,6 +116,12 @@ try {
     # Wczytanie konfiguracji (przy pierwszym uruchomieniu pytanie o utworzenie pliku - okno już istnieje)
     $Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
     Apply-HTConfig -Config $Global:HTConfig
+
+    # PIN przed oknem głównym (przy pierwszym uruchomieniu - ustawienie PIN-u)
+    if (-not (Unlock-HTApplication)) {
+        Write-Log -Message "Program nie został odblokowany - zamykanie." -Type "Warn"
+        return
+    }
 
     # Nieobsłużone wyjątki w zdarzeniach interfejsu - wpis w dzienniku i komunikat zamiast zamknięcia programu
     $window.Dispatcher.add_UnhandledException({
@@ -121,6 +143,8 @@ try {
             try {
                 Update-HTHeaderLayout
                 Initialize-HelpdeskTools
+                Start-HTAutoLock
+                if ($Connect) { Invoke-HTUiAction -Module $null -Action { Invoke-HTConnectionClick -Service $Connect } }
             }
             catch {
                 Write-Log -Message "Błąd inicjalizacji: $($_.Exception.Message)" -Type "Error"
@@ -140,7 +164,7 @@ finally {
         "ConnectedToExchange", "ConnectedToGraphAPI", "ConnectedToSharepoint", "ConnectedToSharepointPnP",
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
-        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose"
+        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

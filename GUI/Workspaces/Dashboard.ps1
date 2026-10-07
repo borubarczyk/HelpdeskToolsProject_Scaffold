@@ -1,6 +1,6 @@
 ﻿# Przestrzeń robocza: Pulpit - stan usług, licencje, kondycja Microsoft 365
 
-Register-HTWorkspace -Key 'Dashboard' -Title 'Pulpit' -Icon 'E80F' -Description 'Stan połączonych usług, licencje, kondycja Microsoft 365 i komunikaty' -Categories @('Przegląd', 'Microsoft 365')
+Register-HTWorkspace -Key 'Dashboard' -Title 'Pulpit' -Icon 'E80F' -Description 'Stan połączonych usług, licencje, kondycja Microsoft 365 i komunikaty' -Categories @('Przegląd', 'Microsoft 365', 'Program')
 
 $script:DashboardTiles = @(
     @{ Key = 'Users'; Label = 'Użytkownicy M365'; Icon = 'E716' }
@@ -91,4 +91,35 @@ Register-HTModule -Workspace 'Dashboard' -Category 'Microsoft 365' -Key 'dash.me
         $days = Get-HTNum $m.C.Days
         Invoke-HTQuery -Module $m -Name 'Centrum wiadomości' -ScriptBlock { Get-HTM365MessageCenter -Days $days }
     } | Out-Null
+}
+
+Register-HTModule -Workspace 'Dashboard' -Category 'Program' -Key 'dash.env' -Title 'Moduły i środowisko' -Icon 'E90F' -Service '' `
+    -Description 'Weryfikacja pakietów: wersje PowerShell, .NET i modułów, zgodność modułów z tym PowerShell oraz konflikty bibliotek. Prawy przycisk - instalacja zgodnej lub najnowszej wersji.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Sprawdź' -Icon 'E9D9' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Weryfikacja modułów' -ScriptBlock { Get-HTEnvironmentReport } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Uruchom ponownie' -Icon 'E72C' -ToolTip 'Nowa sesja PowerShell - rozwiązuje konflikty bibliotek między modułami' -OnClick {
+        param($m)
+        if (Show-HTConfirm -Title 'Ponowne uruchomienie' -ConfirmText 'Uruchom ponownie' -Message 'Uruchomić program ponownie? Połączenia z usługami zostaną zakończone (po starcie trzeba wpisać PIN).') { Restart-HTApplication }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Folder dziennika' -Icon 'E838' -OnClick { param($m) $d = Get-HTLogDirectory; if ($d -and (Test-Path $d)) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $d) } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Folder eksportu' -Icon 'E838' -OnClick { param($m) Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f (Get-HTExportDirectory)) } | Out-Null
+    $m.OnShow = { param($m) if ($m.Table.Rows.Count -eq 0) { Invoke-HTQuery -Module $m -Name 'Weryfikacja modułów' -ScriptBlock { Get-HTEnvironmentReport } } }
+    Add-HTRowAction -Module $m -Text 'Zainstaluj wersję zgodną z tym PowerShell' -Icon 'E896' -Action {
+        param($m, $rows)
+        foreach ($r in @($rows | Where-Object { $_.Moduł })) {
+            Set-HTBusy -Busy $true -Text "Szukanie zgodnej wersji $($r.Moduł)…"
+            try { $v = Install-HTCompatibleModule -Name $r.Moduł -OnProgress { param($text) Set-HTStatus -Text $text; Update-HTUi } }
+            catch { $v = $null; Write-Log -Message "Instalacja $($r.Moduł): $($_.Exception.Message)" -Type 'Error' }
+            finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+            if ($v) { Show-HTToast "Zainstalowano $($r.Moduł) $v." 'ok' } else { Show-HTWarning -Title $r.Moduł -Text 'Nie znaleziono zgodnej wersji wśród ostatnich wydań - zaktualizuj PowerShell (https://aka.ms/powershell).' }
+        }
+        Invoke-HTModulePrimary $m
+    }
+    Add-HTRowAction -Module $m -Text 'Zainstaluj / zaktualizuj najnowszą wersję' -Icon 'E777' -Action {
+        param($m, $rows)
+        $scope = if (Test-HTIsAdministrator) { 'AllUsers' } else { 'CurrentUser' }
+        Invoke-HTRowAction -Module $m -Name 'Instalacja modułu' -Service '' -Rows @($rows | Where-Object { $_.Moduł }) -Confirm "Zainstalować najnowsze wersje z PowerShell Gallery ($scope)? Najnowsza wersja może wymagać nowszego PowerShell - program wtedy użyje starszej zgodnej." `
+            -Label { param($r) $r.Moduł } -Action { param($r) Install-Module -Name $r.Moduł -Scope $scope -Repository PSGallery -Force -AllowClobber -AcceptLicense -ErrorAction Stop } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
 }

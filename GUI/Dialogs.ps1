@@ -186,6 +186,8 @@ function Show-HTSettingsDialog {
         @{ Name = 'LogClientIDForPnP'; Label = 'Zapamiętuj ostatnio użyty Client ID'; Type = 'Check'; Default = [bool]$cfg.LogClientIDForPnP }
         @{ Type = 'Header'; Label = 'Active Directory' }
         @{ Name = 'AadSyncServer'; Label = 'Serwer Microsoft Entra Connect'; Default = $cfg.AadSyncServer; Hint = 'Do uruchamiania synchronizacji delta (wymaga WinRM).' }
+        @{ Type = 'Header'; Label = 'Bezpieczeństwo' }
+        @{ Name = 'AutoLockMinutes'; Label = 'Automatyczna blokada po bezczynności (minuty, 0 = wyłączona)'; Type = 'Number'; Default = [int]$cfg.AutoLockMinutes; Min = 0; Max = 480; Hint = 'Odblokowanie PIN-em. Ręcznie: kłódka w nagłówku lub Ctrl+Shift+L. PIN zmienisz przyciskiem «Zmień PIN».' }
         @{ Type = 'Header'; Label = 'Aplikacja' }
         @{ Name = 'ShowNotifications'; Label = 'Pokazuj powiadomienia w oknie'; Type = 'Check'; Default = [bool]$cfg.ShowNotifications }
         @{ Name = 'ConfirmBeforeClose'; Label = 'Pytaj przed zamknięciem, gdy są aktywne połączenia'; Type = 'Check'; Default = [bool]$cfg.ConfirmBeforeClose }
@@ -195,8 +197,11 @@ function Show-HTSettingsDialog {
     $result = Show-HTFormDialog -Title 'Ustawienia' -Description "Plik konfiguracji: $Global:ConfigPath" -Fields $fields -Icon 'E713' -Width 640 -MaxHeight 600 -ExtraButtons @(
         @{ Text = 'Otwórz plik'; Icon = 'E8E5'; OnClick = { param($w) if (Test-Path $Global:ConfigPath) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $Global:ConfigPath) } } }
         @{ Text = 'Folder'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }
+        @{ Text = 'Zmień PIN'; Icon = 'E72E'; OnClick = { param($w) Update-HTPinInteractive } }
     )
     if (-not $result) { return $false }
+    # PIN mógł zostać zmieniony w trakcie (przycisk «Zmień PIN») - zachowaj aktualny zapis
+    foreach ($key in 'PinHash', 'PinSalt', 'PinLength') { $cfg.$key = $Global:HTConfig.$key }
     foreach ($key in $result.Keys) {
         $value = $result[$key]
         if ($key -eq 'GraphScopes') { $value = @(Split-HTInputList -Text $value) }
@@ -210,3 +215,20 @@ function Show-HTSettingsDialog {
     return $true
 }
 #endregion
+
+# Zmiana PIN-u: najpierw obecny PIN, potem nowy (dwukrotnie)
+function Update-HTPinInteractive {
+    if (Test-HTPinConfigured) {
+        $current = Show-InputBox -Title 'Zmiana PIN-u' -Prompt 'Obecny PIN:' -Password -Icon 'E72E'
+        if ($null -eq $current) { return }
+        if (-not (Test-HTPin -Pin $current)) {
+            Write-Log -Message 'Zmiana PIN-u: nieprawidłowy obecny PIN.' -Type 'Warn'
+            Show-HTWarning 'Nieprawidłowy obecny PIN.'
+            return
+        }
+    }
+    $pin = Show-HTPinSetupDialog -Title 'Nowy PIN programu'
+    if (-not $pin) { return }
+    Set-HTPin -Pin $pin
+    Show-HTToast 'Zmieniono PIN.' 'ok'
+}

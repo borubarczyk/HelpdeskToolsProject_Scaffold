@@ -81,16 +81,42 @@ function Test-HTLogEntryMatch {
     return $true
 }
 
-# Domyślny katalog eksportu
+# Domyślny katalog eksportu: ustawienie ExportPath albo Dokumenty\HelpdeskTools\Eksport
 function Get-HTExportDirectory {
+    $documents = [Environment]::GetFolderPath("MyDocuments")
     $path = if ($Global:ExportPath) { $Global:ExportPath }
+    elseif ($documents) { Join-Path $documents "HelpdeskTools\Eksport" }
     elseif ($Global:ConfigDir) { Join-Path $Global:ConfigDir "Exports" }
-    else { [Environment]::GetFolderPath("MyDocuments") }
+    else { [System.IO.Path]::GetTempPath() }
 
     if (-not (Test-Path $path)) {
-        try { New-Item -ItemType Directory -Path $path -Force | Out-Null } catch { $path = [Environment]::GetFolderPath("MyDocuments") }
+        try { New-Item -ItemType Directory -Path $path -Force | Out-Null } catch { $path = $documents }
     }
     return $path
+}
+
+# Katalog dziennika: %LOCALAPPDATA%\HelpdeskTools\Logs (jak w Domain Ops); bez zmiennej LogDir - katalog konfiguracji
+function Get-HTLogDirectory {
+    if ($Global:LogDir) { return $Global:LogDir }
+    return $Global:ConfigDir
+}
+
+# Bieżący plik dziennika: jeden plik na dzień (HelpdeskTools_RRRRMMDD.log)
+function Get-HTLogFile {
+    $dir = Get-HTLogDirectory
+    if (-not $dir) { return $null }
+    return (Join-Path $dir ("HelpdeskTools_{0:yyyyMMdd}.log" -f (Get-Date)))
+}
+
+# Usuwa pliki dziennika starsze niż wskazana liczba dni
+function Remove-HTOldLogs {
+    param ([int]$Days = 30)
+    $dir = Get-HTLogDirectory
+    if (-not $dir -or -not (Test-Path $dir)) { return }
+    $cutoff = (Get-Date).AddDays(-$Days)
+    Get-ChildItem -Path $dir -Filter "HelpdeskTools_*.log" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $cutoff } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 # Funkcja do zapisywania danych do pliku
@@ -166,8 +192,8 @@ function Add-LogToFile {
     )
 
     if (-not $Path) {
-        if (-not $Global:ConfigDir) { return }
-        $Path = Join-Path $Global:ConfigDir "logs.txt"
+        $Path = Get-HTLogFile
+        if (-not $Path) { return }
     }
 
     try {
@@ -178,7 +204,7 @@ function Add-LogToFile {
 
         $maxSizeMB = if ($Global:LogFileMaxSizeMB -gt 0) { [double]$Global:LogFileMaxSizeMB } else { 5 }
         if ((Test-Path $Path) -and ((Get-Item $Path).Length -gt ($maxSizeMB * 1MB))) {
-            $archive = Join-Path $dir ("logs_{0}.txt" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+            $archive = Join-Path $dir ("{0}_{1}{2}" -f [System.IO.Path]::GetFileNameWithoutExtension($Path), (Get-Date -Format "HHmmss"), [System.IO.Path]::GetExtension($Path))
             Move-Item -Path $Path -Destination $archive -Force
         }
 

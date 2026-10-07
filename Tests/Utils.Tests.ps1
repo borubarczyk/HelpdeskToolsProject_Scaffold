@@ -28,7 +28,7 @@ Describe "Write-Log" {
 
     It "dopisuje wpis do pliku logu" {
         Write-Log -Message "do pliku" -Type "Info"
-        $content = Get-Content (Join-Path $Global:ConfigDir "logs.txt") -Raw
+        $content = Get-Content (Get-HTLogFile) -Raw
         $content | Should -Match "\[Info\].*do pliku"
     }
 
@@ -44,7 +44,7 @@ Describe "Write-Log" {
         try {
             Write-Log -Message ("x" * 500) -Type "Info"
             Write-Log -Message "po rotacji" -Type "Info"
-            @(Get-ChildItem $Global:ConfigDir -Filter "logs_*.txt").Count | Should -BeGreaterThan 0
+            @(Get-ChildItem (Get-HTLogDirectory) -Filter "HelpdeskTools_*_*.log").Count | Should -BeGreaterThan 0
         }
         finally { $Global:LogFileMaxSizeMB = 5 }
     }
