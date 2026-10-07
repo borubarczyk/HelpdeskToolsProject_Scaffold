@@ -45,7 +45,7 @@ Układ jak w Domain Ops: ciemny motyw, Segoe UI, ikony Segoe Fluent Icons / MDL2
 - **Dane poufne** (hasła, klucze BitLocker, LAPS, TAP) są maskowane - «Pokaż poufne»; skopiowane hasło znika ze schowka po 60 s.
 - **Operacje ryzykowne** wymagają potwierdzenia z listą obiektów, a nieodwracalne - przepisania słowa (np. `USUŃ`, `OFFBOARDING`).
 - **Dziennik operacji** (`Ctrl+L`) z licznikiem ostrzeżeń, powiadomienia w oknie, pasek stanu z postępem.
-- **Okno logowania na wierzchu**: na czas logowania do Exchange / Graph / SharePoint okno programu jest minimalizowane, a potem przywracane - okno logowania Microsoft nie chowa się już za aplikacją. Alternatywnie można włączyć logowanie Exchange w przeglądarce (Ustawienia).
+- **Logowanie w przeglądarce**: Exchange, Microsoft 365 i SharePoint logują się w karcie domyślnej przeglądarki (bez okna Windows WAM, które chowało się za programem). W tym czasie widoczne jest okienko «Trwa logowanie» z przyciskiem **Anuluj logowanie** i limitem czasu - zamknięcie karty przez przypadek nie blokuje programu: anuluj i połącz ponownie.
 - **Skróty**: `Ctrl+1..8` - przestrzenie, `F5` - główna akcja modułu, `Ctrl+F` - filtr wyników, `Ctrl+L` - dziennik, `Ctrl+G` - generator haseł.
 
 ## Funkcje
@@ -104,12 +104,12 @@ Plik `%APPDATA%\HelpdeskTools\config.json` (brakujące klucze są uzupełniane a
   "ExportPath": "",
   "InactiveDays": 90,
   "AadSyncServer": "",
-  "ExchangeUseBrowserLogin": false,
+  "LoginTimeoutMinutes": 5,
   "ConfirmBeforeClose": true
 }
 ```
 
-Ustawienia można edytować w oknie **Ustawienia** (ikona koła zębatego). `InactiveDays` - domyślny próg raportów nieaktywności, `AadSyncServer` - serwer Microsoft Entra Connect, `ExchangeUseBrowserLogin` - logowanie Exchange w przeglądarce zamiast okna WAM. Po aktualizacji programu do konfiguracji są automatycznie dopisywane nowe uprawnienia Graph. Pełną listę domyślnych kluczy zawiera plik [`config.example.json`](config.example.json). `LogPasswordGeneration` zapisuje hasła w logu w postaci jawnej - pozostaw tę opcję wyłączoną.
+Ustawienia można edytować w oknie **Ustawienia** (ikona koła zębatego). `InactiveDays` - domyślny próg raportów nieaktywności, `AadSyncServer` - serwer Microsoft Entra Connect, `LoginTimeoutMinutes` - po ilu minutach oczekiwanie na logowanie w przeglądarce jest anulowane. Po aktualizacji programu do konfiguracji są automatycznie dopisywane nowe uprawnienia Graph. Pełną listę domyślnych kluczy zawiera plik [`config.example.json`](config.example.json). `LogPasswordGeneration` zapisuje hasła w logu w postaci jawnej - pozostaw tę opcję wyłączoną.
 
 ## Struktura projektu
 
@@ -155,7 +155,7 @@ Invoke-Pester -Path .\Tests
 3. **Brak uprawnień (403) w Graph** - sprawdź role konta i zgodę administratora na uprawnienia z `GraphScopes`.
 4. **SharePoint: błąd logowania PnP** - od 2024 r. PnP.PowerShell wymaga własnej rejestracji aplikacji w Entra ID; podaj jej Client ID (można go zapamiętać: `LogClientIDForPnP = true`).
 5. **Funkcje AD zgłaszają brak modułu** - brak modułu ActiveDirectory (RSAT) na tym komputerze; po instalacji kliknij «Active Directory» w nagłówku.
-6. **Okno logowania Exchange się nie pojawia / zawiesza** - włącz w Ustawieniach «logowanie w przeglądarce zamiast okna Windows (WAM)».
+6. **Logowanie Exchange otwiera osobne okno zamiast karty przeglądarki** - zaktualizuj moduł: `Update-Module ExchangeOnlineManagement` (wymagana wersja 3.7.2+). Gdy karta została zamknięta - kliknij «Anuluj logowanie» w okienku logowania (lub poczekaj na limit czasu) i połącz ponownie.
 7. **Brak danych w raportach logowań lub MFA** - wymagana licencja Microsoft Entra ID P1 i uprawnienie AuditLog.Read.All; kondycja usług wymaga ServiceHealth.Read.All (połącz ponownie, aby zatwierdzić nowe uprawnienia).
 8. **Źródło blokady AD jest puste** - konto musi mieć prawo odczytu dziennika Security na kontrolerze PDC, a zasady audytu muszą rejestrować zdarzenie 4740.
 

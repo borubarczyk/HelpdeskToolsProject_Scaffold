@@ -2031,31 +2031,172 @@ function Update-ConnectionButtonText {
     }
 }
 
+#endregion
+
+#region Logowanie interaktywne w przeglądarce (z możliwością anulowania)
+<#
+    Logowanie do usług Microsoft odbywa się w karcie domyślnej przeglądarki (MSAL nasłuchuje na localhost
+    na odpowiedź z karty). Wywołanie Connect-* blokuje wątek okna, dlatego na czas logowania w osobnym wątku
+    działa małe okno «Trwa logowanie» z przyciskiem «Anuluj» i limitem czasu. Anulowanie wysyła do oczekującego
+    nasłuchu MSAL odpowiedź z błędem access_denied - Connect-* kończy się błędem zamiast czekać w nieskończoność
+    (np. gdy karta przeglądarki została przypadkiem zamknięta).
+#>
+$script:LoginWatchdogScript = {
+    param($State)
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+    $xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="Helpdesk Tools - logowanie"
+        Width="460" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterScreen" Topmost="True"
+        Background="#12171D" Foreground="#E4E8EF" FontFamily="Segoe UI" FontSize="13" UseLayoutRounding="True">
+  <Border Padding="22,20,22,18">
+    <StackPanel>
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border Width="38" Height="38" CornerRadius="10" Background="#1A2640" VerticalAlignment="Top">
+          <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE774;" FontSize="17" Foreground="#8CB0FF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <StackPanel Grid.Column="1" Margin="14,0,0,0" VerticalAlignment="Center">
+          <TextBlock Name="title" FontSize="16" FontWeight="SemiBold" Foreground="White" TextWrapping="Wrap"/>
+          <TextBlock Text="Dokończ logowanie w karcie przeglądarki." Foreground="#8791A5" Margin="0,3,0,0" TextWrapping="Wrap"/>
+        </StackPanel>
+      </Grid>
+      <TextBlock Name="info" TextWrapping="Wrap" Foreground="#C9D0DC" Margin="0,16,0,0" LineHeight="19"
+                 Text="Jeśli karta została zamknięta albo logowanie się nie udało, kliknij «Anuluj logowanie» i połącz się ponownie."/>
+      <ProgressBar Name="bar" Height="6" Margin="0,16,0,0" IsIndeterminate="True" Foreground="#4C7DF0" Background="#262D39" BorderThickness="0"/>
+      <TextBlock Name="time" Foreground="#5E6779" FontSize="12" Margin="0,6,0,0"/>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <Button Name="cancel" Content="Anuluj logowanie" Padding="16,6" MinWidth="140" Background="#3A1F25" Foreground="#FF8A95" BorderBrush="#5A2A33"/>
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</Window>
+"@
+    $w = [System.Windows.Markup.XamlReader]::Parse($xaml)
+    $w.FindName('title').Text = "Logowanie: $($State.Title)"
+    $State.Window = $w
+    $State.Dispatcher = $w.Dispatcher
+    $started = Get-Date
+
+    $sendCancel = {
+        param([string]$Reason)
+        if ($State.Cancelled) { return }
+        $State.Cancelled = $true
+        $State.Reason = $Reason
+        $w.FindName('cancel').IsEnabled = $false
+        $w.FindName('info').Text = 'Anulowanie logowania…'
+        # Nowe porty nasłuchu tego procesu na pętli zwrotnej = oczekujący nasłuch MSAL na odpowiedź z przeglądarki
+        $ports = @()
+        try {
+            $ports = @(Get-NetTCPConnection -OwningProcess $State.ProcessId -State Listen -ErrorAction Stop |
+                    Where-Object { $_.LocalAddress -in '127.0.0.1', '::1' -and $State.BasePorts -notcontains $_.LocalPort } |
+                    ForEach-Object { $_.LocalPort } | Select-Object -Unique)
+        }
+        catch { $ports = @() }
+        $sent = 0
+        foreach ($port in $ports) {
+            foreach ($hostName in '127.0.0.1', 'localhost') {
+                try {
+                    Invoke-WebRequest -Uri "http://$($hostName):$port/?error=access_denied&error_description=Login+cancelled+in+Helpdesk+Tools" -TimeoutSec 4 -UseBasicParsing -ErrorAction Stop | Out-Null
+                    $sent++
+                    break
+                }
+                catch {
+                    # Odpowiedź z błędem HTTP też oznacza, że nasłuch odebrał żądanie
+                    if ($_.Exception.Response) { $sent++; break }
+                }
+            }
+        }
+        $State.CancelSent = $sent
+        if ($sent -eq 0) {
+            $w.FindName('info').Text = 'Nie znaleziono oczekującego logowania w przeglądarce. Jeśli otwarte jest okno logowania Microsoft, zamknij je - program wróci do pracy.'
+        }
+    }
+
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $timer.add_Tick({
+            if ($State.Done) { $timer.Stop(); $State.Closing = $true; $w.Close(); return }
+            $left = [int]($State.TimeoutSeconds - ((Get-Date) - $started).TotalSeconds)
+            if ($left -le 0 -and -not $State.Cancelled) { & $sendCancel 'timeout' }
+            $w.FindName('time').Text = if ($State.Cancelled) { '' } else { 'Automatyczne anulowanie za {0}:{1:00}' -f [Math]::Floor([Math]::Max(0, $left) / 60), ([Math]::Max(0, $left) % 60) }
+        })
+    $w.FindName('cancel').add_Click({ & $sendCancel 'user' })
+    # Zamknięcie okienka (X) = anulowanie - inaczej nie byłoby jak przerwać oczekiwania
+    $w.add_Closing({
+            param($s, $e)
+            if ($State.Done -or $State.Closing) { return }
+            $e.Cancel = $true
+            & $sendCancel 'user'
+        })
+    $timer.Start()
+    [void]$w.ShowDialog()
+}
+
+function Start-HTLoginWatchdog {
+    param([string]$Title, [int]$TimeoutSeconds = 300)
+    $base = @()
+    try { $base = @(Get-NetTCPConnection -OwningProcess $PID -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalPort }) } catch { $base = @() }
+    $state = [hashtable]::Synchronized(@{
+            Title = $Title; TimeoutSeconds = [Math]::Max(30, $TimeoutSeconds); ProcessId = $PID; BasePorts = $base
+            Done = $false; Closing = $false; Cancelled = $false; Reason = ''; CancelSent = 0; Window = $null; Dispatcher = $null
+        })
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = 'STA'
+        $rs.ThreadOptions = 'ReuseThread'
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($script:LoginWatchdogScript.ToString()).AddArgument($state)
+        $state.Handle = $ps.BeginInvoke()
+        $state.PowerShell = $ps
+        $state.Runspace = $rs
+    }
+    catch { Write-Log -Message "Nie udało się otworzyć okna postępu logowania: $($_.Exception.Message)" -Type 'Warn' }
+    return $state
+}
+
+function Stop-HTLoginWatchdog {
+    param([hashtable]$State)
+    if (-not $State) { return }
+    $State.Done = $true
+    try {
+        if ($State.Handle) { [void]$State.Handle.AsyncWaitHandle.WaitOne(3000) }
+        if ($State.PowerShell) { if (-not $State.Handle.IsCompleted) { $State.PowerShell.Stop() }; $State.PowerShell.Dispose() }
+        if ($State.Runspace) { $State.Runspace.Dispose() }
+    }
+    catch { Write-Verbose "Okno logowania: $_" }
+}
+
 function Invoke-HTInteractiveLogin {
     <#
-        Logowanie interaktywne (MSAL / WAM / przeglądarka) bywa otwierane za oknem programu, bo okno logowania
-        ma za rodzica konsolę PowerShell. Na czas logowania okno główne jest minimalizowane, a po nim przywracane
-        i aktywowane - okno logowania zawsze jest widoczne na wierzchu.
+        Wykonuje blok logowania (Connect-*) z oknem «Trwa logowanie» (Anuluj + limit czasu).
+        Anulowanie lub przekroczenie czasu kończy się wyjątkiem OperationCanceledException.
     #>
-    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [string]$Service = '')
-    $w = $script:UI.Window
-    $previousState = $null
-    if ($w -and $w.IsVisible) {
-        $previousState = $w.WindowState
-        $w.Topmost = $false
-        $w.WindowState = 'Minimized'
-        Update-HTUi
-    }
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [string]$Title = 'Microsoft 365', [int]$TimeoutSeconds = 0)
+    if ($TimeoutSeconds -le 0) { $TimeoutSeconds = if ($Global:LoginTimeoutMinutes -gt 0) { [int]$Global:LoginTimeoutMinutes * 60 } else { 300 } }
+    Set-HTStatus -Text "Logowanie: $Title - dokończ logowanie w przeglądarce…"
+    Update-HTUi
+    $watch = Start-HTLoginWatchdog -Title $Title -TimeoutSeconds $TimeoutSeconds
     try {
         & $ScriptBlock
     }
+    catch {
+        if ($watch -and $watch.Cancelled) {
+            $why = if ($watch.Reason -eq 'timeout') { "przekroczono czas logowania ($([int]($TimeoutSeconds / 60)) min)" } else { 'anulowano logowanie' }
+            throw [System.OperationCanceledException]::new("Nie połączono z usługą $Title - $why.")
+        }
+        throw
+    }
     finally {
-        if ($w -and $null -ne $previousState) {
-            $w.WindowState = if ($previousState -eq 'Minimized') { 'Normal' } else { $previousState }
+        Stop-HTLoginWatchdog -State $watch
+        # Przeglądarka przejęła fokus - przywróć okno programu na wierzch
+        $w = $script:UI.Window
+        if ($w -and $w.IsVisible) {
+            if ($w.WindowState -eq 'Minimized') { $w.WindowState = 'Normal' }
             [void]$w.Activate()
             $w.Topmost = $true
             $w.Topmost = $false
-            [void]$w.Focus()
             Update-HTUi
         }
     }
