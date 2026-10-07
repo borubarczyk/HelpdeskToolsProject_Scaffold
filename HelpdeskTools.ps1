@@ -2,8 +2,9 @@
 .SYNOPSIS
     Główny plik uruchamiający aplikację Helpdesk Tools.
 .DESCRIPTION
-    Aplikacja Windows Forms do zarządzania Active Directory, Microsoft 365 (Graph), Exchange Online,
-    Intune i SharePoint. Uruchom w PowerShell 7 (pwsh) jako administrator.
+    Aplikacja WPF do zarządzania Active Directory, Microsoft 365 (Graph), Exchange Online, Intune i SharePoint.
+    Wygląd i układ są wspólne z Domain Ops (AD-ManagerDiamond) i ServerReview.
+    Uruchom w PowerShell 7 (pwsh) jako administrator: pwsh -File .\HelpdeskTools.ps1
 #>
 
 #Requires -RunAsAdministrator
@@ -11,37 +12,25 @@
 
 $ErrorActionPreference = "Continue"
 
-# Windows Forms - style wizualne muszą zostać włączone przed utworzeniem pierwszej kontrolki
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
-try { [System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false) } catch { Write-Verbose "Tryb renderowania tekstu już ustawiony." }
-try { [System.Windows.Forms.Application]::SetUnhandledExceptionMode([System.Windows.Forms.UnhandledExceptionMode]::CatchException) } catch { Write-Verbose "Tryb obsługi wyjątków już ustawiony." }
-
-# Nieobsłużone wyjątki w zdarzeniach GUI - wpis do logu i komunikat zamiast okna .NET
-$threadExceptionHandler = [System.Threading.ThreadExceptionEventHandler] {
-    param($src, $evt)
-    $message = $evt.Exception.Message
-    if ($evt.Exception.InnerException) { $message += "`n$($evt.Exception.InnerException.Message)" }
-    try {
-        Write-Log -Message "Nieobsłużony wyjątek: $message" -Type "Error"
-        Set-HTBusy -Busy $false -Text "Błąd"
-    }
-    catch { Write-Warning $message }
-    [System.Windows.Forms.MessageBox]::Show("Wystąpił nieoczekiwany błąd:`n`n$message", "Helpdesk Tools", "OK", "Error") | Out-Null
+if (-not $IsWindows) {
+    Write-Error "Helpdesk Tools wymaga systemu Windows (interfejs WPF)."
+    return
 }
-[System.Windows.Forms.Application]::add_ThreadException($threadExceptionHandler)
 
+# WPF wymaga wątku STA - w razie potrzeby uruchom ponownie w trybie STA
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
-    Write-Warning "Wątek nie działa w trybie STA - okna dialogowe i schowek mogą nie działać poprawnie. Uruchom: pwsh -STA -File HelpdeskTools.ps1"
+    Write-Warning "Ponowne uruchamianie w trybie STA..."
+    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @("-STA", "-NoProfile", "-File", "`"$PSCommandPath`"")
+    return
 }
+
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "2.0.0"
+$Global:AppVersion = "3.0.0"
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
 $Global:ConfigPath = Join-Path -Path $Global:ConfigDir -ChildPath "config.json"
 $Global:IconsPath = Join-Path -Path $PSScriptRoot -ChildPath "Resources/Icons"
-$Global:BasePath = $Global:IconsPath
 $Global:AppIconPath = Join-Path -Path $Global:IconsPath -ChildPath "Tools.ico"
 $Global:PasswordSpecialCharacters = "!@#$%^&*?"
 $Global:PasswordUseWordBased = $false
@@ -69,7 +58,6 @@ $moduleNames = @(
     "MailboxesExchangeOnline",
     "GraphAPIIntune",
     "GraphAPISharePoint",
-    "MassActions",
     "Dashboard",
     "Startup"
 )
@@ -80,69 +68,79 @@ foreach ($moduleName in $moduleNames) {
         Import-Module $path -Force -Global -DisableNameChecking -ErrorAction Stop
     }
     else {
-        Write-Warning "❗ Moduł nie znaleziony: $path"
+        Write-Warning "Moduł nie znaleziony: $path"
     }
 }
 
+# Dziennik operacji w oknie (wpisy sprzed utworzenia okna też trafią do panelu)
+Register-HTLogSink -ScriptBlock { param($entry) Add-HTLogItem -Entry $entry }
 Write-Log -Message "Uruchamianie Helpdesk Tools $($Global:AppVersion) (PowerShell $($PSVersionTable.PSVersion))" -Type "Info"
 
-# Wczytanie konfiguracji (utworzenie pliku przy pierwszym uruchomieniu)
-$Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
-Apply-HTConfig -Config $Global:HTConfig
-
-# Komponenty GUI (widoki), a następnie obsługa zdarzeń
+# Interfejs: okno główne, przestrzenie robocze i moduły
 $guiFiles = @(
-    "GUI/MainForm.ps1",
-    "GUI/DashboardPanel.ps1",
-    "GUI/UsersPanel.ps1",
-    "GUI/MailBoxPanel.ps1",
-    "GUI/IntunePanel.ps1",
-    "GUI/SharePointPanel.ps1",
-    "GUI/LocalADPanel.ps1",
-    "GUI/MassActionPanel.ps1",
-    "GUI/LogsPanel.ps1",
-    "GUI/SettingsPanel.ps1",
-    "GUI/PasswordGenerator.ps1",
-    "GUI/Events/MainForm_Events.ps1",
-    "GUI/Events/DashboardPanel_Events.ps1",
-    "GUI/Events/UsersPanel_Events.ps1",
-    "GUI/Events/MailBoxPanel_Events.ps1",
-    "GUI/Events/IntunePanel_Events.ps1",
-    "GUI/Events/SharePointPanel_Events.ps1",
-    "GUI/Events/LocalADPanel_Events.ps1",
-    "GUI/Events/MassAction_Events.ps1",
-    "GUI/Events/LogsPanel_Events.ps1",
-    "GUI/Events/SettingsPanel_Events.ps1",
-    "GUI/Events/PasswordGeneratorForm_Events.ps1"
+    "GUI/Common.ps1",
+    "GUI/Dialogs.ps1",
+    "GUI/MainWindow.ps1",
+    "GUI/Workspaces/Dashboard.ps1",
+    "GUI/Workspaces/M365Users.ps1",
+    "GUI/Workspaces/Exchange.ps1",
+    "GUI/Workspaces/Intune.ps1",
+    "GUI/Workspaces/SharePoint.ps1",
+    "GUI/Workspaces/ActiveDirectory.ps1"
 )
-
 foreach ($file in $guiFiles) {
     . (Join-Path $PSScriptRoot $file)
 }
-$HT_UI.PasswordGeneratorWindow.Initialized = $true
 
-# Inicjalizacja ustawień formularza (AD, połączenia, sekcja startowa)
-Initialize-HelpdeskTools
-
-# Uruchom GUI
 try {
-    [System.Windows.Forms.Application]::Run($HT_UI.Form)
+    $window = New-HTMainWindow
+    foreach ($p in $HT_UI.Panels.Values) { [void]$HT_UI.Controls.targetHost.Children.Add($p.Root) }
+    Initialize-HTNavigation
+
+    # Wczytanie konfiguracji (przy pierwszym uruchomieniu pytanie o utworzenie pliku - okno już istnieje)
+    $Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
+    Apply-HTConfig -Config $Global:HTConfig
+
+    # Nieobsłużone wyjątki w zdarzeniach interfejsu - wpis w dzienniku i komunikat zamiast zamknięcia programu
+    $window.Dispatcher.add_UnhandledException({
+            param($s, $e)
+            $message = $e.Exception.Message
+            if ($e.Exception.InnerException) { $message += "`n$($e.Exception.InnerException.Message)" }
+            $e.Handled = $true
+            try {
+                Write-Log -Message "Nieobsłużony wyjątek: $message" -Type "Error"
+                Show-HTError -Text 'Wystąpił nieoczekiwany błąd.' -ErrorObject $message
+            }
+            catch { Write-Warning $message }
+        })
+
+    $script:Started = $false
+    $window.add_ContentRendered({
+            if ($script:Started) { return }
+            $script:Started = $true
+            try {
+                Update-HTHeaderLayout
+                Initialize-HelpdeskTools
+            }
+            catch {
+                Write-Log -Message "Błąd inicjalizacji: $($_.Exception.Message)" -Type "Error"
+            }
+        })
+
+    [void]$window.ShowDialog()
 }
 catch {
     Write-Error "Błąd uruchamiania GUI: $_"
 }
 finally {
-    [System.Windows.Forms.Application]::remove_ThreadException($threadExceptionHandler)
-    Remove-HTNotifyIcon
-    if ($HT_UI -and $HT_UI.Form -and -not $HT_UI.Form.IsDisposed) { $HT_UI.Form.Dispose() }
-
     # Sprzątanie zmiennych globalnych aplikacji (pozostałe zmienne sesji pozostają bez zmian)
     $appVariables = @(
-        "HT_UI", "HTTheme", "HTConfig", "AppVersion", "ConfigDir", "ConfigPath", "IconsPath", "BasePath", "AppIconPath",
+        "HT_UI", "HTConfig", "AppVersion", "ConfigDir", "ConfigPath", "IconsPath", "AppIconPath",
         "PasswordSpecialCharacters", "PasswordUseWordBased", "PasswordDefaultLength", "PasswordEmailAdress", "PasswordEmailTitle",
         "ConnectedToExchange", "ConnectedToGraphAPI", "ConnectedToSharepoint", "ConnectedToSharepointPnP",
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
-        "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath"
+        "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
+        "InactiveDays", "AadSyncServer", "ExchangeUseBrowserLogin", "ConfirmBeforeClose"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

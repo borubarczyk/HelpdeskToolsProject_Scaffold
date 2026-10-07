@@ -243,3 +243,143 @@ function Get-HTSPAbsoluteUrl {
     $uri = [uri]$connection.Url
     return "$($uri.Scheme)://$($uri.Host)$ServerRelativeUrl"
 }
+
+#region Kosz witryny
+function Get-HTSPRecycleBinItems {
+    param (
+        [ValidateRange(1, 93)][int]$Days = 93,
+        [string]$DeletedBy
+    )
+    $cutoff = (Get-Date).AddDays(-$Days)
+    return @(Get-PnPRecycleBinItem -RowLimit 5000 -ErrorAction Stop | Where-Object { $_.DeletedDate -ge $cutoff } | ForEach-Object {
+            $by = if ($_.DeletedByEmail) { $_.DeletedByEmail } else { $_.DeletedByName }
+            if ($DeletedBy -and "$by $($_.DeletedByName)" -notlike "*$DeletedBy*") { return }
+            [PSCustomObject]@{
+                Nazwa      = $_.LeafName
+                Typ        = "$($_.ItemType)"
+                Lokalizacja = $_.DirName
+                Usunął     = $by
+                Usunięto   = $_.DeletedDate
+                "Rozmiar"  = Format-HTBytes $_.Size
+                Etap       = if ("$($_.ItemState)" -eq "SecondStageRecycleBin") { "Kosz zbiorczy (2)" } else { "Kosz witryny (1)" }
+                Id         = "$($_.Id)"
+            }
+        } | Sort-Object Usunięto -Descending)
+}
+
+function Restore-HTSPRecycleBinItem {
+    param ([Parameter(Mandatory)][string]$Id)
+    Restore-PnPRecycleBinItem -Identity $Id -Force -ErrorAction Stop
+}
+
+function Clear-HTSPRecycleBinItem {
+    param ([Parameter(Mandatory)][string]$Id)
+    Clear-PnPRecycleBinItem -Identity $Id -Force -ErrorAction Stop
+}
+#endregion
+
+#region Zawartość folderów
+function Get-HTSPFolderFiles {
+    param ([Parameter(Mandatory)][object]$Node)
+    $siteRelative = ConvertTo-HTSPSiteRelativeUrl -ServerRelativeUrl $Node.ServerRelativeUrl
+    return @(Get-PnPFolderItem -FolderSiteRelativeUrl $siteRelative -ItemType File -ErrorAction Stop | ForEach-Object {
+            [PSCustomObject]@{
+                Nazwa             = $_.Name
+                Rozmiar           = Format-HTBytes $_.Length
+                "Rozmiar (B)"     = [long]$_.Length
+                Zmodyfikowano     = $_.TimeLastModified
+                Utworzono         = $_.TimeCreated
+                Folder            = $Node.ServerRelativeUrl
+                ServerRelativeUrl = $_.ServerRelativeUrl
+            }
+        } | Sort-Object Nazwa)
+}
+#endregion
+
+#region Raport unikalnych uprawnień
+# Biblioteki i foldery (do wskazanej głębokości) z przerwanym dziedziczeniem uprawnień.
+# OnProgress: { param($Text) }
+function Get-HTSPUniquePermissionsReport {
+    param (
+        [ValidateRange(0, 10)][int]$Depth = 2,
+        [object[]]$Nodes,
+        [scriptblock]$OnProgress
+    )
+    $queue = New-Object System.Collections.Queue
+    $roots = if ($Nodes) { @($Nodes) } else { @(Get-HTSPLibraries) }
+    foreach ($n in $roots) { $queue.Enqueue(@{ Node = $n; Level = 0 }) }
+    while ($queue.Count -gt 0) {
+        $entry = $queue.Dequeue()
+        $node = $entry.Node
+        if ($OnProgress) { & $OnProgress $node.ServerRelativeUrl }
+        try {
+            if (Test-HTSPUniquePermissions -Node $node) {
+                foreach ($p in @(Get-HTSPPermissions -Node $node)) {
+                    [PSCustomObject]@{
+                        Ścieżka       = $node.ServerRelativeUrl
+                        Rodzaj        = if ($node.IsLibrary) { "Biblioteka" } else { "Folder" }
+                        Podmiot       = $p.Principal
+                        "Typ podmiotu" = $p.PrincipalType
+                        Uprawnienia   = $p.Roles
+                        Login         = $p.LoginName
+                        __flag        = if ("$($p.LoginName)" -match 'spo-grid-all-users|Everyone|Wszyscy') { "warn" } else { "" }
+                    }
+                }
+            }
+        }
+        catch {
+            [PSCustomObject]@{ Ścieżka = $node.ServerRelativeUrl; Rodzaj = "Błąd"; Podmiot = ""; "Typ podmiotu" = ""; Uprawnienia = $_.Exception.Message; Login = ""; __flag = "crit" }
+        }
+        if ($entry.Level -lt $Depth) {
+            try {
+                foreach ($child in @(Get-HTSPSubFolders -ServerRelativeUrl $node.ServerRelativeUrl -ListTitle $node.ListTitle)) {
+                    $queue.Enqueue(@{ Node = $child; Level = $entry.Level + 1 })
+                }
+            }
+            catch { Write-Log -Message "Podfoldery $($node.ServerRelativeUrl): $($_.Exception.Message)" -Type "Warn" }
+        }
+    }
+}
+#endregion
+
+#region Witryna
+function Get-HTSPSiteInfo {
+    $site = Get-PnPSite -Includes Usage, Owner, StorageQuota, Url, ServerRelativeUrl, LockState, SharingCapability -ErrorAction Stop
+    $web = Get-PnPWeb -Includes Created, LastItemModifiedDate, Language, WebTemplate, Description -ErrorAction Stop
+    $admins = @()
+    try { $admins = @(Get-PnPSiteCollectionAdmin -ErrorAction Stop | ForEach-Object { "$($_.Title) <$($_.Email)>" }) } catch { $admins = @("(brak uprawnień do odczytu)") }
+    $usage = $site.Usage
+    return [ordered]@{
+        "Tytuł"                   = $web.Title
+        "Adres"                   = $site.Url
+        "Opis"                    = $web.Description
+        "Szablon"                 = $web.WebTemplate
+        "Utworzono"               = $web.Created
+        "Ostatnia zmiana"         = $web.LastItemModifiedDate
+        "Właściciel"              = if ($site.Owner) { "$($site.Owner.Title) <$($site.Owner.Email)>" } else { "" }
+        "Stan blokady"            = "$($site.LockState)"
+        "Magazyn"                 = [ordered]@{
+            "Wykorzystano"        = if ($usage) { Format-HTBytes $usage.Storage } else { "" }
+            "Procent limitu"      = if ($usage) { "{0:N1}%" -f ($usage.StoragePercentageUsed * 100) } else { "" }
+            "Limit"               = if ($site.StorageQuota) { Format-HTBytes ($site.StorageQuota * 1MB) } else { "" }
+        }
+        "Administratorzy kolekcji" = [ordered]@{ "Konta" = $admins }
+    }
+}
+
+# Wyszukiwanie witryn w tenancie przez Microsoft Graph (Sites.Read.All)
+function Find-HTSPSites {
+    param ([string]$Search = "*")
+    $query = if ([string]::IsNullOrWhiteSpace($Search)) { "*" } else { $Search.Trim() }
+    $items = Invoke-HTGraphRequest -Uri "sites?search=$([uri]::EscapeDataString($query))&`$select=id,displayName,webUrl,createdDateTime,lastModifiedDateTime,description" -All
+    return @($items | Where-Object { $_.webUrl -notmatch '/personal/' } | ForEach-Object {
+            [PSCustomObject]@{
+                Nazwa           = $_.displayName
+                Adres           = $_.webUrl
+                Opis            = $_.description
+                Utworzono       = $_.createdDateTime
+                "Ostatnia zmiana" = $_.lastModifiedDateTime
+            }
+        } | Sort-Object Nazwa)
+}
+#endregion

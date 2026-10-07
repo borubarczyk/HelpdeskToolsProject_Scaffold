@@ -1,4 +1,4 @@
-﻿# Wspólne przygotowanie testów: import modułów bez GUI (UIComponents wymaga Windows Forms)
+﻿# Wspólne przygotowanie testów: import modułów bez GUI (UIComponents wymaga WPF - tylko Windows)
 $script:RepoRoot = Split-Path -Parent $PSScriptRoot
 
 function Import-HTTestModule {
@@ -28,9 +28,4 @@ function New-HTTestStub {
     $params = @($Parameters | ForEach-Object { "`$$_" }) + @($Switches | ForEach-Object { "[switch]`$$_" })
     $body = "[CmdletBinding()] param($($params -join ', '))"
     Set-Item -Path "function:global:$Name" -Value ([scriptblock]::Create($body))
-}
-
-# Wyłącza powiadomienia systemowe (Windows Forms) w testach
-function Disable-HTTestToast {
-    Mock -ModuleName Utils Show-Toast { }
 }

@@ -1,5 +1,5 @@
 ﻿# Funkcje dla lokalnego Active Directory (wymaga modułu ActiveDirectory z RSAT)
-# Funkcje przyjmują parametry i zwracają dane - obsługa GUI znajduje się w GUI/Events/LocalADPanel_Events.ps1
+# Funkcje przyjmują parametry i zwracają dane - obsługa GUI znajduje się w GUI/Workspaces/AD*.ps1
 
 # Mapowanie nazw sekcji w GUI na wewnętrzne typy obiektów
 $script:SectionMap = @{
@@ -38,7 +38,7 @@ function Get-HTADObjectList {
 
     switch (ConvertTo-HTADObjectType $Section) {
         "User" {
-            Get-ADUser -Filter * -Properties DisplayName, Enabled, LockedOut, Department, Title, LastLogonDate, EmailAddress |
+            Get-ADUser -Filter * -Properties DisplayName, Enabled, LockedOut, Department, Title, LastLogonDate, EmailAddress, PasswordNeverExpires, PasswordExpired |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Name              = $_.Name
@@ -51,6 +51,8 @@ function Get-HTADObjectList {
                         Department        = $_.Department
                         Title             = $_.Title
                         LastLogonDate     = $_.LastLogonDate
+                        PasswordExpired   = [bool]$_.PasswordExpired
+                        PasswordNeverExpires = [bool]$_.PasswordNeverExpires
                         DistinguishedName = $_.DistinguishedName
                         ObjectGUID        = $_.ObjectGUID
                     }
@@ -73,7 +75,7 @@ function Get-HTADObjectList {
                 }
         }
         "Group" {
-            Get-ADGroup -Filter * -Properties Description, ManagedBy, WhenCreated |
+            Get-ADGroup -Filter * -Properties Description, ManagedBy, WhenCreated, mail |
                 ForEach-Object {
                     [PSCustomObject]@{
                         Name              = $_.Name
@@ -81,6 +83,7 @@ function Get-HTADObjectList {
                         GroupCategory     = "$($_.GroupCategory)"
                         GroupScope        = "$($_.GroupScope)"
                         Description       = $_.Description
+                        Mail              = $_.mail
                         DistinguishedName = $_.DistinguishedName
                         ObjectGUID        = $_.ObjectGUID
                     }
@@ -585,3 +588,357 @@ function Set-HTADComputerDescription {
 function Get-HTADLockedAccounts {
     return @(Search-ADAccount -LockedOut -UsersOnly -ErrorAction Stop)
 }
+
+#region Wyszukiwanie obiektów
+# Wyszukanie użytkownika AD po UPN, e-mailu lub loginie
+function Resolve-HTADUser {
+    param ([Parameter(Mandatory)][string]$Identity)
+    $value = $Identity.Replace("'", "''")
+    $users = @(Get-ADUser -Filter "UserPrincipalName -eq '$value' -or SamAccountName -eq '$value' -or mail -eq '$value'" -ErrorAction Stop)
+    if ($users.Count -eq 0) { throw "Nie znaleziono użytkownika AD: $Identity" }
+    if ($users.Count -gt 1) { throw "Niejednoznaczny identyfikator (znaleziono $($users.Count) konta): $Identity" }
+    return $users[0]
+}
+
+# Wyszukanie dowolnego obiektu (użytkownik, komputer, grupa) po loginie, UPN, nazwie lub DN
+function Resolve-HTADObject {
+    param ([Parameter(Mandatory)][string]$Identity)
+    $value = $Identity.Trim()
+    if ($value -match '^(CN|OU)=') { return Get-ADObject -Identity $value -ErrorAction Stop }
+    $escaped = $value.Replace("'", "''")
+    # Komputer można podać bez znaku $ na końcu nazwy konta
+    $found = @(Get-ADObject -Filter "sAMAccountName -eq '$escaped' -or sAMAccountName -eq '$escaped`$' -or userPrincipalName -eq '$escaped' -or name -eq '$escaped' -or mail -eq '$escaped'" -ErrorAction Stop)
+    if ($found.Count -eq 0) { throw "Nie znaleziono obiektu AD: $Identity" }
+    if ($found.Count -gt 1) { throw "Niejednoznaczny identyfikator (znaleziono $($found.Count) obiekty): $Identity" }
+    return $found[0]
+}
+
+# Sufiksy UPN dostępne w lesie (domena + alternatywne)
+function Get-HTADUpnSuffixes {
+    $suffixes = @((Get-ADDomain -ErrorAction Stop).DNSRoot)
+    try { $suffixes += @((Get-ADForest -ErrorAction Stop).UPNSuffixes) } catch { Write-Verbose $_ }
+    return @($suffixes | Where-Object { $_ } | Select-Object -Unique)
+}
+
+# Proponowany login: imie.nazwisko bez polskich znaków (max 20 znaków - limit sAMAccountName)
+function New-HTADLoginName {
+    param ([Parameter(Mandatory)][string]$GivenName, [Parameter(Mandatory)][string]$Surname, [string]$Format = "{0}.{1}")
+    $given = (ConvertTo-HTAsciiName $GivenName).ToLowerInvariant() -replace '[^a-z0-9\-]', ''
+    $sur = (ConvertTo-HTAsciiName $Surname).ToLowerInvariant() -replace '[^a-z0-9\-]', ''
+    $login = $Format -f $given, $sur
+    if ($login.Length -gt 20) { $login = $login.Substring(0, 20) }
+    return $login.Trim('.')
+}
+#endregion
+
+#region Grupy użytkownika
+# Kopiuje członkostwo w grupach z konta wzorcowego (pomija grupy, do których użytkownik już należy)
+function Copy-HTADGroupMembership {
+    param (
+        [Parameter(Mandatory)][string]$SourceIdentity,
+        [Parameter(Mandatory)][string]$TargetIdentity
+    )
+    $source = Get-ADUser -Identity $SourceIdentity -Properties MemberOf -ErrorAction Stop
+    $target = Get-ADUser -Identity $TargetIdentity -Properties MemberOf -ErrorAction Stop
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($group in @($source.MemberOf)) {
+        $name = Get-HTNameFromDN $group
+        if (@($target.MemberOf) -contains $group) {
+            $result.Add([PSCustomObject]@{ Grupa = $name; Status = "Pominięto"; Szczegóły = "Już jest członkiem" })
+            continue
+        }
+        try {
+            Add-ADGroupMember -Identity $group -Members $target.ObjectGUID -ErrorAction Stop
+            $result.Add([PSCustomObject]@{ Grupa = $name; Status = "OK"; Szczegóły = "Dodano" })
+        }
+        catch { $result.Add([PSCustomObject]@{ Grupa = $name; Status = "Błąd"; Szczegóły = $_.Exception.Message }) }
+    }
+    return $result.ToArray()
+}
+
+# Usuwa użytkownika ze wszystkich grup (poza grupą podstawową, np. Domain Users)
+function Remove-HTADAllGroupMembership {
+    param ([Parameter(Mandatory)][string]$Identity)
+    $user = Get-ADUser -Identity $Identity -Properties MemberOf -ErrorAction Stop
+    $removed = @()
+    foreach ($group in @($user.MemberOf)) {
+        Remove-ADGroupMember -Identity $group -Members $user.ObjectGUID -Confirm:$false -ErrorAction Stop
+        $removed += Get-HTNameFromDN $group
+    }
+    return $removed
+}
+
+# Opis i właściciel grupy
+function Set-HTADGroupProperties {
+    param (
+        [Parameter(Mandatory)][string]$Identity,
+        [AllowEmptyString()][string]$Description,
+        [AllowEmptyString()][string]$ManagedBy
+    )
+    $params = @{ Identity = $Identity; ErrorAction = "Stop" }
+    if ($PSBoundParameters.ContainsKey("Description")) { $params.Description = if ([string]::IsNullOrWhiteSpace($Description)) { $null } else { $Description } }
+    if ($PSBoundParameters.ContainsKey("ManagedBy")) { $params.ManagedBy = if ([string]::IsNullOrWhiteSpace($ManagedBy)) { $null } else { (Resolve-HTADObject -Identity $ManagedBy).DistinguishedName } }
+    Set-ADGroup @params
+}
+#endregion
+
+#region Blokady kont
+# Stan konta na każdym kontrolerze domeny (atrybuty badPwdCount / lockoutTime nie są replikowane)
+function Get-HTADLockoutStatus {
+    param ([Parameter(Mandatory)][string]$Identity)
+    $controllers = @(Get-ADDomainController -Filter * -ErrorAction Stop)
+    foreach ($dc in $controllers) {
+        try {
+            $u = Get-ADUser -Identity $Identity -Server $dc.HostName -Properties LockedOut, badPwdCount, LastBadPasswordAttempt, lockoutTime, PasswordLastSet, LastLogonDate -ErrorAction Stop
+            $lockout = if ($u.lockoutTime -gt 0) { [datetime]::FromFileTime([int64]$u.lockoutTime) } else { $null }
+            [PSCustomObject]@{
+                Kontroler               = $dc.HostName
+                Lokacja                 = $dc.Site
+                Zablokowane             = [bool]$u.LockedOut
+                "Błędne hasła"          = $u.badPwdCount
+                "Ostatnie błędne hasło" = $u.LastBadPasswordAttempt
+                "Zablokowano"           = $lockout
+                "Hasło ustawione"       = $u.PasswordLastSet
+                PDC                     = ($dc.OperationMasterRoles -contains "PDCEmulator")
+                __flag                  = if ($u.LockedOut) { "crit" } elseif ($u.badPwdCount -gt 0) { "warn" } else { "" }
+            }
+        }
+        catch {
+            [PSCustomObject]@{ Kontroler = $dc.HostName; Lokacja = $dc.Site; Zablokowane = $null; "Błędne hasła" = $null; Status = "Błąd"; Szczegóły = $_.Exception.Message; __flag = "muted" }
+        }
+    }
+}
+
+# Źródło blokad konta: zdarzenia 4740 z dziennika Security emulatora PDC (wymaga uprawnień do odczytu dziennika)
+function Get-HTADLockoutEvents {
+    param (
+        [string[]]$SamAccountName = @(),
+        [ValidateRange(1, 720)][int]$Hours = 24
+    )
+    $pdc = (Get-ADDomain -ErrorAction Stop).PDCEmulator
+    $filter = @{ LogName = "Security"; Id = 4740; StartTime = (Get-Date).AddHours(-$Hours) }
+    $events = @()
+    try { $events = @(Get-WinEvent -ComputerName $pdc -FilterHashtable $filter -ErrorAction Stop) }
+    catch {
+        if ("$($_.Exception.Message)" -match 'No events were found|Nie znaleziono') { return @() }
+        throw
+    }
+    $names = @($SamAccountName | ForEach-Object { $_.ToLowerInvariant() })
+    foreach ($e in $events) {
+        $user = "$($e.Properties[0].Value)"
+        if ($names.Count -gt 0 -and $names -notcontains $user.ToLowerInvariant()) { continue }
+        [PSCustomObject]@{
+            Czas                 = $e.TimeCreated
+            Użytkownik           = $user
+            "Komputer źródłowy"  = "$($e.Properties[1].Value)"
+            Kontroler            = $pdc
+            __flag               = "warn"
+        }
+    }
+}
+#endregion
+
+#region Raporty
+# Raporty kont użytkowników
+function Get-HTADUserReport {
+    param (
+        [Parameter(Mandatory)][ValidateSet("Inactive", "NeverLoggedOn", "PasswordExpiring", "PasswordExpired", "Locked", "Disabled", "PasswordNeverExpires", "AccountExpiring")][string]$Type,
+        [ValidateRange(1, 3650)][int]$Days = 90
+    )
+    $properties = "DisplayName", "Enabled", "LockedOut", "LastLogonDate", "WhenCreated", "Department", "Title", "EmailAddress", "PasswordLastSet", "PasswordNeverExpires", "PasswordExpired", "AccountExpirationDate", "msDS-UserPasswordExpiryTimeComputed", "LastBadPasswordAttempt"
+    $users = switch ($Type) {
+        "Locked" { @(Search-ADAccount -LockedOut -UsersOnly -ErrorAction Stop | ForEach-Object { Get-ADUser -Identity $_.ObjectGUID -Properties $properties }) }
+        "Disabled" { @(Get-ADUser -Filter "Enabled -eq `$false" -Properties $properties -ErrorAction Stop) }
+        "PasswordNeverExpires" { @(Get-ADUser -Filter "PasswordNeverExpires -eq `$true" -Properties $properties -ErrorAction Stop) }
+        "AccountExpiring" { @(Search-ADAccount -AccountExpiring -TimeSpan (New-TimeSpan -Days $Days) -UsersOnly -ErrorAction Stop | ForEach-Object { Get-ADUser -Identity $_.ObjectGUID -Properties $properties }) }
+        default { @(Get-ADUser -Filter "Enabled -eq `$true" -Properties $properties -ErrorAction Stop) }
+    }
+    $now = Get-Date
+    foreach ($u in $users) {
+        $lastLogonDays = Get-HTDaysSince $u.LastLogonDate
+        $expiry = $null
+        $raw = $u."msDS-UserPasswordExpiryTimeComputed"
+        if ($raw -and $raw -gt 0 -and $raw -lt [int64]::MaxValue) { try { $expiry = [datetime]::FromFileTime([int64]$raw) } catch { $expiry = $null } }
+        $include = switch ($Type) {
+            "Inactive" { ($null -ne $lastLogonDays -and $lastLogonDays -ge $Days) -or ($null -eq $lastLogonDays -and (Get-HTDaysSince $u.WhenCreated) -ge $Days) }
+            "NeverLoggedOn" { $null -eq $u.LastLogonDate }
+            "PasswordExpiring" { -not $u.PasswordNeverExpires -and $expiry -and $expiry -gt $now -and $expiry -le $now.AddDays($Days) }
+            "PasswordExpired" { -not $u.PasswordNeverExpires -and (($expiry -and $expiry -le $now) -or $u.PasswordExpired) }
+            default { $true }
+        }
+        if (-not $include) { continue }
+        $flag = switch ($Type) {
+            "PasswordExpiring" { if ($expiry -le $now.AddDays(3)) { "crit" } else { "warn" } }
+            "Locked" { "crit" }
+            "Disabled" { "muted" }
+            default { "" }
+        }
+        [PSCustomObject]@{
+            Nazwa                  = if ($u.DisplayName) { $u.DisplayName } else { $u.Name }
+            Login                  = $u.SamAccountName
+            UPN                    = $u.UserPrincipalName
+            Włączone               = [bool]$u.Enabled
+            Dział                  = $u.Department
+            "Ostatnie logowanie"   = $u.LastLogonDate
+            "Dni bez logowania"    = if ($null -ne $lastLogonDays) { $lastLogonDays } else { "nigdy" }
+            "Hasło ustawione"      = $u.PasswordLastSet
+            "Hasło wygasa"         = if ($u.PasswordNeverExpires) { "nigdy" } else { $expiry }
+            "Konto wygasa"         = $u.AccountExpirationDate
+            "Ostatnie błędne hasło" = $u.LastBadPasswordAttempt
+            Utworzono              = $u.WhenCreated
+            OU                     = ($u.DistinguishedName -replace '^CN=(?:[^,\\]|\\.)+,', '')
+            "E-mail"               = $u.EmailAddress
+            ObjectGUID             = $u.ObjectGUID
+            __flag                 = $flag
+        }
+    }
+}
+
+# Raporty komputerów
+function Get-HTADComputerReport {
+    param (
+        [Parameter(Mandatory)][ValidateSet("Inactive", "Disabled", "OperatingSystems", "All")][string]$Type,
+        [ValidateRange(1, 3650)][int]$Days = 90
+    )
+    $computers = @(Get-ADComputer -Filter * -Properties OperatingSystem, OperatingSystemVersion, LastLogonDate, WhenCreated, Description, Enabled, IPv4Address -ErrorAction Stop)
+    if ($Type -eq "OperatingSystems") {
+        return @($computers | Where-Object { $_.Enabled } | Group-Object { "$($_.OperatingSystem) $($_.OperatingSystemVersion)".Trim() } | Sort-Object Count -Descending | ForEach-Object {
+                $active = @($_.Group | Where-Object { (Get-HTDaysSince $_.LastLogonDate) -lt $Days -and $null -ne $_.LastLogonDate }).Count
+                [PSCustomObject]@{
+                    System               = if ($_.Name) { $_.Name } else { "(nieznany)" }
+                    Komputery            = $_.Count
+                    "Aktywne ($Days dni)" = $active
+                    __flag               = if ($_.Name -match 'Windows (7|8|XP|Vista)|Server 20(03|08|12)') { "crit" } else { "" }
+                }
+            })
+    }
+    foreach ($c in $computers) {
+        $daysSince = Get-HTDaysSince $c.LastLogonDate
+        $include = switch ($Type) {
+            "Inactive" { $c.Enabled -and (($null -ne $daysSince -and $daysSince -ge $Days) -or ($null -eq $daysSince -and (Get-HTDaysSince $c.WhenCreated) -ge $Days)) }
+            "Disabled" { -not $c.Enabled }
+            default { $true }
+        }
+        if (-not $include) { continue }
+        [PSCustomObject]@{
+            Nazwa                = $c.Name
+            System               = $c.OperatingSystem
+            Wersja               = $c.OperatingSystemVersion
+            Włączone             = [bool]$c.Enabled
+            "Ostatnie logowanie" = $c.LastLogonDate
+            "Dni bez logowania"  = if ($null -ne $daysSince) { $daysSince } else { "nigdy" }
+            "Adres IPv4"         = $c.IPv4Address
+            Opis                 = $c.Description
+            Utworzono            = $c.WhenCreated
+            OU                   = ($c.DistinguishedName -replace '^CN=(?:[^,\\]|\\.)+,', '')
+            ObjectGUID           = $c.ObjectGUID
+            __flag               = if (-not $c.Enabled) { "muted" } elseif ($Type -eq "Inactive") { "warn" } else { "" }
+        }
+    }
+}
+
+# Grupy bez członków
+function Get-HTADEmptyGroups {
+    foreach ($g in @(Get-ADGroup -Filter * -Properties Members, Description, WhenCreated, WhenChanged, isCriticalSystemObject -ErrorAction Stop)) {
+        if (@($g.Members).Count -gt 0) { continue }
+        [PSCustomObject]@{
+            Nazwa       = $g.Name
+            Typ         = "$($g.GroupCategory)"
+            Zakres      = "$($g.GroupScope)"
+            Opis        = $g.Description
+            Utworzono   = $g.WhenCreated
+            Zmieniono   = $g.WhenChanged
+            Systemowa   = [bool]$g.isCriticalSystemObject
+            OU          = ($g.DistinguishedName -replace '^CN=(?:[^,\\]|\\.)+,', '')
+            ObjectGUID  = $g.ObjectGUID
+            __flag      = if ($g.isCriticalSystemObject) { "muted" } else { "" }
+        }
+    }
+}
+#endregion
+
+#region Komputery zdalne (CIM / WinRM)
+function New-HTCimSession {
+    param ([Parameter(Mandatory)][string]$ComputerName)
+    try { return New-CimSession -ComputerName $ComputerName -OperationTimeoutSec 15 -ErrorAction Stop }
+    catch {
+        $options = New-CimSessionOption -Protocol Dcom
+        return New-CimSession -ComputerName $ComputerName -SessionOption $options -OperationTimeoutSec 15 -ErrorAction Stop
+    }
+}
+
+# Informacje o systemie, sprzęcie i dyskach komputera zdalnego
+function Get-HTComputerSystemInfo {
+    param ([Parameter(Mandatory)][string]$ComputerName)
+    $session = New-HTCimSession -ComputerName $ComputerName
+    try {
+        $os = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $cs = Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop
+        $bios = Get-CimInstance -CimSession $session -ClassName Win32_BIOS -ErrorAction SilentlyContinue
+        $disks = @(Get-CimInstance -CimSession $session -ClassName Win32_LogicalDisk -Filter "DriveType = 3" -ErrorAction SilentlyContinue)
+        $uptime = (Get-Date) - $os.LastBootUpTime
+        return [ordered]@{
+            "Komputer"            = $cs.Name
+            "System"              = "$($os.Caption) ($($os.Version), kompilacja $($os.BuildNumber))"
+            "Zalogowany użytkownik" = $cs.UserName
+            "Ostatni rozruch"     = $os.LastBootUpTime
+            "Czas pracy"          = "{0} d {1} h {2} min" -f $uptime.Days, $uptime.Hours, $uptime.Minutes
+            "Sprzęt"              = [ordered]@{
+                "Producent"       = $cs.Manufacturer
+                "Model"           = $cs.Model
+                "Numer seryjny"   = $bios.SerialNumber
+                "BIOS"            = $bios.SMBIOSBIOSVersion
+                "Pamięć RAM"      = Format-HTBytes $cs.TotalPhysicalMemory
+                "Wolna pamięć"    = Format-HTBytes ([int64]$os.FreePhysicalMemory * 1KB)
+                "Domena"          = $cs.Domain
+            }
+            "Dyski"               = [ordered]@{
+                "Woluminy"        = @($disks | ForEach-Object {
+                        $free = if ($_.Size) { [Math]::Round(100 * $_.FreeSpace / $_.Size) } else { 0 }
+                        "$($_.DeviceID) wolne $(Format-HTBytes $_.FreeSpace) z $(Format-HTBytes $_.Size) ($free%)"
+                    })
+            }
+        }
+    }
+    finally { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue }
+}
+
+# Użytkownicy zalogowani na komputerze (konsola + sesje zdalne - właściciele procesów explorer.exe)
+function Get-HTLoggedOnUsers {
+    param ([Parameter(Mandatory)][string]$ComputerName)
+    $session = New-HTCimSession -ComputerName $ComputerName
+    try {
+        $console = (Get-CimInstance -CimSession $session -ClassName Win32_ComputerSystem -ErrorAction Stop).UserName
+        $users = New-Object System.Collections.Generic.List[string]
+        if ($console) { $users.Add("$console (konsola)") }
+        foreach ($process in @(Get-CimInstance -CimSession $session -ClassName Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue)) {
+            $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner -ErrorAction SilentlyContinue
+            if ($owner -and $owner.User) {
+                $name = "$($owner.Domain)\$($owner.User)"
+                if (-not ($users | Where-Object { $_ -like "$name*" })) { $users.Add($name) }
+            }
+        }
+        return $users.ToArray()
+    }
+    finally { Remove-CimSession -CimSession $session -ErrorAction SilentlyContinue }
+}
+#endregion
+
+#region Synchronizacja Microsoft Entra Connect
+# Uruchamia cykl synchronizacji na serwerze Entra Connect (wymaga WinRM i uprawnień administratora na serwerze)
+function Start-HTEntraConnectSync {
+    param (
+        [Parameter(Mandatory)][string]$Server,
+        [ValidateSet("Delta", "Initial")][string]$PolicyType = "Delta"
+    )
+    $result = Invoke-Command -ComputerName $Server -ErrorAction Stop -ScriptBlock {
+        param($Policy)
+        Import-Module ADSync -ErrorAction Stop
+        $scheduler = Get-ADSyncScheduler
+        if ($scheduler.SyncCycleInProgress) { return "Synchronizacja jest już w toku." }
+        $r = Start-ADSyncSyncCycle -PolicyType $Policy
+        return "$($r.Result)"
+    } -ArgumentList $PolicyType
+    return "$result"
+}
+#endregion

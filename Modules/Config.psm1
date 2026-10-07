@@ -1,6 +1,9 @@
 ﻿# Zarządzanie konfiguracją aplikacji (plik JSON w %APPDATA%\HelpdeskTools\config.json)
 
-# Domyślne uprawnienia (scopes) Microsoft Graph wymagane przez zakładki Użytkownicy, Intune i Dashboard
+# Wersja schematu konfiguracji - podniesienie wersji uzupełnia uprawnienia Graph o zakresy wymagane przez nowe funkcje
+$script:ConfigVersion = 2
+
+# Domyślne uprawnienia (scopes) Microsoft Graph wymagane przez przestrzenie Microsoft 365, Intune, SharePoint i Pulpit
 $script:DefaultGraphScopes = @(
     "User.ReadWrite.All",
     "Directory.AccessAsUser.All",
@@ -14,7 +17,11 @@ $script:DefaultGraphScopes = @(
     "DeviceManagementManagedDevices.PrivilegedOperations.All",
     "BitlockerKey.Read.All",
     "DeviceLocalCredential.Read.All",
-    "Sites.Read.All"
+    "DeviceManagementConfiguration.Read.All",
+    "Sites.Read.All",
+    "RoleManagement.Read.Directory",
+    "ServiceHealth.Read.All",
+    "ServiceMessage.Read.All"
 )
 
 # Zwraca domyślną konfigurację
@@ -34,6 +41,11 @@ function Get-HTDefaultConfig {
         ShowNotifications         = $true
         LogFileMaxSizeMB          = 5
         ExportPath                = ""
+        InactiveDays              = 90
+        AadSyncServer             = ""
+        ExchangeUseBrowserLogin   = $false
+        ConfirmBeforeClose        = $true
+        ConfigVersion             = $script:ConfigVersion
     }
 }
 
@@ -137,7 +149,7 @@ function Ensure-HTConfig {
         if (-not $create) {
             $response = Show-Dialog -Message "Plik konfiguracyjny nie istnieje:`n$Path`n`nUtworzyć go z ustawieniami domyślnymi?" `
                 -Buttons "YesNo" -Type "Question" -Title "Brak pliku konfiguracyjnego"
-            $create = ($response -eq [System.Windows.Forms.DialogResult]::Yes)
+            $create = ($response -eq "Yes")
         }
 
         if (-not $create) {
@@ -155,11 +167,32 @@ function Ensure-HTConfig {
     }
 
     $merge = Merge-HTConfig -Config $config
-    if ($merge.AddedKeys.Count -gt 0) {
-        Write-Log -Message "Uzupełniono konfigurację o nowe ustawienia: $($merge.AddedKeys -join ', ')" -Type "Info"
+    $upgraded = Update-HTConfigSchema -Config $merge.Config -AddedKeys $merge.AddedKeys
+    if ($merge.AddedKeys.Count -gt 0 -or $upgraded) {
+        if ($merge.AddedKeys.Count -gt 0) { Write-Log -Message "Uzupełniono konfigurację o nowe ustawienia: $($merge.AddedKeys -join ', ')" -Type "Info" }
         try { Set-HTConfig -Config $merge.Config -Path $Path } catch { Write-Log -Message "Nie udało się zapisać uzupełnionej konfiguracji: $_" -Type "Warn" }
     }
     return $merge.Config
+}
+
+# Migracja konfiguracji ze starszej wersji: dopisuje nowe zakresy Graph (pozostałe ustawienia bez zmian).
+# Zwraca $true, gdy konfiguracja została zmieniona.
+function Update-HTConfigSchema {
+    param (
+        [Parameter(Mandatory)][object]$Config,
+        [string[]]$AddedKeys = @()
+    )
+    $version = 0
+    if ($AddedKeys -notcontains "ConfigVersion") { [void][int]::TryParse("$($Config.ConfigVersion)", [ref]$version) }
+    if ($version -ge $script:ConfigVersion) { return $false }
+    $scopes = @($Config.GraphScopes | Where-Object { $_ })
+    $missing = @($script:DefaultGraphScopes | Where-Object { $scopes -notcontains $_ })
+    if ($missing.Count -gt 0) {
+        $Config.GraphScopes = @($scopes + $missing)
+        Write-Log -Message "Dodano uprawnienia Microsoft Graph wymagane przez nowe funkcje: $($missing -join ', ')" -Type "Info"
+    }
+    $Config.ConfigVersion = $script:ConfigVersion
+    return $true
 }
 
 # Ustawia zmienne globalne na podstawie konfiguracji
@@ -189,18 +222,17 @@ function Apply-HTConfig {
     $Global:ShowNotifications = [bool]$Config.ShowNotifications
     $Global:LogFileMaxSizeMB = $Config.LogFileMaxSizeMB
     $Global:ExportPath = $Config.ExportPath
+    $Global:InactiveDays = [int]$Config.InactiveDays
+    $Global:AadSyncServer = $Config.AadSyncServer
+    $Global:ExchangeUseBrowserLogin = [bool]$Config.ExchangeUseBrowserLogin
+    $Global:ConfirmBeforeClose = [bool]$Config.ConfirmBeforeClose
 
     if ($Global:PasswordDefaultLength -lt 8 -or $Global:PasswordDefaultLength -gt 64) { $Global:PasswordDefaultLength = 12 }
     if ($Global:GraphScopes.Count -eq 0) { $Global:GraphScopes = $script:DefaultGraphScopes }
+    if ($Global:InactiveDays -lt 1 -or $Global:InactiveDays -gt 3650) { $Global:InactiveDays = 90 }
 
     Write-Log -Message "Zastosowano konfigurację (e-mail: '$($Global:PasswordEmailAdress)', hasła słowne: $($Global:PasswordUseWordBased), domyślna witryna SharePoint: $($Global:DefaultSharepointSite))." -Type "Info"
 
-    if ($Global:HT_UI -and $Global:HT_UI.PasswordGeneratorWindow -and $Global:HT_UI.PasswordGeneratorWindow.SpecialCharacters) {
-        $Global:HT_UI.PasswordGeneratorWindow.SpecialCharacters.Text = $Global:PasswordSpecialCharacters
-    }
-    if ($Global:HT_UI -and $Global:HT_UI.SharePointTab -and $Global:HT_UI.SharePointTab.SiteBox -and -not $Global:ConnectedToSharepointPnP) {
-        $Global:HT_UI.SharePointTab.SiteBox.Text = $Global:DefaultSharepointSite
-    }
 }
 
 # Zapisuje pojedyncze ustawienie w konfiguracji i pliku

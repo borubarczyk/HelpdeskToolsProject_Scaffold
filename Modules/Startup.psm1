@@ -1,11 +1,12 @@
 ﻿# Inicjalizacja aplikacji po zbudowaniu interfejsu
-function Initialize-HelpdeskTools {
 
-    # Lokalne Active Directory
+# Sprawdza dostępność lokalnego Active Directory (moduł RSAT) i aktualizuje stan w nagłówku
+function Initialize-HTActiveDirectory {
     if (Test-HTADAvailable) {
         $Global:IsModuleActiveDirectoryLoaded = $true
         $domain = $null
-        try { $domain = (Get-ADDomain -ErrorAction Stop).DNSRoot } catch {
+        try { $domain = (Get-ADDomain -ErrorAction Stop).DNSRoot }
+        catch {
             Write-Log -Message "Moduł ActiveDirectory jest dostępny, ale nie udało się połączyć z domeną: $($_.Exception.Message)" -Type "Warn"
         }
         $label = if ($domain) { $domain } else { "moduł załadowany" }
@@ -15,13 +16,16 @@ function Initialize-HelpdeskTools {
     else {
         $Global:IsModuleActiveDirectoryLoaded = $false
         Update-ConnectionButtonText -Service "AD"
-        Write-Log -Message "Moduł ActiveDirectory nie jest dostępny (zainstaluj RSAT) | Zakładka zablokowana" -Type "Warn"
-        Set-HTSectionEnabled -Name "Lokalne AD" -Enabled $false -Reason "Wymaga modułu ActiveDirectory (RSAT)."
+        Write-Log -Message "Moduł ActiveDirectory nie jest dostępny (zainstaluj RSAT) - funkcje AD są niedostępne." -Type "Warn"
     }
+}
+
+function Initialize-HelpdeskTools {
+    Initialize-HTActiveDirectory
 
     # Połączenia pozostałe z poprzedniej sesji w tym samym procesie PowerShell
     try { Set-Connections -Action "Check" } catch { Write-Log -Message "Sprawdzanie połączeń: $($_.Exception.Message)" -Type "Warn" }
 
-    Show-HTSection -Name "Dashboard"
+    Show-HTWorkspace -Key "Dashboard"
     Set-HTStatus -Text "Gotowe"
 }

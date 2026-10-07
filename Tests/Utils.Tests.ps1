@@ -2,7 +2,6 @@
     . (Join-Path $PSScriptRoot "TestHelpers.ps1")
     Import-HTTestModule -Name "Utils"
     Initialize-HTTestEnvironment -Root $TestDrive
-    Disable-HTTestToast
 }
 
 Describe "Write-Log" {
@@ -129,5 +128,58 @@ Describe "Pozostałe funkcje pomocnicze" {
     It "Format-HTLogEntry zwraca linię z czasem i typem" {
         $line = Format-HTLogEntry -Entry ([PSCustomObject]@{ Time = [datetime]"2024-01-02 03:04:05"; Type = "Info"; Message = "x" })
         $line | Should -Be "2024-01-02 03:04:05 [Info] x"
+    }
+}
+
+Describe "Write-Log - powiadomienia" {
+    BeforeEach { Clear-HTLogHistory }
+    It "oznacza wpis jako powiadomienie dla typu *&Notification" {
+        $Global:ShowNotifications = $true
+        Write-Log -Message "z powiadomieniem" -Type "Info&Notification"
+        (@(Get-HTLogHistory)[-1]).Notify | Should -BeTrue
+        Write-Log -Message "bez" -Type "Info"
+        (@(Get-HTLogHistory)[-1]).Notify | Should -BeFalse
+    }
+    It "nie oznacza powiadomienia, gdy powiadomienia są wyłączone" {
+        $Global:ShowNotifications = $false
+        try {
+            Write-Log -Message "wyłączone" -Type "Error&Notification"
+            (@(Get-HTLogHistory)[-1]).Notify | Should -BeFalse
+        }
+        finally { $Global:ShowNotifications = $true }
+    }
+}
+
+Describe "Import-HTIdentityFile" {
+    It "czyta kolumnę UserPrincipalName z CSV rozdzielanego średnikiem" {
+        $path = Join-Path $TestDrive "users.csv"
+        "Name;UserPrincipalName`nJan;jan@firma.pl`nAnna;anna@firma.pl`nJan;jan@firma.pl" | Set-Content $path -Encoding utf8
+        Import-HTIdentityFile -Path $path | Should -Be @("jan@firma.pl", "anna@firma.pl")
+    }
+    It "czyta plik tekstowy (jeden identyfikator w linii)" {
+        $path = Join-Path $TestDrive "users.txt"
+        "a@x.pl`r`nb@x.pl`r`n`r`n" | Set-Content $path -Encoding utf8
+        Import-HTIdentityFile -Path $path | Should -Be @("a@x.pl", "b@x.pl")
+    }
+}
+
+Describe "ConvertTo-HTDetailRows" {
+    It "spłaszcza zagnieżdżone sekcje i łączy tablice nowymi liniami" {
+        $rows = @(ConvertTo-HTDetailRows -Data ([ordered]@{ Nazwa = "Jan"; Włączone = $true; Konto = [ordered]@{ Grupy = @("A", "B") } }))
+        $rows.Count | Should -Be 3
+        $rows[0].Sekcja | Should -Be "Ogólne"
+        $rows[1].Wartość | Should -Be "Tak"
+        $rows[2].Sekcja | Should -Be "Konto"
+        $rows[2].Wartość | Should -Be "A`nB"
+    }
+}
+
+Describe "Get-HTDaysSince" {
+    It "liczy dni od daty, tekstu ISO i zwraca null dla braku daty" {
+        Get-HTDaysSince ((Get-Date).AddDays(-10)) | Should -Be 10
+        Get-HTDaysSince ((Get-Date).ToUniversalTime().AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")) | Should -Be 3
+        Get-HTDaysSince $null | Should -BeNullOrEmpty
+        Get-HTDaysSince "nie-data" | Should -BeNullOrEmpty
+        Get-HTDaysSince ([datetime]::MinValue) | Should -BeNullOrEmpty
     }
 }
