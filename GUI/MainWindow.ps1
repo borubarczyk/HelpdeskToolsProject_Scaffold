@@ -51,7 +51,10 @@ $script:MainXaml = @'
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
           <StackPanel x:Name="connHost" Orientation="Horizontal"/>
           <Border Width="1" Height="26" Background="#242B36" Margin="8,0,6,0"/>
-          <Button x:Name="btnPassword" Style="{StaticResource GhostButton}" ToolTip="Generator haseł (Ctrl+G)" Padding="10,7">
+          <Button x:Name="btnLock" Style="{StaticResource GhostButton}" ToolTip="Zablokuj program - odblokowanie PIN-em (Ctrl+Shift+L)" Padding="10,7">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE72E;" FontSize="15"/>
+          </Button>
+          <Button x:Name="btnPassword" Style="{StaticResource GhostButton}" ToolTip="Generator haseł (Ctrl+G)" Margin="4,0,0,0" Padding="10,7">
             <TextBlock Style="{StaticResource Glyph}" Text="&#xE8D7;" FontSize="15"/>
           </Button>
           <Button x:Name="btnSettings" Style="{StaticResource GhostButton}" ToolTip="Ustawienia" Margin="4,0,0,0" Padding="10,7">
@@ -242,6 +245,10 @@ $script:ShellEvents = @{
                 if ($m -and $m.FilterBox) { [void]$m.FilterBox.Focus(); $m.FilterBox.SelectAll() }
                 $e.Handled = $true
             }
+            elseif ($key -eq [System.Windows.Input.Key]::L -and $mods -eq ($ctrl -bor [System.Windows.Input.ModifierKeys]::Shift)) {
+                $e.Handled = $true
+                Lock-HTApplication
+            }
             elseif ($key -eq [System.Windows.Input.Key]::L -and $mods -eq $ctrl) {
                 Set-HTLogVisible (-not $HT_UI.LogVisible)
                 $e.Handled = $true
@@ -262,12 +269,14 @@ $script:ShellEvents = @{
     Closing         = {
         param($s, $e)
         try {
+            if ($Global:HTRestarting) { return }
             if ($HT_UI.BusyDepth -gt 0) {
                 $e.Cancel = $true
                 Show-HTToast 'Trwa operacja - zaczekaj na jej zakończenie.' 'warn'
                 return
             }
             $connected = @($Global:ConnectedToExchange, $Global:ConnectedToGraphAPI, $Global:ConnectedToSharepointPnP) | Where-Object { $_ }
+            if (Test-HTLocked) { $e.Cancel = $true; return }
             if ($Global:ConfirmBeforeClose -and @($connected).Count -gt 0) {
                 if (-not (Show-HTConfirm -Message 'Zamknąć Helpdesk Tools? Aktywne połączenia z usługami zostaną zakończone.' -Title 'Zamknięcie programu' -ConfirmText 'Zamknij')) {
                     $e.Cancel = $true
@@ -289,7 +298,7 @@ function New-HTMainWindow {
     $w = New-HTUiElement $script:MainXaml
     $HT_UI.Window = $w
     $c = $HT_UI.Controls
-    foreach ($n in 'txtVersion', 'txtUser', 'wsSwitcher', 'txtSubtitle', 'connHost', 'btnPassword', 'btnSettings',
+    foreach ($n in 'txtVersion', 'txtUser', 'wsSwitcher', 'txtSubtitle', 'connHost', 'btnLock', 'btnPassword', 'btnSettings',
         'targetColumn', 'targetHost', 'navHost', 'contentHost', 'toastHost', 'logRow', 'logSplitter', 'logPanel', 'logList',
         'btnLogCopy', 'btnLogFile', 'btnLogClear', 'btnLogHide', 'statusDot', 'txtStatus', 'prgStatus', 'btnLogToggle',
         'logBadge', 'logBadgeText') {
@@ -318,6 +327,7 @@ function New-HTMainWindow {
         if ($work.Width -lt 1500) { $w.WindowState = 'Maximized' }
     }
 
+    $c.btnLock.add_Click({ Invoke-HTUiAction -Module $null -Action { Lock-HTApplication } })
     $c.btnPassword.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTPasswordGenerator } })
     $c.btnSettings.add_Click({ Invoke-HTUiAction -Module $null -Action { if (Show-HTSettingsDialog) { Show-HTToast 'Zapisano ustawienia.' 'ok' } } })
     $c.btnLogToggle.add_Click({ Set-HTLogVisible (-not $HT_UI.LogVisible) })
@@ -335,29 +345,61 @@ function New-HTMainWindow {
             if ($text) { Set-HTClipboard $text; Show-HTToast "Skopiowano wpisów: $($items.Count)" 'ok' }
         })
     $w.add_PreviewKeyDown($script:ShellEvents.PreviewKeyDown)
+    # Aktywność użytkownika (automatyczna blokada po bezczynności)
+    $w.add_PreviewMouseMove({ Update-HTActivity })
+    $w.add_PreviewMouseDown({ Update-HTActivity })
+    $w.add_PreviewKeyDown({ Update-HTActivity })
     $w.add_Closing($script:ShellEvents.Closing)
     $w.add_SourceInitialized({ param($s, $e) Set-HTDarkTitleBar $s })
     $w.add_SizeChanged({ param($s, $e) try { Update-HTHeaderLayout } catch { Write-Verbose $_ } })
+    $HT_UI.HeaderChanged = { Update-HTHeaderLayout }
     return $w
 }
 
-function Update-HTHeaderLayout {
-    # Wąskie okno: przestrzenie robocze tylko z ikoną (pełna nazwa w podpowiedzi), bez opisu przestrzeni i nazw tenantów
-    $w = $HT_UI.Window
-    if (-not $w -or $w.ActualWidth -le 0) { return }
-    $compact = $w.ActualWidth -lt 1640
+function Set-HTHeaderMode {
+    # Przestrzenie robocze z nazwą albo tylko z ikoną (pełna nazwa w podpowiedzi); podpisy tenantów przy połączeniach
+    param([bool]$CompactTabs, [bool]$ShowTenants)
     foreach ($ws in $HT_UI.Workspaces.Values) {
         $content = if ($ws.Tab) { $ws.Tab.Content } else { $null }
         if ($content -is [System.Windows.Controls.Panel] -and $content.Children.Count -gt 1) {
-            $content.Children[1].Visibility = if ($compact) { 'Collapsed' } else { 'Visible' }
-            $content.Children[0].Margin = if ($compact) { '2,0,2,0' } else { '0,0,8,0' }
+            $content.Children[1].Visibility = if ($CompactTabs) { 'Collapsed' } else { 'Visible' }
+            $content.Children[0].Margin = if ($CompactTabs) { '2,0,2,0' } else { '0,0,8,0' }
         }
     }
     foreach ($service in @($HT_UI.ConnectButtons.Keys)) {
         $sub = $HT_UI.Controls["sub$service"]
-        if ($sub) { $sub.Visibility = if ($w.ActualWidth -lt 1380) { 'Collapsed' } else { 'Visible' } }
+        if ($sub) { $sub.Visibility = if ($ShowTenants) { 'Visible' } else { 'Collapsed' } }
     }
-    $HT_UI.Controls.txtSubtitle.Visibility = if ($w.ActualWidth -lt 1880) { 'Collapsed' } else { 'Visible' }
+}
+
+function Measure-HTHeaderWidth {
+    # Szerokość nagłówka w danym trybie (pomiar elementów, bez stałych progów)
+    param([bool]$CompactTabs, [bool]$ShowTenants)
+    Set-HTHeaderMode -CompactTabs $CompactTabs -ShowTenants $ShowTenants
+    $inf = New-Object System.Windows.Size([double]::PositiveInfinity, [double]::PositiveInfinity)
+    $c = $HT_UI.Controls
+    $c.wsSwitcher.Measure($inf)
+    $c.connHost.Measure($inf)
+    # Logo i nazwa programu, odstępy, kłódka, generator haseł i ustawienia
+    return $c.wsSwitcher.DesiredSize.Width + $c.connHost.DesiredSize.Width + 400
+}
+
+function Update-HTHeaderLayout {
+    $w = $HT_UI.Window
+    if (-not $w -or $w.ActualWidth -le 0) { return }
+    if (-not $HT_UI['HeaderWidths']) {
+        $HT_UI.HeaderWidths = @{
+            Full    = Measure-HTHeaderWidth -CompactTabs $false -ShowTenants $true
+            Tabs    = Measure-HTHeaderWidth -CompactTabs $true -ShowTenants $true
+            Minimal = Measure-HTHeaderWidth -CompactTabs $true -ShowTenants $false
+        }
+    }
+    $widths = $HT_UI.HeaderWidths
+    $width = $w.ActualWidth
+    if ($width -ge $widths.Full) { Set-HTHeaderMode -CompactTabs $false -ShowTenants $true }
+    elseif ($width -ge $widths.Tabs) { Set-HTHeaderMode -CompactTabs $true -ShowTenants $true }
+    else { Set-HTHeaderMode -CompactTabs $true -ShowTenants $false }
+    $HT_UI.Controls.txtSubtitle.Visibility = if ($width -ge $widths.Full + 320) { 'Visible' } else { 'Collapsed' }
 }
 
 function Invoke-HTConnectionClick {
