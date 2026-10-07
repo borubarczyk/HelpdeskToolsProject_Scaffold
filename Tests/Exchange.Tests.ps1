@@ -4,7 +4,6 @@
     New-HTTestStub -Name "Set-Mailbox" -Parameters "Identity", "ForwardingSmtpAddress", "ForwardingAddress", "DeliverToMailboxAndForward", "Confirm"
     Import-HTTestModule -Name "Utils", "MailboxesExchangeOnline"
     Initialize-HTTestEnvironment -Root $TestDrive
-    Disable-HTTestToast
 }
 
 Describe "Konwersja treści autoodpowiedzi" {
@@ -47,5 +46,25 @@ Describe "Set-HTMailboxForwarding" {
     It "czyści przekierowanie dla pustego adresu" {
         Set-HTMailboxForwarding -Identity "a@b.pl" -ForwardTo ""
         Should -Invoke -ModuleName MailboxesExchangeOnline Set-Mailbox -ParameterFilter { $null -eq $ForwardingSmtpAddress -and $DeliverToMailboxAndForward -eq $false }
+    }
+}
+
+Describe "ConvertFrom-HTExchangeSize" {
+    It "odczytuje liczbę bajtów z opisu rozmiaru Exchange" {
+        ConvertFrom-HTExchangeSize "1.234 GB (1,325,000,000 bytes)" | Should -Be 1325000000
+        ConvertFrom-HTExchangeSize "49.5 GB (53 150 220 288 bytes)" | Should -Be 53150220288
+        ConvertFrom-HTExchangeSize "Unlimited" | Should -BeNullOrEmpty
+        ConvertFrom-HTExchangeSize $null | Should -BeNullOrEmpty
+        ConvertFrom-HTExchangeSize "1024" | Should -Be 1024
+    }
+}
+
+Describe "Adresy e-mail skrzynki" {
+    BeforeAll { New-HTTestStub -Name "Set-Mailbox" -Parameters "Identity", "EmailAddresses", "Confirm" }
+    It "nie pozwala usunąć adresu głównego" {
+        { Remove-HTMailboxAddress -Identity "a@x.pl" -Value "SMTP:a@x.pl" } | Should -Throw "*głównego*"
+    }
+    It "odrzuca nieprawidłowy alias" {
+        { Add-HTMailboxAddress -Identity "a@x.pl" -Address "zly-adres" } | Should -Throw "*Nieprawidłowy*"
     }
 }

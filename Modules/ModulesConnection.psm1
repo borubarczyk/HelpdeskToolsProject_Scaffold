@@ -44,7 +44,7 @@ function Install-ModuleIfMissing {
 
     Write-Log "Moduł '$actualName' nie jest zainstalowany." "Warn"
     $approve = Show-Dialog -Title "Instalacja modułu" -Message "Moduł '$actualName' nie jest zainstalowany. Czy chcesz go zainstalować z PowerShell Gallery?" -Buttons "YesNo" -Type "Question"
-    if ($approve -ne [System.Windows.Forms.DialogResult]::Yes) {
+    if ($approve -ne "Yes") {
         Write-Log "Użytkownik anulował instalację modułu '$actualName'." "Warn"
         return $false
     }
@@ -164,14 +164,29 @@ function Get-HTGraphTenantName {
 
 #endregion
 
+# Logowanie interaktywne (MSAL / WAM / przeglądarka) z oknem logowania na wierzchu - zob. Invoke-HTInteractiveLogin w UIComponents.
+# Bez interfejsu (np. testy) blok jest wykonywany bezpośrednio.
+function Invoke-HTLogin {
+    param ([Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    if (Get-Command -Name Invoke-HTInteractiveLogin -ErrorAction SilentlyContinue) {
+        Invoke-HTInteractiveLogin -ScriptBlock $ScriptBlock
+    }
+    else {
+        & $ScriptBlock
+    }
+}
+
 # Funkcja do połączenia z modułem
 function Connect-Module {
     param (
         [ValidateSet("Microsoft.Graph", "Microsoft.GraphGDAP", "ExchangeOnlineManagement", "ExchangeOnlineManagementGDAP", "PnP.PowerShell")]
         [string]$Name,
 
-        # Adres witryny dla PnP.PowerShell (domyślnie z pola w zakładce SharePoint lub z konfiguracji)
-        [string]$SiteUrl
+        # Adres witryny dla PnP.PowerShell (domyślnie ostatnio używana lub z konfiguracji)
+        [string]$SiteUrl,
+
+        # PnP: bez pytania o adres witryny (np. przełączenie na witrynę wybraną z listy)
+        [switch]$NoPrompt
     )
 
     if (-not (Install-ModuleIfMissing -Name $Name)) { return $false }
@@ -182,7 +197,8 @@ function Connect-Module {
         switch ($Name) {
             'Microsoft.Graph' {
                 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop -Global
-                Connect-MgGraph -Scopes $Global:GraphScopes -NoWelcome -ErrorAction Stop
+                $scopes = @($Global:GraphScopes)
+                Invoke-HTLogin -ScriptBlock { Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop }.GetNewClosure()
                 $tenant = Get-HTGraphTenantName
                 $Global:ConnectedToGraphAPI = $true
                 Update-ConnectionButtonText -Service "Graph" -TenantName $tenant
@@ -190,14 +206,15 @@ function Connect-Module {
             }
             'Microsoft.GraphGDAP' {
                 Set-HTBusy -Busy $false
-                $tenantId = Show-InputBox -Prompt "Podaj ID lub domenę tenantu klienta (GDAP):" -Title "Tenant GDAP" -ValidationType "Text"
+                $tenantId = Show-InputBox -Prompt "Podaj ID lub domenę tenantu klienta (GDAP):" -Title "Tenant GDAP" -ValidationType "Text" -Icon "E716"
                 Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
                 if (-not $tenantId) {
-                    Write-Log "Anulowano połączenie z GDAP - nie podano ID tenantu." "Warning&Notification"
+                    Write-Log "Anulowano połączenie z GDAP - nie podano ID tenantu." "Warn"
                     return $false
                 }
                 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop -Global
-                Connect-MgGraph -TenantId $tenantId -Scopes $Global:GraphScopes -NoWelcome -ErrorAction Stop
+                $scopes = @($Global:GraphScopes)
+                Invoke-HTLogin -ScriptBlock { Connect-MgGraph -TenantId $tenantId -Scopes $scopes -NoWelcome -ErrorAction Stop }.GetNewClosure()
                 $tenant = Get-HTGraphTenantName
                 $Global:ConnectedToGraphAPI = $true
                 Update-ConnectionButtonText -Service "Graph" -TenantName $tenant
@@ -205,7 +222,8 @@ function Connect-Module {
             }
             'ExchangeOnlineManagement' {
                 Import-Module ExchangeOnlineManagement -ErrorAction Stop -Global
-                Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop
+                $params = Get-HTExchangeConnectParams
+                Invoke-HTLogin -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
                 $tenant = (Get-OrganizationConfig).DisplayName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
@@ -213,48 +231,59 @@ function Connect-Module {
             }
             'ExchangeOnlineManagementGDAP' {
                 Set-HTBusy -Busy $false
-                $gdapAccount = Show-InputBox -Prompt "Konto administratora GDAP (np. admin@partner.com):" -Title "Konto GDAP" -ValidationType "Email"
-                $gdapOrganization = if ($gdapAccount) { Show-InputBox -Prompt "Domena organizacji klienta (np. klient.onmicrosoft.com):" -Title "Organizacja GDAP" -ValidationType "Text" }
+                $gdap = Show-HTFormDialog -Title "Exchange Online (GDAP)" -Description "Zarządzanie tenantem klienta w ramach GDAP." -OkText "Połącz" -Icon "E716" -Fields @(
+                    @{ Name = "Account"; Label = "Konto administratora partnera"; Required = $true; Validation = "Email"; Placeholder = "admin@partner.com" }
+                    @{ Name = "Organization"; Label = "Domena organizacji klienta"; Required = $true; Placeholder = "klient.onmicrosoft.com" }
+                )
                 Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
-                if (-not $gdapOrganization -or -not $gdapAccount) {
-                    Write-Log "Anulowano połączenie z GDAP - nie podano wszystkich wymaganych informacji." "Warning&Notification"
+                if (-not $gdap) {
+                    Write-Log "Anulowano połączenie z GDAP - nie podano wszystkich wymaganych informacji." "Warn"
                     return $false
                 }
                 Import-Module ExchangeOnlineManagement -ErrorAction Stop -Global
-                Connect-ExchangeOnline -UserPrincipalName $gdapAccount -DelegatedOrganization $gdapOrganization -ShowBanner:$false -ShowProgress:$false -ErrorAction Stop
+                $params = Get-HTExchangeConnectParams
+                $params.UserPrincipalName = $gdap.Account
+                $params.DelegatedOrganization = $gdap.Organization
+                Invoke-HTLogin -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
                 $tenant = (Get-OrganizationConfig).DisplayName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
                 Write-Log "Połączono z Exchange Online ($tenant) korzystając z GDAP." "Info&Notification"
             }
             'PnP.PowerShell' {
-                if (-not $SiteUrl -and $Global:HT_UI -and $Global:HT_UI.SharePointTab) { $SiteUrl = $Global:HT_UI.SharePointTab.SiteBox.Text.Trim() }
+                if (-not $SiteUrl -and $Global:ConnectedToSharepointPnP) {
+                    try { $SiteUrl = (Get-PnPConnection -ErrorAction Stop).Url } catch { $SiteUrl = $null }
+                }
                 if (-not $SiteUrl) { $SiteUrl = $Global:DefaultSharepointSite }
 
-                Set-HTBusy -Busy $false
-                $url = Show-InputBox -Prompt "Adres witryny SharePoint:" -Title "Połączenie z SharePoint" -ValidationType "Url" -DefaultText $SiteUrl
-                $clientId = if ($url) {
-                    Show-InputBox -Prompt "Client ID aplikacji Entra ID (rejestracja aplikacji dla PnP PowerShell):" -Title "Client ID" -ValidationType "Guid" -DefaultText "$($Global:LastUsedClientID)"
-                }
-                Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
-
-                if (-not $url -or -not $clientId) {
-                    Write-Log "Anulowano połączenie z PnP PowerShell." "Warn"
-                    return $false
+                $url = $SiteUrl
+                $clientId = "$($Global:LastUsedClientID)"
+                if (-not $NoPrompt -or -not $url -or -not $clientId) {
+                    Set-HTBusy -Busy $false
+                    $form = Show-HTFormDialog -Title "Połączenie z SharePoint" -Description "PnP PowerShell wymaga własnej rejestracji aplikacji w Entra ID (Client ID)." -OkText "Połącz" -Icon "E8F1" -Fields @(
+                        @{ Name = "Url"; Label = "Adres witryny"; Required = $true; Validation = "Url"; Default = $url; Placeholder = "https://firma.sharepoint.com/sites/Dzial" }
+                        @{ Name = "ClientId"; Label = "Client ID aplikacji"; Required = $true; Validation = "Guid"; Default = $clientId }
+                    )
+                    Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
+                    if (-not $form) {
+                        Write-Log "Anulowano połączenie z PnP PowerShell." "Warn"
+                        return $false
+                    }
+                    $url = $form.Url
+                    $clientId = $form.ClientId
                 }
 
                 Import-Module PnP.PowerShell -ErrorAction Stop -Global
-                Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop
+                Invoke-HTLogin -ScriptBlock { Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop }.GetNewClosure()
                 $connectedUrl = (Get-PnPConnection).Url
                 $Global:ConnectedToSharepointPnP = $true
                 $Global:ConnectedToSharepoint = $true
                 Update-ConnectionButtonText -Service "SharePoint" -TenantName $connectedUrl
-                if ($Global:HT_UI -and $Global:HT_UI.SharePointTab) { $Global:HT_UI.SharePointTab.SiteBox.Text = $connectedUrl }
 
                 if ($Global:LogClientIDForPnP -and $clientId -ne $Global:LastUsedClientID) {
-                    $Global:LastUsedClientID = $clientId
                     try { Set-HTConfigValue -Name "LastUsedClientID" -Value $clientId } catch { Write-Log "Nie zapisano Client ID w konfiguracji: $_" "Warn" }
                 }
+                $Global:LastUsedClientID = $clientId
                 Write-Log "Połączono z PnP PowerShell ($connectedUrl)" "Info&Notification"
             }
         }
@@ -264,13 +293,25 @@ function Connect-Module {
     catch {
         Write-Log "Błąd połączenia z '$Name': $($_.Exception.Message)" "Error&Notification"
         Set-HTBusy -Busy $false -Text "Błąd połączenia"
-        Show-Dialog -Title "Błąd połączenia" -Message "Nie udało się połączyć z '$Name'.`n`n$($_.Exception.Message)" -Type "Error" | Out-Null
+        Show-HTError -Text "Nie udało się połączyć z '$Name'." -ErrorObject $_
         Set-HTBusy -Busy $true
         return $false
     }
     finally {
         Set-HTBusy -Busy $false -Text "Gotowe"
     }
+}
+
+# Parametry Connect-ExchangeOnline; opcjonalnie logowanie w przeglądarce zamiast okna WAM (-DisableWAM, EXO 3.7.2+)
+function Get-HTExchangeConnectParams {
+    $params = @{ ShowBanner = $false; ErrorAction = "Stop" }
+    $command = Get-Command -Name Connect-ExchangeOnline -ErrorAction SilentlyContinue
+    if ($command -and $command.Parameters.ContainsKey("ShowProgress")) { $params.ShowProgress = $false }
+    if ($Global:ExchangeUseBrowserLogin) {
+        if ($command -and $command.Parameters.ContainsKey("DisableWAM")) { $params.DisableWAM = $true }
+        else { Write-Log "Logowanie w przeglądarce wymaga modułu ExchangeOnlineManagement 3.7.2 lub nowszego." "Warn" }
+    }
+    return $params
 }
 
 # Funkcja do sprawdzania i zarządzania połączeniami

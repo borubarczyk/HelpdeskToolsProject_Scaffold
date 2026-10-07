@@ -2,7 +2,6 @@
     . (Join-Path $PSScriptRoot "TestHelpers.ps1")
     Import-HTTestModule -Name "Utils", "PasswordGenerator"
     Initialize-HTTestEnvironment -Root $TestDrive
-    Disable-HTTestToast
 }
 
 Describe "New-Password (tryb klasyczny)" {

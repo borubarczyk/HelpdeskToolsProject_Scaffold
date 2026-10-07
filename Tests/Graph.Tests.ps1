@@ -4,7 +4,6 @@
     New-HTTestStub -Name "Get-MgContext"
     Import-HTTestModule -Name "Utils", "ModulesConnection", "GraphAPIM365Users", "GraphAPIIntune"
     Initialize-HTTestEnvironment -Root $TestDrive
-    Disable-HTTestToast
 }
 
 Describe "Resolve-HTGraphUri" {
@@ -113,5 +112,52 @@ Describe "Rename-HTIntuneDevice" {
         Mock -ModuleName GraphAPIIntune Invoke-HTGraphRequest { }
         Rename-HTIntuneDevice -Id "1" -NewName "PC-KSIEGOWOSC1"
         Should -Invoke -ModuleName GraphAPIIntune Invoke-HTGraphRequest -ParameterFilter { $Beta -and $Uri -like "*/setDeviceName" -and $Body.deviceName -eq "PC-KSIEGOWOSC1" }
+    }
+}
+
+Describe "Get-HTSkuFriendlyName" {
+    It "zwraca nazwę handlową znanej licencji i SKU dla nieznanej" {
+        Get-HTSkuFriendlyName "SPB" | Should -Be "Microsoft 365 Business Premium"
+        Get-HTSkuFriendlyName "NIEZNANA_SKU" | Should -Be "NIEZNANA_SKU"
+        Get-HTSkuFriendlyName "" | Should -Be ""
+    }
+}
+
+Describe "Get-HTM365InactiveUsers" {
+    BeforeAll {
+        $now = Get-Date
+        Mock -ModuleName GraphAPIM365Users Get-HTSkuNameMap { @{} }
+        Mock -ModuleName GraphAPIM365Users Invoke-HTGraphRequest {
+            @(
+                [PSCustomObject]@{ id = "1"; displayName = "Aktywny"; userPrincipalName = "a@x.pl"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-400).ToString("o"); assignedLicenses = @(); signInActivity = [PSCustomObject]@{ lastSignInDateTime = $now.AddDays(-5).ToString("o") } }
+                [PSCustomObject]@{ id = "2"; displayName = "Stary"; userPrincipalName = "s@x.pl"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-400).ToString("o"); assignedLicenses = @([PSCustomObject]@{ skuId = "abc" }); signInActivity = [PSCustomObject]@{ lastSignInDateTime = $now.AddDays(-200).ToString("o"); lastNonInteractiveSignInDateTime = $now.AddDays(-150).ToString("o") } }
+                [PSCustomObject]@{ id = "3"; displayName = "Nigdy"; userPrincipalName = "n@x.pl"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-100).ToString("o"); assignedLicenses = @(); signInActivity = $null }
+                [PSCustomObject]@{ id = "4"; displayName = "Nowy"; userPrincipalName = "w@x.pl"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-2).ToString("o"); assignedLicenses = @(); signInActivity = $null }
+                [PSCustomObject]@{ id = "5"; displayName = "Wyłączony"; userPrincipalName = "d@x.pl"; accountEnabled = $false; userType = "Member"; createdDateTime = $now.AddDays(-400).ToString("o"); assignedLicenses = @(); signInActivity = $null }
+            )
+        }
+    }
+    It "zwraca konta bez logowania od N dni (z uwzględnieniem logowań nieinteraktywnych)" {
+        $result = @(Get-HTM365InactiveUsers -Days 90)
+        $result.UPN | Should -Be @("s@x.pl", "n@x.pl")
+        ($result | Where-Object UPN -eq "s@x.pl").'Dni bez logowania' | Should -Be 150
+        ($result | Where-Object UPN -eq "s@x.pl").__flag | Should -Be "warn"
+        ($result | Where-Object UPN -eq "n@x.pl").'Dni bez logowania' | Should -Be "nigdy"
+    }
+    It "uwzględnia wyłączone konta na żądanie" {
+        @(Get-HTM365InactiveUsers -Days 90 -IncludeDisabled).UPN | Should -Contain "d@x.pl"
+    }
+}
+
+Describe "Akcje zdalne Intune" {
+    It "wysyła żądanie skanowania Defender z treścią quickScan" {
+        Mock -ModuleName GraphAPIIntune Invoke-HTGraphRequest { }
+        Invoke-HTIntuneDeviceAction -Id "dev1" -Action QuickScan | Should -Be "Szybkie skanowanie Defender"
+        Should -Invoke -ModuleName GraphAPIIntune Invoke-HTGraphRequest -Times 1 -Exactly -ParameterFilter { $Uri -eq "deviceManagement/managedDevices/dev1/windowsDefenderScan" -and $Method -eq "POST" -and $Body.quickScan -eq $true }
+    }
+    It "rotacja kluczy BitLocker używa API beta" {
+        Mock -ModuleName GraphAPIIntune Invoke-HTGraphRequest { }
+        Invoke-HTIntuneDeviceAction -Id "dev1" -Action RotateBitLocker | Out-Null
+        Should -Invoke -ModuleName GraphAPIIntune Invoke-HTGraphRequest -Times 1 -Exactly -ParameterFilter { $Beta -and $Uri -like "*rotateBitLockerKeys" }
     }
 }

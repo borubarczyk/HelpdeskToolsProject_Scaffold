@@ -480,3 +480,321 @@ function New-HTM365User {
 function Get-HTM365Domains {
     return @(Invoke-HTGraphRequest -Uri "domains" | Where-Object { $_.isVerified } | Sort-Object { -not $_.isDefault }, id | ForEach-Object { $_.id })
 }
+
+#region Przełożony
+function Get-HTM365UserManager {
+    param ([Parameter(Mandatory)][string]$Id)
+    try { return Invoke-HTGraphRequest -Uri "users/$Id/manager?`$select=id,displayName,userPrincipalName,jobTitle" }
+    catch {
+        if ("$($_.Exception.Message)" -match 'Request_ResourceNotFound|NotFound|404') { return $null }
+        throw
+    }
+}
+
+function Set-HTM365UserManager {
+    param (
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$ManagerId
+    )
+    if ($Id -eq $ManagerId) { throw "Użytkownik nie może być swoim przełożonym." }
+    $body = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/users/$ManagerId" }
+    Invoke-HTGraphRequest -Uri "users/$Id/manager/`$ref" -Method PUT -Body $body | Out-Null
+}
+
+function Remove-HTM365UserManager {
+    param ([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "users/$Id/manager/`$ref" -Method DELETE | Out-Null
+}
+#endregion
+
+#region Logowania (wymaga AuditLog.Read.All i licencji Entra ID P1)
+function ConvertTo-HTSignInRow {
+    param ([Parameter(Mandatory)][object]$SignIn)
+    $code = [int]$SignIn.status.errorCode
+    $location = @($SignIn.location.city, $SignIn.location.countryOrRegion) | Where-Object { $_ }
+    return [PSCustomObject]@{
+        Czas                = $SignIn.createdDateTime
+        Użytkownik          = $SignIn.userPrincipalName
+        Aplikacja           = $SignIn.appDisplayName
+        "Adres IP"          = $SignIn.ipAddress
+        Lokalizacja         = ($location -join ", ")
+        Wynik               = if ($code -eq 0) { "Sukces" } else { "Błąd $code" }
+        Powód               = $SignIn.status.failureReason
+        "Wymagane MFA"      = ("$($SignIn.authenticationRequirement)" -eq "multiFactorAuthentication")
+        "Dostęp warunkowy"  = $SignIn.conditionalAccessStatus
+        Klient              = $SignIn.clientAppUsed
+        System              = $SignIn.deviceDetail.operatingSystem
+        Przeglądarka        = $SignIn.deviceDetail.browser
+        Urządzenie          = $SignIn.deviceDetail.displayName
+        Ryzyko              = $SignIn.riskLevelDuringSignIn
+        __flag              = if ($code -ne 0) { "crit" } elseif ("$($SignIn.riskLevelDuringSignIn)" -in "medium", "high") { "warn" } else { "" }
+    }
+}
+
+# Ostatnie logowania użytkownika
+function Get-HTM365SignIns {
+    param (
+        [Parameter(Mandatory)][string]$UserId,
+        [ValidateRange(1, 1000)][int]$Top = 50,
+        [switch]$FailedOnly
+    )
+    $filter = "userId eq '$UserId'"
+    if ($FailedOnly) { $filter += " and status/errorCode ne 0" }
+    $items = Invoke-HTGraphRequest -Uri "auditLogs/signIns?`$filter=$([uri]::EscapeDataString($filter))&`$top=$Top"
+    return @($items | ForEach-Object { ConvertTo-HTSignInRow -SignIn $_ })
+}
+
+# Nieudane logowania w organizacji z ostatnich godzin
+function Get-HTM365FailedSignIns {
+    param ([ValidateRange(1, 720)][int]$Hours = 24, [ValidateRange(1, 5000)][int]$Max = 1000)
+    $since = (Get-Date).ToUniversalTime().AddHours(-$Hours).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $filter = "createdDateTime ge $since and status/errorCode ne 0"
+    $uri = "auditLogs/signIns?`$filter=$([uri]::EscapeDataString($filter))&`$top=500"
+    $result = New-Object System.Collections.Generic.List[object]
+    $response = Invoke-MgGraphRequest -Uri (Resolve-HTGraphUri -Uri $uri) -Method GET -OutputType PSObject -ErrorAction Stop
+    while ($response) {
+        foreach ($item in @($response.value)) { if ($item) { $result.Add((ConvertTo-HTSignInRow -SignIn $item)) } }
+        if ($result.Count -ge $Max -or -not $response.'@odata.nextLink') { break }
+        $response = Invoke-MgGraphRequest -Uri $response.'@odata.nextLink' -Method GET -OutputType PSObject -ErrorAction Stop
+    }
+    return $result.ToArray()
+}
+#endregion
+
+#region Raporty użytkowników
+# Ostatnie logowanie (interaktywne lub nieinteraktywne - nowsze z dwóch)
+function Get-HTM365LastSignIn {
+    param ([AllowNull()][object]$SignInActivity)
+    if (-not $SignInActivity) { return $null }
+    $dates = @($SignInActivity.lastSignInDateTime, $SignInActivity.lastNonInteractiveSignInDateTime) | Where-Object { $_ } | ForEach-Object {
+        $parsed = [datetimeoffset]::MinValue
+        if ([datetimeoffset]::TryParse("$_", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) { $parsed.LocalDateTime }
+    }
+    return @($dates | Sort-Object -Descending)[0]
+}
+
+# Użytkownicy bez logowania od wskazanej liczby dni (wymaga AuditLog.Read.All i Entra ID P1)
+function Get-HTM365InactiveUsers {
+    param (
+        [ValidateRange(1, 3650)][int]$Days = 90,
+        [switch]$IncludeDisabled,
+        [switch]$IncludeGuests
+    )
+    $select = "id,displayName,userPrincipalName,accountEnabled,userType,createdDateTime,assignedLicenses,department,signInActivity"
+    $users = Invoke-HTGraphRequest -Uri "users?`$select=$select&`$top=999" -All
+    $skuNames = Get-HTSkuNameMap
+    foreach ($u in $users) {
+        if (-not $IncludeDisabled -and -not $u.accountEnabled) { continue }
+        if (-not $IncludeGuests -and $u.userType -eq "Guest") { continue }
+        $last = Get-HTM365LastSignIn -SignInActivity $u.signInActivity
+        $idle = Get-HTDaysSince $last
+        $createdDays = Get-HTDaysSince $u.createdDateTime
+        $inactive = if ($null -eq $idle) { $null -eq $createdDays -or $createdDays -ge $Days } else { $idle -ge $Days }
+        if (-not $inactive) { continue }
+        [PSCustomObject]@{
+            Nazwa                 = $u.displayName
+            UPN                   = $u.userPrincipalName
+            Typ                   = $u.userType
+            Włączone              = [bool]$u.accountEnabled
+            Dział                 = $u.department
+            "Ostatnie logowanie"  = $last
+            "Dni bez logowania"   = if ($null -ne $idle) { $idle } else { "nigdy" }
+            Licencje              = (@($u.assignedLicenses | ForEach-Object { $skuNames["$($_.skuId)"] ?? "$($_.skuId)" }) -join ", ")
+            Utworzono             = $u.createdDateTime
+            Id                    = $u.id
+            __flag                = if (@($u.assignedLicenses).Count -gt 0) { "warn" } else { "" }
+        }
+    }
+}
+
+# Konta gości
+function Get-HTM365GuestUsers {
+    $select = "id,displayName,userPrincipalName,mail,accountEnabled,createdDateTime,externalUserState,externalUserStateChangeDateTime,signInActivity"
+    $users = Invoke-HTGraphRequest -Uri "users?`$filter=userType eq 'Guest'&`$select=$select&`$top=999" -All
+    foreach ($u in $users) {
+        $last = Get-HTM365LastSignIn -SignInActivity $u.signInActivity
+        $days = Get-HTDaysSince $last
+        [PSCustomObject]@{
+            Nazwa                = $u.displayName
+            "E-mail"             = $u.mail
+            Włączone             = [bool]$u.accountEnabled
+            "Stan zaproszenia"   = $u.externalUserState
+            "Zmiana stanu"       = $u.externalUserStateChangeDateTime
+            Utworzono            = $u.createdDateTime
+            "Ostatnie logowanie" = $last
+            "Dni bez logowania"  = if ($null -ne $days) { $days } else { "nigdy" }
+            UPN                  = $u.userPrincipalName
+            Id                   = $u.id
+            __flag               = if ("$($u.externalUserState)" -eq "PendingAcceptance") { "muted" } elseif ($null -eq $days -or $days -ge 90) { "warn" } else { "" }
+        }
+    }
+}
+
+# Stan rejestracji metod uwierzytelniania (MFA, SSPR, passwordless)
+function Get-HTM365MfaRegistration {
+    $items = Invoke-HTGraphRequest -Uri "reports/authenticationMethods/userRegistrationDetails?`$top=999" -All
+    foreach ($r in $items) {
+        [PSCustomObject]@{
+            Nazwa               = $r.userDisplayName
+            UPN                 = $r.userPrincipalName
+            Administrator       = [bool]$r.isAdmin
+            "MFA zarejestrowane" = [bool]$r.isMfaRegistered
+            "MFA możliwe"       = [bool]$r.isMfaCapable
+            SSPR                = [bool]$r.isSsprRegistered
+            "Bez hasła"         = [bool]$r.isPasswordlessCapable
+            "Domyślna metoda"   = $r.userPreferredMethodForSecondaryAuthentication
+            Metody              = (@($r.methodsRegistered) -join ", ")
+            Typ                 = $r.userType
+            __flag              = if (-not $r.isMfaRegistered -and $r.isAdmin) { "crit" } elseif (-not $r.isMfaRegistered) { "warn" } else { "" }
+        }
+    }
+}
+
+# Aktywni użytkownicy (członkowie) bez licencji
+function Get-HTM365UnlicensedUsers {
+    $users = Invoke-HTGraphRequest -Uri "users?`$select=id,displayName,userPrincipalName,accountEnabled,userType,department,createdDateTime,assignedLicenses,onPremisesSyncEnabled&`$top=999" -All
+    foreach ($u in $users) {
+        if ($u.userType -eq "Guest" -or @($u.assignedLicenses).Count -gt 0) { continue }
+        [PSCustomObject]@{
+            Nazwa              = $u.displayName
+            UPN                = $u.userPrincipalName
+            Włączone           = [bool]$u.accountEnabled
+            Dział              = $u.department
+            "Synchronizacja AD" = [bool]$u.onPremisesSyncEnabled
+            Utworzono          = $u.createdDateTime
+            Id                 = $u.id
+        }
+    }
+}
+
+# Członkowie aktywnych ról katalogu (administratorzy)
+function Get-HTM365AdminRoles {
+    $roles = Invoke-HTGraphRequest -Uri "directoryRoles?`$expand=members(`$select=id,displayName,userPrincipalName)"
+    foreach ($role in @($roles | Sort-Object displayName)) {
+        foreach ($member in @($role.members)) {
+            $type = "$($member.'@odata.type')" -replace '#microsoft.graph.', ''
+            [PSCustomObject]@{
+                Rola       = $role.displayName
+                Członek    = $member.displayName
+                UPN        = $member.userPrincipalName
+                Typ        = $type
+                "Opis roli" = $role.description
+                Id         = $member.id
+                __flag     = if ($role.displayName -eq "Global Administrator") { "warn" } else { "" }
+            }
+        }
+    }
+}
+
+# Usunięci użytkownicy (kosz katalogu - 30 dni)
+function Get-HTM365DeletedUsers {
+    $items = Invoke-HTGraphRequest -Uri "directory/deletedItems/microsoft.graph.user?`$select=id,displayName,userPrincipalName,mail,deletedDateTime,jobTitle,department&`$top=999" -All
+    foreach ($u in @($items | Sort-Object deletedDateTime -Descending)) {
+        $deleted = Get-HTDaysSince $u.deletedDateTime
+        [PSCustomObject]@{
+            Nazwa             = $u.displayName
+            UPN               = $u.userPrincipalName
+            "E-mail"          = $u.mail
+            Usunięto          = $u.deletedDateTime
+            "Usunięcie trwałe za (dni)" = if ($null -ne $deleted) { [Math]::Max(0, 30 - $deleted) } else { "" }
+            Dział             = $u.department
+            Id                = $u.id
+        }
+    }
+}
+
+function Restore-HTM365DeletedUser {
+    param ([Parameter(Mandatory)][string]$Id)
+    return Invoke-HTGraphRequest -Uri "directory/deletedItems/$Id/restore" -Method POST -Body @{}
+}
+
+function Remove-HTM365DeletedUser {
+    param ([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "directory/deletedItems/$Id" -Method DELETE | Out-Null
+}
+
+# Trwałe usunięcie konta użytkownika (trafia do kosza katalogu na 30 dni)
+function Remove-HTM365User {
+    param ([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "users/$Id" -Method DELETE | Out-Null
+}
+#endregion
+
+#region Kondycja usług i centrum wiadomości (ServiceHealth.Read.All, ServiceMessage.Read.All)
+function Get-HTM365ServiceHealth {
+    $overviews = @(Invoke-HTGraphRequest -Uri "admin/serviceAnnouncement/healthOverviews?`$select=service,status")
+    $issues = @()
+    try { $issues = @(Invoke-HTGraphRequest -Uri "admin/serviceAnnouncement/issues?`$filter=isResolved eq false" -All) }
+    catch { Write-Log -Message "Nie udało się pobrać listy incydentów: $($_.Exception.Message)" -Type "Warn" }
+    $statusNames = @{
+        serviceOperational = "Działa"; investigating = "Badanie problemu"; restoringService = "Przywracanie"; verifyingService = "Weryfikacja"
+        serviceRestored = "Przywrócono"; postIncidentReviewPublished = "Raport po incydencie"; serviceDegradation = "Obniżona wydajność"
+        serviceInterruption = "Przerwa w działaniu"; extendedRecovery = "Wydłużone przywracanie"; falsePositive = "Fałszywy alarm"
+    }
+    foreach ($o in @($overviews | Sort-Object service)) {
+        $serviceIssues = @($issues | Where-Object { $_.service -eq $o.service })
+        $status = "$($o.status)"
+        [PSCustomObject]@{
+            Usługa      = $o.service
+            Stan        = $statusNames[$status] ?? $status
+            Incydenty   = $serviceIssues.Count
+            Szczegóły   = (@($serviceIssues | ForEach-Object { "[$($_.id)] $($_.title)" }) -join "`n")
+            __flag      = if ($status -in "serviceInterruption", "extendedRecovery") { "crit" } elseif ($status -ne "serviceOperational" -or $serviceIssues.Count -gt 0) { "warn" } else { "" }
+        }
+    }
+}
+
+function Get-HTM365MessageCenter {
+    param ([ValidateRange(1, 365)][int]$Days = 30)
+    $since = (Get-Date).ToUniversalTime().AddDays(-$Days).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $items = Invoke-HTGraphRequest -Uri "admin/serviceAnnouncement/messages?`$filter=lastModifiedDateTime ge $since&`$top=100" -All
+    foreach ($m in @($items | Sort-Object lastModifiedDateTime -Descending)) {
+        $body = "$($m.body.content)" -replace '(?i)<br\s*/?>', "`n" -replace '(?i)</p>', "`n" -replace '<[^>]+>', ''
+        $body = [System.Net.WebUtility]::HtmlDecode($body).Trim()
+        [PSCustomObject]@{
+            Data                 = $m.lastModifiedDateTime
+            Tytuł                = $m.title
+            Kategoria            = $m.category
+            Usługi               = (@($m.services) -join ", ")
+            Ważność              = $m.severity
+            "Wymaga działania do" = $m.actionRequiredByDateTime
+            Treść                = if ($body.Length -gt 4000) { $body.Substring(0, 4000) + "…" } else { $body }
+            Id                   = $m.id
+            __flag               = if ($m.actionRequiredByDateTime) { "warn" } elseif ("$($m.severity)" -eq "critical") { "crit" } else { "" }
+        }
+    }
+}
+#endregion
+
+#region Nazwy licencji
+$script:SkuFriendlyNames = @{
+    "ENTERPRISEPACK" = "Office 365 E3"; "ENTERPRISEPREMIUM" = "Office 365 E5"; "STANDARDPACK" = "Office 365 E1"; "DESKLESSPACK" = "Office 365 F3"
+    "SPE_E3" = "Microsoft 365 E3"; "SPE_E5" = "Microsoft 365 E5"; "SPE_F1" = "Microsoft 365 F3"; "SPB" = "Microsoft 365 Business Premium"
+    "O365_BUSINESS_PREMIUM" = "Microsoft 365 Business Standard"; "O365_BUSINESS_ESSENTIALS" = "Microsoft 365 Business Basic"
+    "O365_BUSINESS" = "Microsoft 365 Apps for business"; "OFFICESUBSCRIPTION" = "Microsoft 365 Apps for enterprise"
+    "EXCHANGESTANDARD" = "Exchange Online (Plan 1)"; "EXCHANGEENTERPRISE" = "Exchange Online (Plan 2)"; "EXCHANGEDESKLESS" = "Exchange Online Kiosk"
+    "EMS" = "Enterprise Mobility + Security E3"; "EMSPREMIUM" = "Enterprise Mobility + Security E5"; "AAD_PREMIUM" = "Microsoft Entra ID P1"
+    "AAD_PREMIUM_P2" = "Microsoft Entra ID P2"; "INTUNE_A" = "Microsoft Intune Plan 1"; "POWER_BI_PRO" = "Power BI Pro"; "POWER_BI_STANDARD" = "Power BI (bezpłatna)"
+    "FLOW_FREE" = "Power Automate (bezpłatna)"; "TEAMS_EXPLORATORY" = "Teams Exploratory"; "MCOEV" = "Teams Phone Standard"; "MCOMEETADV" = "Audio Conferencing"
+    "VISIOCLIENT" = "Visio Plan 2"; "PROJECTPROFESSIONAL" = "Project Plan 3"; "WINDOWS_STORE" = "Windows Store for Business"; "ATP_ENTERPRISE" = "Defender for Office 365 (Plan 1)"
+    "Microsoft_Teams_Rooms_Pro" = "Teams Rooms Pro"; "Microsoft_365_Copilot" = "Microsoft 365 Copilot"; "Microsoft_Teams_Premium" = "Teams Premium"
+}
+
+function Get-HTSkuFriendlyName {
+    param ([AllowEmptyString()][string]$SkuPartNumber)
+    if (-not $SkuPartNumber) { return "" }
+    $name = $script:SkuFriendlyNames[$SkuPartNumber]
+    if ($name) { return $name }
+    return $SkuPartNumber
+}
+
+# Użytkownicy z przypisaną licencją
+function Get-HTSkuUsers {
+    param ([Parameter(Mandatory)][string]$SkuId)
+    $filter = [uri]::EscapeDataString("assignedLicenses/any(x:x/skuId eq $SkuId)")
+    $users = Invoke-HTGraphRequest -Uri "users?`$filter=$filter&`$count=true&`$select=id,displayName,userPrincipalName,accountEnabled,department&`$top=999" -All -ConsistencyLevelEventual
+    return @($users | ForEach-Object {
+            [PSCustomObject]@{ Nazwa = $_.displayName; UPN = $_.userPrincipalName; Włączone = [bool]$_.accountEnabled; Dział = $_.department }
+        } | Sort-Object Nazwa)
+}
+#endregion

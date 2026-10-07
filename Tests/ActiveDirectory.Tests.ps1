@@ -8,7 +8,6 @@
     New-HTTestStub -Name "Unlock-ADAccount" -Parameters "Identity"
     Import-HTTestModule -Name "Utils", "LocalActiveDirectory"
     Initialize-HTTestEnvironment -Root $TestDrive
-    Disable-HTTestToast
 }
 
 Describe "Get-HTNameFromDN" {
@@ -78,5 +77,39 @@ Describe "Set-HTADUserProfile / Set-HTADUserAttributes" {
     }
     It "odrzuca nieobsługiwane atrybuty" {
         { Set-HTADUserAttributes -Identity "u1" -Attributes @{ SamAccountName = "x" } } | Should -Throw
+    }
+}
+
+Describe "New-HTADLoginName" {
+    It "tworzy login bez polskich znaków i ogranicza długość do 20 znaków" {
+        New-HTADLoginName -GivenName "Łukasz" -Surname "Żółć" | Should -Be "lukasz.zolc"
+        New-HTADLoginName -GivenName "Anna Maria" -Surname "Kowalska-Nowak" | Should -Be "annamaria.kowalska-n"
+    }
+}
+
+Describe "Get-HTADUserReport" {
+    BeforeAll {
+        New-HTTestStub -Name "Get-ADUser" -Parameters "Identity", "Filter", "Properties"
+        New-HTTestStub -Name "Search-ADAccount" -Parameters "TimeSpan" -Switches "LockedOut", "UsersOnly", "AccountExpiring"
+        $now = Get-Date
+        Mock -ModuleName LocalActiveDirectory Get-ADUser {
+            @(
+                [PSCustomObject]@{ Name = "a"; SamAccountName = "a"; Enabled = $true; LastLogonDate = $now.AddDays(-5); WhenCreated = $now.AddDays(-500); PasswordNeverExpires = $false; "msDS-UserPasswordExpiryTimeComputed" = $now.AddDays(2).ToFileTime(); DistinguishedName = "CN=a,OU=U,DC=x" }
+                [PSCustomObject]@{ Name = "b"; SamAccountName = "b"; Enabled = $true; LastLogonDate = $now.AddDays(-120); WhenCreated = $now.AddDays(-500); PasswordNeverExpires = $false; "msDS-UserPasswordExpiryTimeComputed" = $now.AddDays(-1).ToFileTime(); DistinguishedName = "CN=b,OU=U,DC=x" }
+                [PSCustomObject]@{ Name = "c"; SamAccountName = "c"; Enabled = $true; LastLogonDate = $null; WhenCreated = $now.AddDays(-10); PasswordNeverExpires = $true; "msDS-UserPasswordExpiryTimeComputed" = 0; DistinguishedName = "CN=c,OU=U,DC=x" }
+            )
+        }
+    }
+    It "Inactive - konta bez logowania od N dni (nowe konta pomijane)" {
+        @(Get-HTADUserReport -Type Inactive -Days 90).Login | Should -Be @("b")
+    }
+    It "PasswordExpiring - hasła wygasające w ciągu N dni" {
+        $r = @(Get-HTADUserReport -Type PasswordExpiring -Days 7)
+        $r.Login | Should -Be @("a")
+        $r[0].__flag | Should -Be "crit"
+    }
+    It "PasswordExpired i NeverLoggedOn" {
+        @(Get-HTADUserReport -Type PasswordExpired).Login | Should -Be @("b")
+        @(Get-HTADUserReport -Type NeverLoggedOn).Login | Should -Be @("c")
     }
 }

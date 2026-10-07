@@ -22,9 +22,18 @@
     "DeviceManagementManagedDevices.PrivilegedOperations.All",
     "BitlockerKey.Read.All",
     "DeviceLocalCredential.Read.All",
-    "Sites.Read.All"
+    "Sites.Read.All",
+    "DeviceManagementConfiguration.Read.All",
+    "RoleManagement.Read.Directory",
+    "ServiceHealth.Read.All",
+    "ServiceMessage.Read.All"
   ],
   "ShowNotifications": true,
   "LogFileMaxSizeMB": 5,
-  "ExportPath": ""
+  "ExportPath": "",
+  "InactiveDays": 90,
+  "AadSyncServer": "",
+  "ExchangeUseBrowserLogin": false,
+  "ConfirmBeforeClose": true,
+  "ConfigVersion": 2
 }

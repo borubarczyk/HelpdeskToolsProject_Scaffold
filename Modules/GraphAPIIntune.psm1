@@ -9,7 +9,7 @@ $script:AuditHeaders = @{
 
 # Lista zarządzanych urządzeń
 function Get-HTIntuneDevices {
-    $select = "id,deviceName,userPrincipalName,userDisplayName,operatingSystem,osVersion,complianceState,lastSyncDateTime,enrolledDateTime,serialNumber,model,manufacturer,azureADDeviceId,managedDeviceOwnerType"
+    $select = "id,deviceName,userPrincipalName,userDisplayName,operatingSystem,osVersion,complianceState,lastSyncDateTime,enrolledDateTime,serialNumber,model,manufacturer,azureADDeviceId,managedDeviceOwnerType,isEncrypted,totalStorageSpaceInBytes,freeStorageSpaceInBytes"
     $devices = Invoke-HTGraphRequest -Uri "deviceManagement/managedDevices?`$select=$select" -All
     return @($devices | ForEach-Object {
             [PSCustomObject]@{
@@ -27,6 +27,9 @@ function Get-HTIntuneDevices {
                 Manufacturer     = $_.manufacturer
                 AzureADDeviceId  = $_.azureADDeviceId
                 Ownership        = $_.managedDeviceOwnerType
+                Encrypted        = [bool]$_.isEncrypted
+                StorageTotalGB   = if ($_.totalStorageSpaceInBytes) { [Math]::Round($_.totalStorageSpaceInBytes / 1GB, 1) } else { $null }
+                StorageFreeGB    = if ($_.freeStorageSpaceInBytes) { [Math]::Round($_.freeStorageSpaceInBytes / 1GB, 1) } else { $null }
             }
         } | Sort-Object DeviceName)
 }
@@ -214,3 +217,88 @@ function Get-HTIntuneSummary {
         NonCompliant = @($devices | Where-Object { $_.complianceState -eq "noncompliant" }).Count
     }
 }
+
+#region Akcje zdalne
+# Definicje akcji: ścieżka API, treść żądania, wersja API
+$script:DeviceActions = @{
+    QuickScan        = @{ Path = "windowsDefenderScan"; Body = @{ quickScan = $true }; Text = "Szybkie skanowanie Defender" }
+    FullScan         = @{ Path = "windowsDefenderScan"; Body = @{ quickScan = $false }; Text = "Pełne skanowanie Defender" }
+    UpdateSignatures = @{ Path = "windowsDefenderUpdateSignatures"; Text = "Aktualizacja sygnatur Defender" }
+    RemoteLock       = @{ Path = "remoteLock"; Text = "Zdalna blokada" }
+    RotateBitLocker  = @{ Path = "rotateBitLockerKeys"; Beta = $true; Text = "Rotacja kluczy BitLocker" }
+    RotateLaps       = @{ Path = "rotateLocalAdminPassword"; Beta = $true; Text = "Rotacja hasła LAPS" }
+    Locate           = @{ Path = "locateDevice"; Text = "Lokalizacja urządzenia" }
+    Retire           = @{ Path = "retire"; Text = "Wycofanie (usunięcie danych firmowych)" }
+    Shutdown         = @{ Path = "shutDown"; Text = "Wyłączenie" }
+}
+
+function Invoke-HTIntuneDeviceAction {
+    param (
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][ValidateSet("QuickScan", "FullScan", "UpdateSignatures", "RemoteLock", "RotateBitLocker", "RotateLaps", "Locate", "Retire", "Shutdown")][string]$Action
+    )
+    $definition = $script:DeviceActions[$Action]
+    $body = if ($definition.Body) { $definition.Body } else { $null }
+    Invoke-HTGraphRequest -Uri "deviceManagement/managedDevices/$Id/$($definition.Path)" -Method POST -Body $body -Beta:([bool]$definition.Beta) | Out-Null
+    return $definition.Text
+}
+
+# Przywrócenie ustawień fabrycznych (wipe). KeepEnrollmentData / KeepUserData - zgodnie z opcjami Intune.
+function Invoke-HTIntuneWipe {
+    param (
+        [Parameter(Mandatory)][string]$Id,
+        [bool]$KeepEnrollmentData = $false,
+        [bool]$KeepUserData = $false
+    )
+    $body = @{ keepEnrollmentData = $KeepEnrollmentData; keepUserData = $KeepUserData }
+    Invoke-HTGraphRequest -Uri "deviceManagement/managedDevices/$Id/wipe" -Method POST -Body $body | Out-Null
+}
+
+# Usunięcie urządzenia z Intune (rekord zarządzania)
+function Remove-HTIntuneDevice {
+    param ([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "deviceManagement/managedDevices/$Id" -Method DELETE | Out-Null
+}
+#endregion
+
+#region Zasady zgodności i konfiguracji urządzenia
+function Get-HTIntunePolicyStates {
+    param ([Parameter(Mandatory)][string]$Id)
+    $stateNames = @{ compliant = "Zgodne"; noncompliant = "Niezgodne"; error = "Błąd"; conflict = "Konflikt"; notApplicable = "Nie dotyczy"; unknown = "Nieznany"; remediated = "Naprawione"; notAssigned = "Nieprzypisane" }
+    $sources = @(
+        @{ Kind = "Zgodność"; Uri = "deviceManagement/managedDevices/$Id/deviceCompliancePolicyStates" }
+        @{ Kind = "Konfiguracja"; Uri = "deviceManagement/managedDevices/$Id/deviceConfigurationStates" }
+    )
+    foreach ($source in $sources) {
+        $states = @()
+        try { $states = @(Invoke-HTGraphRequest -Uri $source.Uri) }
+        catch {
+            [PSCustomObject]@{ Rodzaj = $source.Kind; Zasada = "(brak dostępu)"; Stan = "Błąd"; Ustawienie = ""; Szczegóły = $_.Exception.Message; __flag = "muted" }
+            continue
+        }
+        foreach ($policy in $states) {
+            $state = "$($policy.state)"
+            $bad = @($policy.settingStates | Where-Object { "$($_.state)" -in "noncompliant", "nonCompliant", "error", "conflict" })
+            [PSCustomObject]@{
+                Rodzaj     = $source.Kind
+                Zasada     = $policy.displayName
+                Stan       = $stateNames[$state] ?? $state
+                Ustawienie = ""
+                Szczegóły  = "Platforma: $($policy.platformType); ustawień: $($policy.settingCount)"
+                __flag     = if ($state -in "noncompliant", "nonCompliant", "error", "conflict") { "crit" } elseif ($state -in "notApplicable", "unknown") { "muted" } else { "" }
+            }
+            foreach ($setting in $bad) {
+                $settingState = "$($setting.state)"
+                [PSCustomObject]@{
+                    Rodzaj     = $source.Kind
+                    Zasada     = $policy.displayName
+                    Stan       = $stateNames[$settingState] ?? $settingState
+                    Ustawienie = if ($setting.settingName) { $setting.settingName } else { $setting.setting }
+                    Szczegóły  = (@($setting.errorDescription, $setting.currentValue) | Where-Object { $_ }) -join "; "
+                    __flag     = "warn"
+                }
+            }
+        }
+    }
+}
+#endregion

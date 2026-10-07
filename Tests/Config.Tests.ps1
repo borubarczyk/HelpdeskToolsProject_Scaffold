@@ -2,7 +2,6 @@
     . (Join-Path $PSScriptRoot "TestHelpers.ps1")
     Import-HTTestModule -Name "Utils", "Config"
     Initialize-HTTestEnvironment -Root $TestDrive
-    Disable-HTTestToast
 }
 
 Describe "Merge-HTConfig" {
@@ -60,5 +59,22 @@ Describe "Set-HTConfigValue" {
         Apply-HTConfig -Config (Merge-HTConfig -Config $null).Config
         Set-HTConfigValue -Name "LastUsedClientID" -Value "abc"
         (Get-Content $Global:ConfigPath -Raw | ConvertFrom-Json).LastUsedClientID | Should -Be "abc"
+    }
+}
+
+Describe "Update-HTConfigSchema" {
+    It "dopisuje nowe uprawnienia Graph do starej konfiguracji i zachowuje własne" {
+        $old = [PSCustomObject]@{ GraphScopes = @("User.Read.All", "Custom.Scope") }
+        $merge = Merge-HTConfig -Config $old
+        Update-HTConfigSchema -Config $merge.Config -AddedKeys $merge.AddedKeys | Should -BeTrue
+        $merge.Config.GraphScopes | Should -Contain "Custom.Scope"
+        $merge.Config.GraphScopes | Should -Contain "ServiceHealth.Read.All"
+        $merge.Config.ConfigVersion | Should -BeGreaterThan 1
+    }
+    It "nie zmienia aktualnej konfiguracji" {
+        $current = (Merge-HTConfig -Config $null).Config
+        $current.GraphScopes = @("User.Read.All")
+        Update-HTConfigSchema -Config $current | Should -BeFalse
+        $current.GraphScopes | Should -Be @("User.Read.All")
     }
 }
