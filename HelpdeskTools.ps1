@@ -140,7 +140,7 @@ finally {
         "ConnectedToExchange", "ConnectedToGraphAPI", "ConnectedToSharepoint", "ConnectedToSharepointPnP",
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
-        "InactiveDays", "AadSyncServer", "ExchangeUseBrowserLogin", "ConfirmBeforeClose"
+        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

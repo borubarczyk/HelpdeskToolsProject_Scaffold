@@ -161,3 +161,23 @@ Describe "Akcje zdalne Intune" {
         Should -Invoke -ModuleName GraphAPIIntune Invoke-HTGraphRequest -Times 1 -Exactly -ParameterFilter { $Beta -and $Uri -like "*rotateBitLockerKeys" }
     }
 }
+
+Describe "Logowanie w przeglądarce" {
+    It "Exchange: dodaje -DisableWAM, gdy moduł go obsługuje" {
+        New-HTTestStub -Name "Connect-ExchangeOnline" -Parameters "ShowBanner", "ShowProgress", "DisableWAM"
+        $params = Get-HTExchangeConnectParams
+        $params.DisableWAM | Should -BeTrue
+        $params.ShowBanner | Should -BeFalse
+    }
+    It "Exchange: bez -DisableWAM dla starszego modułu" {
+        New-HTTestStub -Name "Connect-ExchangeOnline" -Parameters "ShowBanner"
+        (Get-HTExchangeConnectParams).ContainsKey("DisableWAM") | Should -BeFalse
+    }
+    It "Graph: wyłącza logowanie WAM" {
+        New-HTTestStub -Name "Set-MgGraphOption" -Parameters "DisableLoginByWAM"
+        Mock -ModuleName ModulesConnection Set-MgGraphOption { }
+        Disable-HTGraphWam
+        Should -Invoke -ModuleName ModulesConnection Set-MgGraphOption -Times 1 -Exactly -ParameterFilter { $DisableLoginByWAM -eq $true }
+    }
+    AfterAll { Remove-Item function:global:Connect-ExchangeOnline, function:global:Set-MgGraphOption -ErrorAction SilentlyContinue }
+}

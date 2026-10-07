@@ -178,7 +178,7 @@ function Show-HTSettingsDialog {
         @{ Type = 'Header'; Label = 'Microsoft 365 i Exchange' }
         @{ Name = 'DefaultUsageLocation'; Label = 'Domyślna lokalizacja użycia (licencje)'; Default = $cfg.DefaultUsageLocation; Hint = 'Dwuliterowy kod kraju, np. PL.' }
         @{ Name = 'InactiveDays'; Label = 'Próg nieaktywności kont (dni)'; Type = 'Number'; Default = [int]$cfg.InactiveDays; Min = 1; Max = 3650; Hint = 'Domyślna wartość w raportach nieaktywnych kont i urządzeń.' }
-        @{ Name = 'ExchangeUseBrowserLogin'; Label = 'Exchange: logowanie w przeglądarce zamiast okna Windows (WAM)'; Type = 'Check'; Default = [bool]$cfg.ExchangeUseBrowserLogin; Hint = 'Przydatne, gdy okno logowania WAM nie pojawia się lub zawiesza (ExchangeOnlineManagement 3.7.2+).' }
+        @{ Name = 'LoginTimeoutMinutes'; Label = 'Limit czasu logowania w przeglądarce (minuty)'; Type = 'Number'; Default = [int]$cfg.LoginTimeoutMinutes; Min = 1; Max = 60; Hint = 'Po tym czasie oczekiwanie na logowanie jest anulowane (np. gdy karta przeglądarki została zamknięta).' }
         @{ Name = 'GraphScopes'; Label = 'Uprawnienia Microsoft Graph (jedno w linii)'; Type = 'Multiline'; Default = (@($cfg.GraphScopes) -join "`r`n"); Height = 120 }
         @{ Type = 'Header'; Label = 'SharePoint' }
         @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url' }

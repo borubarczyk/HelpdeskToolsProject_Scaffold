@@ -164,15 +164,23 @@ function Get-HTGraphTenantName {
 
 #endregion
 
-# Logowanie interaktywne (MSAL / WAM / przeglądarka) z oknem logowania na wierzchu - zob. Invoke-HTInteractiveLogin w UIComponents.
+# Logowanie interaktywne w przeglądarce z oknem «Trwa logowanie» (Anuluj, limit czasu) - zob. Invoke-HTInteractiveLogin.
 # Bez interfejsu (np. testy) blok jest wykonywany bezpośrednio.
 function Invoke-HTLogin {
-    param ([Parameter(Mandatory)][scriptblock]$ScriptBlock)
+    param ([Parameter(Mandatory)][scriptblock]$ScriptBlock, [string]$Title = "Microsoft 365")
     if (Get-Command -Name Invoke-HTInteractiveLogin -ErrorAction SilentlyContinue) {
-        Invoke-HTInteractiveLogin -ScriptBlock $ScriptBlock
+        Invoke-HTInteractiveLogin -ScriptBlock $ScriptBlock -Title $Title
     }
     else {
         & $ScriptBlock
+    }
+}
+
+# Microsoft Graph: logowanie w przeglądarce zamiast okna Windows (WAM), które potrafi otworzyć się za oknem programu lub poza ekranem
+function Disable-HTGraphWam {
+    $command = Get-Command -Name Set-MgGraphOption -ErrorAction SilentlyContinue
+    if ($command -and $command.Parameters.ContainsKey("DisableLoginByWAM")) {
+        try { Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction Stop } catch { Write-Log "Nie udało się wyłączyć logowania WAM w Microsoft Graph: $($_.Exception.Message)" "Warn" }
     }
 }
 
@@ -197,8 +205,9 @@ function Connect-Module {
         switch ($Name) {
             'Microsoft.Graph' {
                 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop -Global
+                Disable-HTGraphWam
                 $scopes = @($Global:GraphScopes)
-                Invoke-HTLogin -ScriptBlock { Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop }.GetNewClosure()
+                Invoke-HTLogin -Title "Microsoft 365" -ScriptBlock { Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop }.GetNewClosure()
                 $tenant = Get-HTGraphTenantName
                 $Global:ConnectedToGraphAPI = $true
                 Update-ConnectionButtonText -Service "Graph" -TenantName $tenant
@@ -213,8 +222,9 @@ function Connect-Module {
                     return $false
                 }
                 Import-Module Microsoft.Graph.Authentication -ErrorAction Stop -Global
+                Disable-HTGraphWam
                 $scopes = @($Global:GraphScopes)
-                Invoke-HTLogin -ScriptBlock { Connect-MgGraph -TenantId $tenantId -Scopes $scopes -NoWelcome -ErrorAction Stop }.GetNewClosure()
+                Invoke-HTLogin -Title "Microsoft 365 (GDAP)" -ScriptBlock { Connect-MgGraph -TenantId $tenantId -Scopes $scopes -NoWelcome -ErrorAction Stop }.GetNewClosure()
                 $tenant = Get-HTGraphTenantName
                 $Global:ConnectedToGraphAPI = $true
                 Update-ConnectionButtonText -Service "Graph" -TenantName $tenant
@@ -223,7 +233,7 @@ function Connect-Module {
             'ExchangeOnlineManagement' {
                 Import-Module ExchangeOnlineManagement -ErrorAction Stop -Global
                 $params = Get-HTExchangeConnectParams
-                Invoke-HTLogin -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
+                Invoke-HTLogin -Title "Exchange Online" -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
                 $tenant = (Get-OrganizationConfig).DisplayName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
@@ -244,7 +254,7 @@ function Connect-Module {
                 $params = Get-HTExchangeConnectParams
                 $params.UserPrincipalName = $gdap.Account
                 $params.DelegatedOrganization = $gdap.Organization
-                Invoke-HTLogin -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
+                Invoke-HTLogin -Title "Exchange Online (GDAP)" -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
                 $tenant = (Get-OrganizationConfig).DisplayName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
@@ -274,7 +284,7 @@ function Connect-Module {
                 }
 
                 Import-Module PnP.PowerShell -ErrorAction Stop -Global
-                Invoke-HTLogin -ScriptBlock { Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop }.GetNewClosure()
+                Invoke-HTLogin -Title "SharePoint" -ScriptBlock { Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop }.GetNewClosure()
                 $connectedUrl = (Get-PnPConnection).Url
                 $Global:ConnectedToSharepointPnP = $true
                 $Global:ConnectedToSharepoint = $true
@@ -290,6 +300,13 @@ function Connect-Module {
 
         return $true
     }
+    catch [System.OperationCanceledException] {
+        # Anulowano logowanie lub upłynął limit czasu - bez okna błędu, połączenie można ponowić
+        Write-Log "$($_.Exception.Message)" "Warn&Notification"
+        Set-HTBusy -Busy $false -Text "Logowanie anulowane"
+        Set-HTBusy -Busy $true
+        return $false
+    }
     catch {
         Write-Log "Błąd połączenia z '$Name': $($_.Exception.Message)" "Error&Notification"
         Set-HTBusy -Busy $false -Text "Błąd połączenia"
@@ -302,15 +319,13 @@ function Connect-Module {
     }
 }
 
-# Parametry Connect-ExchangeOnline; opcjonalnie logowanie w przeglądarce zamiast okna WAM (-DisableWAM, EXO 3.7.2+)
+# Parametry Connect-ExchangeOnline: logowanie w przeglądarce zamiast okna Windows (WAM) - -DisableWAM, EXO 3.7.2+
 function Get-HTExchangeConnectParams {
     $params = @{ ShowBanner = $false; ErrorAction = "Stop" }
     $command = Get-Command -Name Connect-ExchangeOnline -ErrorAction SilentlyContinue
     if ($command -and $command.Parameters.ContainsKey("ShowProgress")) { $params.ShowProgress = $false }
-    if ($Global:ExchangeUseBrowserLogin) {
-        if ($command -and $command.Parameters.ContainsKey("DisableWAM")) { $params.DisableWAM = $true }
-        else { Write-Log "Logowanie w przeglądarce wymaga modułu ExchangeOnlineManagement 3.7.2 lub nowszego." "Warn" }
-    }
+    if ($command -and $command.Parameters.ContainsKey("DisableWAM")) { $params.DisableWAM = $true }
+    elseif ($command) { Write-Log "Zaktualizuj moduł ExchangeOnlineManagement do 3.7.2 lub nowszego (Update-Module ExchangeOnlineManagement) - starsze wersje logują się w osobnym oknie zamiast w przeglądarce." "Warn" }
     return $params
 }
 
