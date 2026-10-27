@@ -37,7 +37,7 @@ if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Thr
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.0.0"
+$Global:AppVersion = "3.1.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -63,6 +63,9 @@ $Global:ShowNotifications = $true
 $moduleNames = @(
     "Utils",
     "Security",
+    "Mfa",
+    "ColumnFilters",
+    "Reports",
     "UIComponents",
     "Config",
     "ModulesConnection",
@@ -117,11 +120,13 @@ try {
     $Global:HTConfig = Ensure-HTConfig -Path $Global:ConfigPath
     Apply-HTConfig -Config $Global:HTConfig
 
-    # PIN przed oknem głównym (przy pierwszym uruchomieniu - ustawienie PIN-u)
+    # PIN przed oknem głównym (przy pierwszym uruchomieniu - ustawienie PIN-u); z MFA także kod z aplikacji
     if (-not (Unlock-HTApplication)) {
         Write-Log -Message "Program nie został odblokowany - zamykanie." -Type "Warn"
         return
     }
+    # Nawigacja według uprawnień konta MFA, które odblokowało program
+    Update-HTNavAccess
 
     # Nieobsłużone wyjątki w zdarzeniach interfejsu - wpis w dzienniku i komunikat zamiast zamknięcia programu
     $window.Dispatcher.add_UnhandledException({
@@ -157,6 +162,7 @@ catch {
     Write-Error "Błąd uruchamiania GUI: $_"
 }
 finally {
+    Stop-HTAutoLock
     # Sprzątanie zmiennych globalnych aplikacji (pozostałe zmienne sesji pozostają bez zmian)
     $appVariables = @(
         "HT_UI", "HTConfig", "AppVersion", "ConfigDir", "ConfigPath", "IconsPath", "AppIconPath",
@@ -164,7 +170,7 @@ finally {
         "ConnectedToExchange", "ConnectedToGraphAPI", "ConnectedToSharepoint", "ConnectedToSharepointPnP",
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
-        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting"
+        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting", "HTActiveAccount"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

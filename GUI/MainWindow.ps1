@@ -91,10 +91,16 @@ $script:MainXaml = @'
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         <Grid Margin="18,6,10,2">
-          <TextBlock Text="DZIENNIK OPERACJI" Foreground="#5E6779" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center"/>
+          <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock Text="DZIENNIK OPERACJI" Foreground="#5E6779" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,14,0"/>
+            <ComboBox x:Name="logLevel" Width="170" MinHeight="26" Padding="8,2" ToolTip="Pokaż wpisy o wybranym poziomie"/>
+            <TextBox x:Name="logSearch" Width="220" MinHeight="26" Padding="8,2" Margin="8,0,0,0" Tag="Szukaj w dzienniku…" ToolTip="Fragment komunikatu lub nazwy modułu"/>
+            <TextBlock x:Name="logCount" Foreground="#5E6779" FontSize="11.5" VerticalAlignment="Center" Margin="10,0,0,0"/>
+          </StackPanel>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="btnLogCopy" Style="{StaticResource GhostButton}" ToolTip="Kopiuj dziennik (zaznaczone wpisy lub wszystkie)" MinHeight="26" Padding="8,2"/>
-            <Button x:Name="btnLogFile" Style="{StaticResource GhostButton}" ToolTip="Otwórz plik dziennika" MinHeight="26" Padding="8,2"/>
+            <Button x:Name="btnLogCopy" Style="{StaticResource GhostButton}" ToolTip="Kopiuj dziennik (zaznaczone wpisy lub wszystkie widoczne)" MinHeight="26" Padding="8,2"/>
+            <Button x:Name="btnLogHistory" Style="{StaticResource GhostButton}" ToolTip="Dziennik z poprzednich dni (Pulpit > Dziennik programu)" MinHeight="26" Padding="8,2"/>
+            <Button x:Name="btnLogFile" Style="{StaticResource GhostButton}" ToolTip="Otwórz dzisiejszy plik dziennika" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogClear" Style="{StaticResource GhostButton}" ToolTip="Wyczyść okno dziennika" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogHide" Style="{StaticResource GhostButton}" ToolTip="Ukryj dziennik (Ctrl+L)" MinHeight="26" Padding="8,2"/>
           </StackPanel>
@@ -260,7 +266,10 @@ $script:ShellEvents = @{
             elseif ($mods -eq $ctrl -and [int]$key -ge [int][System.Windows.Input.Key]::D1 -and [int]$key -le [int][System.Windows.Input.Key]::D9) {
                 $index = [int]$key - [int][System.Windows.Input.Key]::D1
                 $keys = @($HT_UI.Workspaces.Keys)
-                if ($index -lt $keys.Count) { Show-HTWorkspace -Key $keys[$index] }
+                if ($index -lt $keys.Count) {
+                    if (Test-HTWorkspaceAllowed $keys[$index]) { Show-HTWorkspace -Key $keys[$index] }
+                    else { Show-HTAccessDenied ('przestrzeń «{0}»' -f $HT_UI.Workspaces[$keys[$index]].Title) }
+                }
                 $e.Handled = $true
             }
         }
@@ -270,14 +279,16 @@ $script:ShellEvents = @{
         param($s, $e)
         try {
             if ($Global:HTRestarting) { return }
-            if ($HT_UI.BusyDepth -gt 0) {
+            # Zamknięcie awaryjne z ekranu blokady: bez pytań, połączenia z usługami są kończone
+            $emergency = Test-HTEmergencyExit
+            if ($HT_UI.BusyDepth -gt 0 -and -not $emergency) {
                 $e.Cancel = $true
                 Show-HTToast 'Trwa operacja - zaczekaj na jej zakończenie.' 'warn'
                 return
             }
             $connected = @($Global:ConnectedToExchange, $Global:ConnectedToGraphAPI, $Global:ConnectedToSharepointPnP) | Where-Object { $_ }
-            if (Test-HTLocked) { $e.Cancel = $true; return }
-            if ($Global:ConfirmBeforeClose -and @($connected).Count -gt 0) {
+            if ((Test-HTLocked) -and -not $emergency) { $e.Cancel = $true; return }
+            if ($Global:ConfirmBeforeClose -and @($connected).Count -gt 0 -and -not $emergency) {
                 if (-not (Show-HTConfirm -Message 'Zamknąć Helpdesk Tools? Aktywne połączenia z usługami zostaną zakończone.' -Title 'Zamknięcie programu' -ConfirmText 'Zamknij')) {
                     $e.Cancel = $true
                     return
@@ -294,6 +305,20 @@ $script:ShellEvents = @{
     }
 }
 
+# Filtr poziomu w panelu dziennika (Level: wartości jak w kolumnie poziomu - INFO / OK / WARN / ERROR)
+$script:LogLevelFilters = @(
+    @{ Text = 'Wszystkie wpisy'; Levels = @() }
+    @{ Text = 'Ostrzeżenia i błędy'; Levels = @('WARN', 'ERROR') }
+    @{ Text = 'Tylko błędy'; Levels = @('ERROR') }
+    @{ Text = 'Wykonane (OK)'; Levels = @('OK') }
+)
+
+function Update-HTLogPanelFilter {
+    $c = $HT_UI.Controls
+    $index = [Math]::Max(0, $c.logLevel.SelectedIndex)
+    Set-HTLogFilter -Levels $script:LogLevelFilters[$index].Levels -Text $c.logSearch.Text
+}
+
 function New-HTMainWindow {
     $w = New-HTUiElement $script:MainXaml
     $HT_UI.Window = $w
@@ -301,7 +326,7 @@ function New-HTMainWindow {
     foreach ($n in 'txtVersion', 'txtUser', 'wsSwitcher', 'txtSubtitle', 'connHost', 'btnLock', 'btnPassword', 'btnSettings',
         'targetColumn', 'targetHost', 'navHost', 'contentHost', 'toastHost', 'logRow', 'logSplitter', 'logPanel', 'logList',
         'btnLogCopy', 'btnLogFile', 'btnLogClear', 'btnLogHide', 'statusDot', 'txtStatus', 'prgStatus', 'btnLogToggle',
-        'logBadge', 'logBadgeText') {
+        'logBadge', 'logBadgeText', 'logLevel', 'logSearch', 'logCount', 'btnLogHistory') {
         $c[$n] = $w.FindName($n)
     }
     $w.Title = "Helpdesk Tools $($Global:AppVersion)"
@@ -315,7 +340,12 @@ function New-HTMainWindow {
     $c.btnLogFile.Content = New-HTIconContent -Text '' -Icon 'E8E5' -IconSize 12
     $c.btnLogClear.Content = New-HTIconContent -Text '' -Icon 'E894' -IconSize 12
     $c.btnLogHide.Content = New-HTIconContent -Text '' -Icon 'E70D' -IconSize 12
+    $c.btnLogHistory.Content = New-HTIconContent -Text '' -Icon 'E81C' -IconSize 12
     $c.logList.ItemsSource = $HT_UI.LogItems
+    foreach ($level in $script:LogLevelFilters) { [void]$c.logLevel.Items.Add($level.Text) }
+    $c.logLevel.SelectedIndex = 0
+    $c.logLevel.add_SelectionChanged({ Update-HTLogPanelFilter })
+    $c.logSearch.add_TextChanged({ Update-HTLogPanelFilter })
 
     # Rozmiar okna nie większy niż obszar roboczy ekranu (np. laptop 1366x768)
     $work = [System.Windows.SystemParameters]::WorkArea
@@ -334,21 +364,23 @@ function New-HTMainWindow {
     $c.btnLogHide.add_Click({ Set-HTLogVisible $false })
     $c.btnLogClear.add_Click({ $HT_UI.LogItems.Clear() })
     $c.btnLogFile.add_Click({
-            $file = Join-Path $Global:ConfigDir 'logs.txt'
-            if (Test-Path -LiteralPath $file) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $file) }
-            elseif (Test-Path -LiteralPath $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) }
+            # Dzisiejszy plik dziennika (%LOCALAPPDATA%\HelpdeskTools\Logs), a gdy go jeszcze nie ma - folder dziennika
+            $file = Get-HTLogFile
+            $dir = Get-HTLogDirectory
+            if ($file -and (Test-Path -LiteralPath $file)) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $file) }
+            elseif ($dir -and (Test-Path -LiteralPath $dir)) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $dir) }
         })
+    $c.btnLogHistory.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTModule -Key 'dash.log' } })
     $c.btnLogCopy.add_Click({
+            # Zaznaczone wpisy albo wszystkie widoczne po filtrze dziennika
             $items = @($HT_UI.Controls.logList.SelectedItems)
-            if ($items.Count -le 1) { $items = @($HT_UI.LogItems) }
+            if ($items.Count -le 1) { $items = @($HT_UI.Controls.logList.Items) }
             $text = (@($items | ForEach-Object { '{0} [{1}] {2}{3}' -f $_.Time, $_.Level, $(if ($_.Module) { "[$($_.Module)] " } else { '' }), $_.Message }) -join [Environment]::NewLine)
             if ($text) { Set-HTClipboard $text; Show-HTToast "Skopiowano wpisów: $($items.Count)" 'ok' }
         })
     $w.add_PreviewKeyDown($script:ShellEvents.PreviewKeyDown)
-    # Aktywność użytkownika (automatyczna blokada po bezczynności)
-    $w.add_PreviewMouseMove({ Update-HTActivity })
-    $w.add_PreviewMouseDown({ Update-HTActivity })
-    $w.add_PreviewKeyDown({ Update-HTActivity })
+    # Aktywność użytkownika (automatyczna blokada po bezczynności; ruch kursora sprawdza licznik bezczynności)
+    Register-HTIdleActivity -Window $w
     $w.add_Closing($script:ShellEvents.Closing)
     $w.add_SourceInitialized({ param($s, $e) Set-HTDarkTitleBar $s })
     $w.add_SizeChanged({ param($s, $e) try { Update-HTHeaderLayout } catch { Write-Verbose $_ } })

@@ -166,6 +166,8 @@ function New-HTRandomPassword {
 
 #region Ustawienia
 function Show-HTSettingsDialog {
+    # Konto dodatkowe MFA może mieć zablokowane Ustawienia (Uprawnienia… w oknie MFA)
+    if (-not (Test-HTAppAllowed 'Settings')) { Show-HTAccessDenied 'Ustawienia programu'; return $false }
     $cfg = (Merge-HTConfig -Config $Global:HTConfig).Config
     $fields = @(
         @{ Type = 'Header'; Label = 'Hasła' }
@@ -187,17 +189,19 @@ function Show-HTSettingsDialog {
         @{ Type = 'Header'; Label = 'Active Directory' }
         @{ Name = 'AadSyncServer'; Label = 'Serwer Microsoft Entra Connect'; Default = $cfg.AadSyncServer; Hint = 'Do uruchamiania synchronizacji delta (wymaga WinRM).' }
         @{ Type = 'Header'; Label = 'Bezpieczeństwo' }
-        @{ Name = 'AutoLockMinutes'; Label = 'Automatyczna blokada po bezczynności (minuty, 0 = wyłączona)'; Type = 'Number'; Default = [int]$cfg.AutoLockMinutes; Min = 0; Max = 480; Hint = 'Odblokowanie PIN-em. Ręcznie: kłódka w nagłówku lub Ctrl+Shift+L. PIN zmienisz przyciskiem «Zmień PIN».' }
+        @{ Name = 'AutoLockMinutes'; Label = 'Automatyczna blokada po bezczynności (minuty, 0 = wyłączona)'; Type = 'Number'; Default = [int]$cfg.AutoLockMinutes; Min = 0; Max = 480; Hint = 'Odblokowanie PIN-em (z MFA także kodem z aplikacji). Ręcznie: kłódka w nagłówku lub Ctrl+Shift+L. PIN zmienisz przyciskiem «Zmień PIN».' }
+        @{ Type = 'Info'; Label = ((Get-HTMfaStatusText) + ' Konta, klucze i uprawnienia: przycisk «MFA».') }
         @{ Type = 'Header'; Label = 'Aplikacja' }
         @{ Name = 'ShowNotifications'; Label = 'Pokazuj powiadomienia w oknie'; Type = 'Check'; Default = [bool]$cfg.ShowNotifications }
         @{ Name = 'ConfirmBeforeClose'; Label = 'Pytaj przed zamknięciem, gdy są aktywne połączenia'; Type = 'Check'; Default = [bool]$cfg.ConfirmBeforeClose }
-        @{ Name = 'ExportPath'; Label = 'Katalog eksportu'; Default = $cfg.ExportPath; Hint = "Puste = $(Join-Path $Global:ConfigDir 'Exports')" }
+        @{ Name = 'ExportPath'; Label = 'Katalog eksportu'; Default = $cfg.ExportPath; Hint = 'Puste = Dokumenty\HelpdeskTools\Eksport' }
         @{ Name = 'LogFileMaxSizeMB'; Label = 'Maks. rozmiar pliku dziennika (MB)'; Type = 'Number'; Default = [int]$cfg.LogFileMaxSizeMB; Min = 1; Max = 100 }
     )
     $result = Show-HTFormDialog -Title 'Ustawienia' -Description "Plik konfiguracji: $Global:ConfigPath" -Fields $fields -Icon 'E713' -Width 640 -MaxHeight 600 -ExtraButtons @(
         @{ Text = 'Otwórz plik'; Icon = 'E8E5'; OnClick = { param($w) if (Test-Path $Global:ConfigPath) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $Global:ConfigPath) } } }
         @{ Text = 'Folder'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }
         @{ Text = 'Zmień PIN'; Icon = 'E72E'; OnClick = { param($w) Update-HTPinInteractive } }
+        @{ Text = 'MFA'; Icon = 'E8D7'; OnClick = { param($w) Show-HTMfaManager } }
     )
     if (-not $result) { return $false }
     # PIN mógł zostać zmieniony w trakcie (przycisk «Zmień PIN») - zachowaj aktualny zapis
@@ -216,8 +220,27 @@ function Show-HTSettingsDialog {
 }
 #endregion
 
-# Zmiana PIN-u: najpierw obecny PIN, potem nowy (dwukrotnie)
+# Zmiana PIN-u: najpierw obecny PIN, potem nowy (dwukrotnie). Konto dodatkowe MFA zmienia własny PIN.
 function Update-HTPinInteractive {
+    $access = Get-HTAccess
+    if ($access.AccountId -ne '#primary') {
+        $account = @(Get-HTMfaUnlockAccounts | Where-Object { $_.Id -eq $access.AccountId })[0]
+        if (-not $account) { Show-HTWarning 'Nie znaleziono konta MFA, które odblokowało program.'; return }
+        $current = Show-InputBox -Title "Zmiana PIN-u - $($account.Name)" -Prompt 'Obecny PIN tego konta:' -Password -Icon 'E72E'
+        if ($null -eq $current) { return }
+        if (-not (Test-HTMfaAccountPin -Account $account -Pin $current)) {
+            Write-Log -Message "Zmiana PIN-u konta «$($account.Name)»: nieprawidłowy obecny PIN." -Type 'Warn'
+            Show-HTWarning 'Nieprawidłowy obecny PIN.'
+            return
+        }
+        $pin = Show-HTPinSetupDialog -Title "Nowy PIN - $($account.Name)" -Subtitle 'PIN tego konta MFA (na ekranie blokady po wybraniu konta, razem z kodem z aplikacji).'
+        if (-not $pin) { return }
+        if (Test-HTPin -Pin $pin) { Show-HTWarning 'PIN konta dodatkowego musi różnić się od PIN-u programu.'; return }
+        Set-HTMfaAccountPin -Id $account.Id -Pin $pin
+        Write-Log -Message "Zmieniono PIN konta MFA «$($account.Name)»." -Type 'Info'
+        Show-HTToast 'Zmieniono PIN.' 'ok'
+        return
+    }
     if (Test-HTPinConfigured) {
         $current = Show-InputBox -Title 'Zmiana PIN-u' -Prompt 'Obecny PIN:' -Password -Icon 'E72E'
         if ($null -eq $current) { return }
