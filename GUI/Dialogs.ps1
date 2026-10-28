@@ -169,6 +169,9 @@ function Show-HTSettingsDialog {
     # Konto dodatkowe MFA może mieć zablokowane Ustawienia (Uprawnienia… w oknie MFA)
     if (-not (Test-HTAppAllowed 'Settings')) { Show-HTAccessDenied 'Ustawienia programu'; return $false }
     $cfg = (Merge-HTConfig -Config $Global:HTConfig).Config
+    $notify = @($cfg.TeamsNotify)
+    $webhookSet = [bool]$cfg.TeamsWebhookProtected
+    $tokenSet = [bool]$cfg.UpdateTokenProtected
     $fields = @(
         @{ Type = 'Header'; Label = 'Hasła' }
         @{ Name = 'PasswordDefaultLength'; Label = 'Domyślna długość hasła'; Type = 'Number'; Default = [int]$cfg.PasswordDefaultLength; Min = 8; Max = 64 }
@@ -186,14 +189,36 @@ function Show-HTSettingsDialog {
         @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url' }
         @{ Name = 'LastUsedClientID'; Label = 'Client ID aplikacji PnP'; Default = "$($cfg.LastUsedClientID)"; Validation = 'Guid' }
         @{ Name = 'LogClientIDForPnP'; Label = 'Zapamiętuj ostatnio użyty Client ID'; Type = 'Check'; Default = [bool]$cfg.LogClientIDForPnP }
-        @{ Type = 'Header'; Label = 'Active Directory' }
-        @{ Name = 'AadSyncServer'; Label = 'Serwer Microsoft Entra Connect'; Default = $cfg.AadSyncServer; Hint = 'Do uruchamiania synchronizacji delta (wymaga WinRM).' }
+        @{ Type = 'Header'; Label = 'Integracje: Teams i e-mail' }
+        @{ Name = 'TeamsWebhook'; Label = 'Adres webhooka kanału Teams'; Type = 'Password'; Hint = $(if ($webhookSet) { 'Zapisany (zaszyfrowany). Pozostaw puste - bez zmian.' } else { 'Teams > kanał > Przepływy pracy > «Publikuj w kanale po odebraniu żądania elementu webhook» (albo łącznik Incoming Webhook).' }) }
+        if ($webhookSet) { @{ Name = 'TeamsWebhookClear'; Label = 'Usuń zapisany adres webhooka'; Type = 'Check'; Default = $false } }
+        @{ Name = 'TeamsNotifyOffboarding'; Label = 'Powiadamiaj kanał o offboardingu'; Type = 'Check'; Default = ($notify -contains 'Offboarding') }
+        @{ Name = 'TeamsNotifyJobs'; Label = 'Powiadamiaj o zadaniach zaplanowanych (uprawnienia tymczasowe, zaplanowany offboarding)'; Type = 'Check'; Default = ($notify -contains 'Jobs') }
+        @{ Name = 'TeamsNotifyChecklists'; Label = 'Powiadamiaj o ukończonych checklistach on/offboardingu'; Type = 'Check'; Default = ($notify -contains 'Checklists') }
+        @{ Name = 'ReportSender'; Label = 'Skrzynka nadawcy raportów zaplanowanych'; Default = $cfg.ReportSender; Validation = 'Email'; Hint = 'Raporty bez zalogowanego użytkownika (HelpdeskToolsRunner.ps1) są wysyłane z tej skrzynki. Wyniki z okna programu - z Twojej skrzynki.' }
+        @{ Type = 'Header'; Label = 'Automatyzacja (zadania bez użytkownika) i Defender' }
+        @{ Name = 'AutomationClientId'; Label = 'Aplikacja automatyzacji: Client ID'; Default = $cfg.AutomationClientId; Validation = 'Guid'; Hint = 'Utworzysz ją w przestrzeni «Zadania» > Raporty zaplanowane > «Utwórz aplikację automatyzacji».' }
+        @{ Name = 'AutomationTenantId'; Label = 'Aplikacja automatyzacji: Tenant ID'; Default = $cfg.AutomationTenantId }
+        @{ Name = 'AutomationCertificateThumbprint'; Label = 'Odcisk certyfikatu aplikacji (magazyn CurrentUser\My)'; Default = $cfg.AutomationCertificateThumbprint }
+        @{ Name = 'AutomationOrganization'; Label = 'Domena organizacji Exchange (np. firma.onmicrosoft.com)'; Default = $cfg.AutomationOrganization }
+        @{ Name = 'DefenderClientId'; Label = 'Client ID aplikacji Microsoft Defender for Endpoint'; Default = $cfg.DefenderClientId; Validation = 'Guid'; Hint = 'Izolacja urządzeń: aplikacja z uprawnieniem delegowanym Machine.Isolate (WindowsDefenderATP) i adresem przekierowania http://localhost.' }
+        @{ Type = 'Header'; Label = 'Aktualizacje' }
+        @{ Name = 'CheckUpdatesOnStart'; Label = 'Sprawdzaj aktualizacje przy uruchomieniu'; Type = 'Check'; Default = [bool]$cfg.CheckUpdatesOnStart }
+        @{ Name = 'UpdateRepository'; Label = 'Repozytorium GitHub (właściciel/nazwa)'; Default = $cfg.UpdateRepository }
+        @{ Name = 'UpdateBranch'; Label = 'Gałąź'; Default = $cfg.UpdateBranch }
+        @{ Name = 'UpdateToken'; Label = 'Token GitHub (tylko repozytorium prywatne, uprawnienie Contents: read)'; Type = 'Password'; Hint = $(if ($tokenSet) { 'Zapisany (zaszyfrowany). Pozostaw puste - bez zmian.' } else { 'Puste dla repozytorium publicznego.' }) }
+        if ($tokenSet) { @{ Name = 'UpdateTokenClear'; Label = 'Usuń zapisany token'; Type = 'Check'; Default = $false } }
+        @{ Type = 'Header'; Label = 'Funkcje lokalne' }
+        @{ Name = 'ShowOnPremises'; Label = 'Pokazuj funkcje lokalne: Active Directory (po ponownym uruchomieniu)'; Type = 'Check'; Default = [bool]$cfg.ShowOnPremises }
+        if ($cfg.ShowOnPremises) { @{ Name = 'AadSyncServer'; Label = 'Serwer Microsoft Entra Connect'; Default = $cfg.AadSyncServer; Hint = 'Do uruchamiania synchronizacji delta (wymaga WinRM).' } }
         @{ Type = 'Header'; Label = 'Bezpieczeństwo' }
         @{ Name = 'AutoLockMinutes'; Label = 'Automatyczna blokada po bezczynności (minuty, 0 = wyłączona)'; Type = 'Number'; Default = [int]$cfg.AutoLockMinutes; Min = 0; Max = 480; Hint = 'Odblokowanie PIN-em (z MFA także kodem z aplikacji). Ręcznie: kłódka w nagłówku lub Ctrl+Shift+L. PIN zmienisz przyciskiem «Zmień PIN».' }
         @{ Type = 'Info'; Label = ((Get-HTMfaStatusText) + ' Konta, klucze i uprawnienia: przycisk «MFA».') }
         @{ Type = 'Header'; Label = 'Aplikacja' }
         @{ Name = 'ShowNotifications'; Label = 'Pokazuj powiadomienia w oknie'; Type = 'Check'; Default = [bool]$cfg.ShowNotifications }
         @{ Name = 'ConfirmBeforeClose'; Label = 'Pytaj przed zamknięciem, gdy są aktywne połączenia'; Type = 'Check'; Default = [bool]$cfg.ConfirmBeforeClose }
+        @{ Name = 'BackgroundQueries'; Label = 'Zapytania Microsoft 365 w tle (okno reaguje, przycisk «Przerwij»)'; Type = 'Check'; Default = [bool]$cfg.BackgroundQueries }
+        @{ Name = 'NotifyLongOperationsSeconds'; Label = 'Powiadomienie Windows po operacji dłuższej niż (sekundy, 0 = wyłączone)'; Type = 'Number'; Default = [int]$cfg.NotifyLongOperationsSeconds; Min = 0; Max = 3600; Hint = 'Gdy okno programu nie jest aktywne: dymek w obszarze powiadomień i miganie przycisku na pasku zadań.' }
         @{ Name = 'ExportPath'; Label = 'Katalog eksportu'; Default = $cfg.ExportPath; Hint = 'Puste = Dokumenty\HelpdeskTools\Eksport' }
         @{ Name = 'LogFileMaxSizeMB'; Label = 'Maks. rozmiar pliku dziennika (MB)'; Type = 'Number'; Default = [int]$cfg.LogFileMaxSizeMB; Min = 1; Max = 100 }
     )
@@ -202,11 +227,25 @@ function Show-HTSettingsDialog {
         @{ Text = 'Folder'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }
         @{ Text = 'Zmień PIN'; Icon = 'E72E'; OnClick = { param($w) Update-HTPinInteractive } }
         @{ Text = 'MFA'; Icon = 'E8D7'; OnClick = { param($w) Show-HTMfaManager } }
+        @{ Text = 'Narzędzia'; Icon = 'E90F'; OnClick = { param($w) Show-HTToolsMenu } }
     )
     if (-not $result) { return $false }
+    $onPremBefore = [bool]$cfg.ShowOnPremises
     # PIN mógł zostać zmieniony w trakcie (przycisk «Zmień PIN») - zachowaj aktualny zapis
     foreach ($key in 'PinHash', 'PinSalt', 'PinLength') { $cfg.$key = $Global:HTConfig.$key }
+    # Profile tenantów mogły zostać zmienione w trakcie (Narzędzia > Profile tenantów)
+    $cfg.TenantProfiles = @($Global:HTConfig.TenantProfiles)
+    # Pola pomocnicze: dane poufne zapisywane w postaci zaszyfrowanej (DPAPI), zdarzenia Teams jako lista
+    if ($result['TeamsWebhookClear']) { $cfg.TeamsWebhookProtected = '' }
+    if ($result['TeamsWebhook']) {
+        if ("$($result.TeamsWebhook)" -match '^https://') { $cfg.TeamsWebhookProtected = Protect-HTSecretText $result.TeamsWebhook }
+        else { Show-HTWarning 'Adres webhooka Teams musi zaczynać się od https:// - nie zapisano adresu.' }
+    }
+    if ($result['UpdateTokenClear']) { $cfg.UpdateTokenProtected = '' }
+    if ($result['UpdateToken']) { $cfg.UpdateTokenProtected = Protect-HTSecretText $result.UpdateToken }
+    $cfg.TeamsNotify = @(foreach ($n in 'Offboarding', 'Jobs', 'Checklists') { if ($result["TeamsNotify$n"]) { $n } })
     foreach ($key in $result.Keys) {
+        if ($key -match '^(TeamsWebhook|TeamsWebhookClear|UpdateToken|UpdateTokenClear|TeamsNotify(Offboarding|Jobs|Checklists))$') { continue }
         $value = $result[$key]
         if ($key -eq 'GraphScopes') { $value = @(Split-HTInputList -Text $value) }
         if ($key -eq 'LastUsedClientID' -and -not $value) { $value = $null }
@@ -216,6 +255,9 @@ function Show-HTSettingsDialog {
     Apply-HTConfig -Config $cfg
     Write-Log -Message 'Zapisano ustawienia aplikacji.' -Type 'Info'
     if ($Global:ConnectedToGraphAPI) { Write-Log -Message 'Zmiana uprawnień Graph zacznie obowiązywać po ponownym połączeniu.' -Type 'Info' }
+    if ([bool]$cfg.ShowOnPremises -ne $onPremBefore) {
+        if (Show-HTConfirm -Title 'Funkcje lokalne' -ConfirmText 'Uruchom ponownie' -Message 'Zmiana widoczności funkcji lokalnych (Active Directory) wymaga ponownego uruchomienia programu. Uruchomić ponownie teraz?') { Restart-HTApplication }
+    }
     return $true
 }
 #endregion

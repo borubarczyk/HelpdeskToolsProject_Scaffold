@@ -156,6 +156,13 @@ Describe "Uprawnienia kont MFA" {
         Test-HTAppAllowed "Settings" | Should -BeTrue
         Get-HTAccessDenyText -Deny @() | Should -Be "pełny dostęp"
     }
+    It "tryb tylko do odczytu blokuje operacje zmieniające" {
+        Set-HTAccessAccount -Name "Audytor" -Id "aud" -Deny "app:Write"
+        Test-HTWriteAllowed | Should -BeFalse
+        Get-HTAccessDenyText -Deny "app:Write" | Should -Match "tylko odczyt"
+        Set-HTAccessAccount
+        Test-HTWriteAllowed | Should -BeTrue
+    }
     It "opisuje blokady nazwami przestrzeni i modułów" {
         $text = Get-HTAccessDenyText -Deny "ws:Exchange", "mod:lic", "mod:mbx", "app:Settings" -Workspaces @{ Exchange = "Exchange" } `
             -Modules @(@{ Key = "lic"; Title = "Licencje"; Workspace = "M365" }, @{ Key = "mbx"; Title = "Skrzynki"; Workspace = "Exchange" })

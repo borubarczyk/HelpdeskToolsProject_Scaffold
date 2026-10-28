@@ -174,3 +174,71 @@ function ConvertTo-HTHtmlReport {
     [void]$sb.Append((Get-HTReportTail))
     return $sb.ToString()
 }
+
+function ConvertTo-HTUserCardHtml {
+    <#
+        Wizytówka użytkownika (Microsoft 365 + Exchange + Intune) jako samodzielny plik HTML.
+        -Sections: słownik nazwa sekcji -> słownik pole -> wartość (kafelki z listą pól),
+        -Tables: @(@{ Title; Columns; Rows = słowniki z opcjonalnym __flag }) - tabele pod kafelkami,
+        -Chips: @(@{ Text; Tone = ok|warn|crit|info }) - znaczniki pod nazwą.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Title,
+        [string]$Subtitle = '',
+        [System.Collections.IDictionary]$Sections = @{},
+        [object[]]$Tables = @(),
+        [object[]]$Chips = @(),
+        [string]$Meta = ''
+    )
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append((Get-HTReportHead -Title "Wizytówka: $Title" -Meta $Meta))
+    [void]$sb.Append((Get-HTReportBar -Mode 'rows' -Placeholder 'Szukaj w tabelach…' -Buttons @('print')))
+    [void]$sb.Append('<div class="card"><div class="head"><div><h2>').Append((ConvertTo-HTHtmlText $Title)).Append('</h2>')
+    if ($Subtitle) { [void]$sb.Append('<div class="sub">').Append((ConvertTo-HTHtmlText $Subtitle)).Append('</div>') }
+    if (@($Chips).Count) {
+        [void]$sb.Append('<div class="chips">')
+        foreach ($c in $Chips) {
+            $tone = if ($c.Tone -in 'warn', 'crit', 'info') { " $($c.Tone)" } else { '' }
+            [void]$sb.Append("<span class=`"chip$tone`">").Append((ConvertTo-HTHtmlText $c.Text)).Append('</span>')
+        }
+        [void]$sb.Append('</div>')
+    }
+    [void]$sb.Append('</div></div><div class="grid">')
+    foreach ($name in $Sections.Keys) {
+        $fields = $Sections[$name]
+        if (-not $fields -or $fields.Count -eq 0) { continue }
+        [void]$sb.Append('<div class="sec"><h3>').Append((ConvertTo-HTHtmlText $name)).Append('</h3><dl>')
+        foreach ($k in $fields.Keys) {
+            $v = $fields[$k]
+            $text = if ($null -eq $v -or "$v" -eq '') { '' } elseif ($v -is [bool]) { if ($v) { 'Tak' } else { 'Nie' } } elseif ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { (@($v) -join "`n") } else { [string]$v }
+            [void]$sb.Append('<dt>').Append((ConvertTo-HTHtmlText $k)).Append('</dt>')
+            [void]$sb.Append($(if ($text) { '<dd>' } else { '<dd class="e">' })).Append($(if ($text) { ConvertTo-HTHtmlText $text } else { '—' })).Append('</dd>')
+        }
+        [void]$sb.Append('</dl></div>')
+    }
+    [void]$sb.Append('</div>')
+    $i = 0
+    foreach ($t in $Tables) {
+        $i++
+        $rows = @($t.Rows)
+        [void]$sb.Append('<details open><summary>').Append((ConvertTo-HTHtmlText $t.Title)).Append("<span class=`"n`">$($rows.Count)</span></summary>")
+        if ($rows.Count -eq 0) { [void]$sb.Append('<div class="empty">brak</div></details>'); continue }
+        [void]$sb.Append("<table class=`"dt`" id=`"c$i`"><thead><tr>")
+        foreach ($c in $t.Columns) { [void]$sb.Append('<th>').Append((ConvertTo-HTHtmlText $c)).Append('</th>') }
+        [void]$sb.Append('</tr></thead><tbody>')
+        foreach ($r in $rows) {
+            $flag = [string]$r['__flag']
+            [void]$sb.Append($(if ($flag -in 'crit', 'warn', 'muted') { "<tr class=`"$flag`">" } else { '<tr>' }))
+            foreach ($c in $t.Columns) {
+                $v = $r[$c]
+                $text = if ($v -is [bool]) { if ($v) { 'Tak' } else { 'Nie' } } else { [string]$v }
+                [void]$sb.Append('<td>').Append((ConvertTo-HTHtmlText $text)).Append('</td>')
+            }
+            [void]$sb.Append('</tr>')
+        }
+        [void]$sb.Append('</tbody></table></details>')
+    }
+    [void]$sb.Append('</div>')
+    [void]$sb.Append((Get-HTReportTail))
+    return $sb.ToString()
+}

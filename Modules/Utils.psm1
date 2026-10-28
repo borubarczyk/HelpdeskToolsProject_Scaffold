@@ -56,6 +56,11 @@ function Register-HTLogSink {
     $script:LogSinks.Add($ScriptBlock)
 }
 
+# Usuwa wszystkich odbiorców logów (wątek w tle rejestruje własnego - przekazanie wpisów do okna)
+function Clear-HTLogSinks {
+    $script:LogSinks.Clear()
+}
+
 # Zwraca kopię historii logów
 function Get-HTLogHistory {
     return @($script:LogHistory)
@@ -107,6 +112,8 @@ function Get-HTLogDirectory {
 
 # Bieżący plik dziennika: jeden plik na dzień (HelpdeskTools_RRRRMMDD.log)
 function Get-HTLogFile {
+    # Wątki w tle nie zapisują pliku - ich wpisy zapisuje okno programu
+    if ($Global:HTNoLogFile) { return $null }
     $dir = Get-HTLogDirectory
     if (-not $dir) { return $null }
     return (Join-Path $dir ("HelpdeskTools_{0:yyyyMMdd}.log" -f (Get-Date)))

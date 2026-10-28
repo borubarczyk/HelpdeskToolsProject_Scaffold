@@ -272,3 +272,40 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Raporty' -Key 'sp.rep.uniqu
     } | Out-Null
 }
 #endregion
+
+#region Wersje plików
+Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.versions' -Title 'Stare wersje plików' -Icon 'E81C' -Service 'SharePoint' `
+    -Description 'Pliki z dużą liczbą wersji w zaznaczonych bibliotekach lub folderach i miejsce zajmowane przez wersje. Prawy przycisk - usunięcie najstarszych wersji (zostaje N najnowszych). Przycinanie w całej witrynie - zadanie SharePoint.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTLabel -Parent $row -Text 'Zostaw wersji:' | Out-Null
+    $m.C.Keep = Add-HTNumeric -Parent $row -Value 50 -Minimum 1 -Maximum 500
+    Add-HTButton -Parent $row -Module $m -Text 'Szukaj plików' -Icon 'E721' -Primary -OnClick {
+        param($m)
+        $keep = Get-HTNum $m.C.Keep
+        Invoke-HTTargetQuery -Module $m -Name 'Wersje plików' -Label { param($t) Get-HTSPNodeLabel $t } -Action {
+            param($t)
+            Get-HTFileVersionUsage -ListTitle $t.ListTitle -FolderServerRelativeUrl $(if ($t.IsLibrary) { '' } else { $t.ServerRelativeUrl }) -Keep $keep | Sort-Object 'Do odzyskania (MB)' -Descending
+        }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Przytnij w całej witrynie…' -Icon 'E74D' -Danger -OnClick {
+            param($m)
+            if (-not (Test-HTVersionTrimJobAvailable)) { Show-HTWarning 'Przycinanie wersji w całej witrynie wymaga PnP.PowerShell 2.12 lub nowszego (New-PnPSiteFileVersionBatchDeleteJob).'; return }
+            $keep = Get-HTNum $m.C.Keep
+            if (-not (Assert-HTWriteAllowed -Operation 'Przycinanie wersji')) { return }
+            if (-not (Show-HTConfirm -Danger -Title 'Przycinanie wersji' -TypeToConfirm 'WERSJE' -Message "Zlecić SharePoint usunięcie starszych wersji wszystkich plików w połączonej witrynie (zostanie $keep wersji głównych)? Operacji nie można cofnąć; zadanie działa w tle po stronie SharePoint.")) { return }
+            try {
+                Start-HTVersionTrimJob -Keep $keep
+                Add-HTOperationRecord -Operation 'Przycinanie wersji w witrynie' -Object "$((Get-PnPConnection).Url)" -Details "Zostaw $keep wersji" -Module $m.Title
+                Show-HTToast 'Zlecono zadanie przycinania wersji (stan: Get-PnPSiteFileVersionBatchDeleteJobStatus).' 'ok' 8
+            }
+            catch { Show-HTError 'Nie zlecono zadania.' $_ }
+        } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Usuń najstarsze wersje' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $keep = Get-HTNum $m.C.Keep
+        $files = @($rows | Where-Object { $_.Ścieżka })
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie starych wersji' -Rows $files -Danger -Confirm "Usunąć starsze wersje zaznaczonych plików (zostanie $keep najnowszych)? Usunięte wersje trafią do kosza witryny." -Label { param($r) $r.Plik } -Action { param($r) Remove-HTOldFileVersions -FileServerRelativeUrl $r.Ścieżka -Keep $keep }
+    }
+}
+#endregion

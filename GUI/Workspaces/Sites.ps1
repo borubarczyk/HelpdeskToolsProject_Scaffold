@@ -2,7 +2,7 @@
 
 Register-HTWorkspace -Key 'Sites' -Title 'Witryny' -Icon 'E774' -Panel 'graphSites' -Service 'Graph' `
     -Description 'Witryny SharePoint w organizacji: szczegóły, biblioteki i zajęte miejsce, przeglądarka plików, listy, podwitryny' `
-    -Categories @('Witryna', 'Zawartość', 'Połączenie')
+    -Categories @('Witryna', 'Zawartość', 'Udostępnianie', 'Raporty', 'Połączenie')
 
 $panel = New-HTTargetPanel -Key 'graphSites' -Title 'Witryny SharePoint' -Placeholder 'Szukaj (nazwa, adres)…' -EmptyIcon 'E774' `
     -EmptyText 'Połącz z Microsoft 365 i kliknij «Wczytaj».' -Describe {
@@ -224,5 +224,61 @@ Register-HTModule -Workspace 'Sites' -Category 'Połączenie' -Key 'sites.connec
         $urls = @(Get-HTTargets -Module $m | ForEach-Object { $_.Adres })
         if ($urls) { Set-HTClipboard ($urls -join "`r`n"); Show-HTToast "Skopiowano adresów: $($urls.Count)." 'ok' }
     } | Out-Null
+}
+#endregion
+
+#region Udostępnianie i raporty
+Register-HTModule -Workspace 'Sites' -Category 'Udostępnianie' -Key 'sites.sharing' -Title 'Udostępnienia i linki' -Icon 'E72D' -Service 'Graph' `
+    -Description 'Audyt udostępnień w bibliotekach zaznaczonych witryn: linki anonimowe («każdy z linkiem»), linki organizacyjne, udostępnienia gościom i bezpośrednie uprawnienia. Czerwone - link anonimowy do edycji albo bez daty wygaśnięcia. Prawy przycisk - usunięcie.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    $m.C.External = Add-HTCheckBox -Parent $row -Text 'Tylko anonimowe i zewnętrzne' -Checked $true
+    Add-HTButton -Parent $row -Module $m -Text 'Sprawdź udostępnienia' -Icon 'E72D' -Primary -OnClick {
+        param($m)
+        $targets = @(Get-HTTargets -Module $m)
+        if ($targets.Count -eq 0) { return }
+        if (-not (Assert-HTGraphScopes -Scopes @('Sites.Read.All', 'Files.Read.All') -Feature 'Audyt udostępnień')) { return }
+        Invoke-HTQuery -Module $m -Name 'Udostępnienia witryn' -Background -Arguments @{ Sites = @($targets | ForEach-Object { @{ Id = $_.Id; Name = (Get-HTSiteLabel $_) } }); External = (Test-HTChecked $m.C.External) } -ScriptBlock {
+            param($a)
+            $i = 0
+            foreach ($site in $a.Sites) {
+                $i++
+                Write-Progress -Activity 'Udostępnienia' -Status "witryna $i / $($a.Sites.Count): $($site.Name)" -PercentComplete ([int](100 * ($i - 1) / [Math]::Max(1, $a.Sites.Count)))
+                try { Get-HTSiteSharing -SiteId $site.Id -SiteName $site.Name -OnlyExternal:$a.External }
+                catch { Write-Log -Message "Udostępnienia witryny $($site.Name): $($_.Exception.Message)" -Type 'Warn' }
+            }
+        }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Zaznacz witryny na liście po lewej. Duże biblioteki - przegląd do 50 000 elementów na bibliotekę.' | Out-Null
+    Add-HTRowAction -Module $m -Text 'Usuń link / udostępnienie' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $items = @($rows | Where-Object { $_.__permId })
+        if (-not $items.Count) { return }
+        if (-not (Assert-HTGraphScopes -Scopes @('Sites.ReadWrite.All') -Feature 'Usuwanie udostępnień')) { return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie udostępnienia' -Rows $items -Danger -Confirm 'Usunąć zaznaczone linki i udostępnienia? Osoby z linkiem stracą dostęp do elementu.' -Label { param($r) "$($r.Element) - $($r.Udostępnienie)" } -Action { param($r) Remove-HTDriveItemPermission -DriveId $r.__driveId -ItemId $r.__itemId -PermissionId $r.__permId; 'Usunięto' }
+    }
+    Add-HTRowAction -Module $m -Text 'Otwórz element' -Icon 'E8A7' -Action {
+        param($m, $rows)
+        foreach ($r in @($rows | Select-Object -First 3)) { if ($r.Adres) { Start-Process $r.Adres } }
+    }
+}
+
+Register-HTModule -Workspace 'Sites' -Category 'Raporty' -Key 'sites.inactive' -Title 'Nieaktywne i bez właściciela' -Icon 'E916' -Service 'Graph' `
+    -Description 'Witryny bez aktywności od N dni i witryny bez właściciela (raport użycia SharePoint z 180 dni): pliki, wyświetlenia, rozmiar. Kandydaci do archiwizacji lub usunięcia.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTLabel -Parent $row -Text 'Bez aktywności od (dni):' | Out-Null
+    $m.C.Days = Add-HTNumeric -Parent $row -Value 90 -Minimum 7 -Maximum 180
+    $m.C.All = Add-HTCheckBox -Parent $row -Text 'Pokaż wszystkie witryny'
+    Add-HTButton -Parent $row -Module $m -Text 'Generuj raport' -Icon 'E9D2' -Primary -OnClick {
+        param($m)
+        if (-not (Assert-HTGraphScopes -Scopes @('Reports.Read.All') -Feature 'Raport użycia SharePoint')) { return }
+        Invoke-HTQuery -Module $m -Name 'Nieaktywne witryny' -Background -Arguments @{ Days = (Get-HTNum $m.C.Days); All = (Test-HTChecked $m.C.All) } -ScriptBlock { param($a) Get-HTInactiveSites -Days $a.Days -IncludeActive:$a.All }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Adresy w postaci skrótów - włącz pokazywanie nazw: centrum administracyjne Microsoft 365 > Ustawienia > Ustawienia organizacji > Raporty.' | Out-Null
+    Add-HTRowAction -Module $m -Text 'Otwórz witrynę' -Icon 'E8A7' -Action {
+        param($m, $rows)
+        foreach ($r in @($rows | Select-Object -First 3)) { if ("$($r.Witryna)" -match '^https://') { Start-Process $r.Witryna } }
+    }
 }
 #endregion

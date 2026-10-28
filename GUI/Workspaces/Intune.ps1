@@ -2,7 +2,7 @@
 
 Register-HTWorkspace -Key 'Intune' -Title 'Intune' -Icon 'E7F8' -Panel 'devices' -Service 'Graph' `
     -Description 'Urządzenia Intune: szczegóły, zgodność, akcje zdalne (Defender, blokada, wipe), BitLocker i LAPS, raporty' `
-    -Categories @('Urządzenie', 'Akcje zdalne', 'Bezpieczeństwo', 'Raporty')
+    -Categories @('Urządzenie', 'Akcje zdalne', 'Bezpieczeństwo', 'Autopilot', 'Aplikacje i aktualizacje', 'Porządki', 'Raporty')
 
 $panel = New-HTTargetPanel -Key 'devices' -Title 'Urządzenia Intune' -Placeholder 'Szukaj (nazwa, użytkownik, numer seryjny, model)…' -EmptyIcon 'E7F8' `
     -EmptyText 'Połącz z Microsoft 365 i kliknij «Wczytaj».' -Describe {
@@ -288,6 +288,190 @@ Register-HTIntuneReport -Key 'int.rep.os' -Title 'Wersje systemów' -Icon 'E7F8'
     param($devices, $days)
     $devices | Group-Object { "$($_.OperatingSystem) $($_.OsVersion)" } | Sort-Object Count -Descending | ForEach-Object {
         [PSCustomObject]@{ System = $_.Name; Urządzenia = $_.Count; Niezgodne = @($_.Group | Where-Object { $_.ComplianceState -eq 'noncompliant' }).Count }
+    }
+}
+#endregion
+
+#region Autopilot
+Register-HTModule -Workspace 'Intune' -Category 'Autopilot' -Key 'int.autopilot' -Title 'Urządzenia Autopilot' -Icon 'E770' -Service 'Graph' `
+    -Description 'Komputery zarejestrowane w Windows Autopilot: group tag, przypisanie profilu, stan rejestracji. Import skrótów sprzętowych z pliku CSV (Get-WindowsAutopilotInfo). Prawy przycisk - group tag, usunięcie.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    $m.Data.Refresh = { param($m) Invoke-HTQuery -Module $m -Name 'Urządzenia Autopilot' -Background -ScriptBlock { param($a) Get-HTAutopilotDevices } }
+    Add-HTButton -Parent $row -Module $m -Text 'Pobierz urządzenia' -Icon 'E72C' -Primary -OnClick {
+        param($m)
+        if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementServiceConfig.ReadWrite.All') -Feature 'Windows Autopilot')) { return }
+        & $m.Data.Refresh $m
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Importuj skróty (CSV)…' -Icon 'E8B5' -OnClick {
+        param($m)
+        if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementServiceConfig.ReadWrite.All') -Feature 'Windows Autopilot')) { return }
+        $path = Select-HTOpenFile -Title 'Plik skrótów sprzętowych Autopilot' -Filter 'CSV (*.csv)|*.csv'
+        if (-not $path) { return }
+        $tag = Show-InputBox -Title 'Group tag' -Prompt 'Group tag dla importowanych urządzeń (opcjonalnie - puste: z pliku):' -AllowEmpty -Icon 'E8EC'
+        if ($null -eq $tag) { return }
+        $devices = @(Import-HTAutopilotCsv -Path $path -GroupTag $tag)
+        if (-not $devices.Count) { Show-HTWarning 'Plik nie zawiera urządzeń (kolumny «Device Serial Number» i «Hardware Hash»).'; return }
+        Invoke-HTTargetAction -Module $m -Name 'Import do Autopilot' -Targets $devices -Confirm "Zaimportować urządzeń: $($devices.Count)? Import trwa kilka-kilkanaście minut." -Label { param($d) $d.SerialNumber } -Action {
+            param($d)
+            $created = Add-HTAutopilotDevice -Device $d
+            @{ Szczegóły = "Zlecono import$(if ($d.GroupTag) { " (group tag: $($d.GroupTag))" })"; __importId = $created.id }
+        }
+        Show-HTToast 'Import zlecony - stan sprawdzisz prawym przyciskiem («Stan importu») albo po kilku minutach w «Pobierz urządzenia».' 'info' 8
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Synchronizuj Autopilot' -Icon 'E895' -OnClick {
+        param($m)
+        try { Sync-HTAutopilot; Show-HTToast 'Zlecono synchronizację Autopilot.' 'ok' } catch { Show-HTError 'Nie zlecono synchronizacji.' $_ }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Stan importu' -Icon 'E916' -Action {
+        param($m, $rows)
+        $items = @($rows | Where-Object { $_.__importId })
+        if (-not $items.Count) { Show-HTWarning 'Zaznacz wiersze zaimportowanych urządzeń.'; return }
+        $data = @(foreach ($r in $items) { $st = Get-HTAutopilotImportStatus -Id $r.__importId; [PSCustomObject]@{ 'Numer seryjny' = $r.Obiekt; Stan = $st.Stan; Błąd = $st.Błąd; Kod = $st.Kod } })
+        Show-HTDataViewer -Title 'Stan importu Autopilot' -Data $data -ExportName 'import_autopilot' -Icon 'E916'
+    }
+    Add-HTRowAction -Module $m -Text 'Ustaw group tag…' -Icon 'E8EC' -Action {
+        param($m, $rows)
+        $items = @($rows | Where-Object { $_.Id -and $_.'Numer seryjny' })
+        if (-not $items.Count) { return }
+        $tag = Show-InputBox -Title 'Group tag' -Prompt "Group tag dla urządzeń: $($items.Count) (puste - usunięcie tagu):" -AllowEmpty -DefaultText ([string]$items[0].'Group tag') -Icon 'E8EC'
+        if ($null -eq $tag) { return }
+        Invoke-HTRowAction -Module $m -Name 'Group tag Autopilot' -Rows $items -Label { param($r) $r.'Numer seryjny' } -Action { param($r) Set-HTAutopilotGroupTag -Id $r.Id -GroupTag $tag; "Group tag: $(if ($tag) { $tag } else { '(brak)' })" } -Refresh $m.Data.Refresh
+    }
+    Add-HTRowAction -Module $m -Text 'Usuń z Autopilot' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $items = @($rows | Where-Object { $_.Id -and $_.'Numer seryjny' })
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie z Autopilot' -Rows $items -Danger -TypeToConfirm 'USUŃ' -Confirm 'Usunąć urządzenia z Windows Autopilot (np. sprzedane lub zwrócone)? Urządzenie zarządzane w Intune usuń najpierw z Intune.' -Label { param($r) $r.'Numer seryjny' } -Action { param($r) Remove-HTAutopilotDevice -Id $r.Id; 'Usunięto' } -Refresh $m.Data.Refresh
+    }
+}
+
+Register-HTModule -Workspace 'Intune' -Category 'Autopilot' -Key 'int.apprfiles' -Title 'Profile Autopilot' -Icon 'E770' -Service 'Graph' `
+    -Description 'Profile wdrażania Windows Autopilot: tryb, szablon nazwy urządzenia, język, liczba przypisań.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pobierz profile' -Icon 'E72C' -Primary -OnClick {
+        param($m)
+        if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementServiceConfig.ReadWrite.All') -Feature 'Windows Autopilot')) { return }
+        Invoke-HTQuery -Module $m -Name 'Profile Autopilot' -Background -ScriptBlock { param($a) Get-HTAutopilotProfiles }
+    } | Out-Null
+}
+#endregion
+
+#region Aplikacje i aktualizacje
+Register-HTModule -Workspace 'Intune' -Category 'Aplikacje i aktualizacje' -Key 'int.appfail' -Title 'Błędy instalacji aplikacji' -Icon 'ECAA' -Service 'Graph' `
+    -Description 'Aplikacje Intune z nieudanymi i oczekującymi instalacjami. Prawy przycisk - urządzenia z błędem, kod błędu i opis.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    $m.C.Failed = Add-HTCheckBox -Parent $row -Text 'Tylko aplikacje z błędami' -Checked $true
+    Add-HTButton -Parent $row -Module $m -Text 'Pobierz' -Icon 'E72C' -Primary -OnClick {
+        param($m)
+        if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementApps.Read.All') -Feature 'Raport instalacji aplikacji')) { return }
+        Invoke-HTQuery -Module $m -Name 'Instalacje aplikacji' -Background -Arguments @{ Failed = (Test-HTChecked $m.C.Failed) } -ScriptBlock { param($a) Get-HTAppInstallSummary -OnlyFailed:$a.Failed }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Urządzenia z błędem instalacji' -Icon 'E7BA' -Action {
+        param($m, $rows)
+        $data = @(foreach ($r in @($rows | Select-Object -First 10)) { Get-HTAppInstallFailures -AppId $r.Id -AppName $r.Aplikacja })
+        Show-HTDataViewer -Title 'Błędy instalacji aplikacji' -Data $data -Description 'Kod błędu (hex) wyjaśnia przyczynę - np. 0x87D1041C: aplikacja nie wykryta po instalacji (reguła wykrywania).' -ExportName 'bledy_instalacji' -Icon 'E7BA'
+    }
+    Add-HTRowAction -Module $m -Text 'Wszystkie stany instalacji' -Icon 'E8FD' -Action {
+        param($m, $rows)
+        $data = @(foreach ($r in @($rows | Select-Object -First 5)) { Get-HTAppInstallFailures -AppId $r.Id -AppName $r.Aplikacja -All })
+        Show-HTDataViewer -Title 'Stany instalacji aplikacji' -Data $data -ExportName 'stany_instalacji' -Icon 'E8FD'
+    }
+}
+
+Register-HTModule -Workspace 'Intune' -Category 'Aplikacje i aktualizacje' -Key 'int.updates' -Title 'Aktualizacje Windows' -Icon 'E895' -Service 'Graph' `
+    -Description 'Wydanie Windows i poziom poprawek (UBR) każdego komputera na tle najnowszego poziomu w firmie oraz wsparcie wydania. Pierścienie aktualizacji (odroczenia, wstrzymania, terminy).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Stan aktualizacji' -Icon 'E895' -Primary -OnClick {
+        param($m)
+        Invoke-HTQuery -Module $m -Name 'Stan aktualizacji Windows' -Background -ScriptBlock { param($a) Get-HTWindowsUpdateStatus | Sort-Object @{ Expression = { switch ($_.__flag) { 'crit' { 0 } 'warn' { 1 } default { 2 } } } }, Urządzenie }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Pierścienie aktualizacji' -Icon 'E9F5' -OnClick {
+        param($m)
+        Invoke-HTQuery -Module $m -Name 'Pierścienie aktualizacji' -Background -ScriptBlock { param($a) Get-HTWindowsUpdateRings }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Synchronizuj urządzenie' -Icon 'E895' -Action {
+        param($m, $rows)
+        $items = @($rows | Where-Object { $_.Urządzenie -and $_.Id })
+        Invoke-HTRowAction -Module $m -Name 'Synchronizacja urządzenia' -Rows $items -Label { param($r) $r.Urządzenie } -Action { param($r) Sync-HTIntuneDevice -Id $r.Id; 'Zlecono synchronizację' }
+    }
+}
+
+Register-HTModule -Workspace 'Intune' -Category 'Aplikacje i aktualizacje' -Key 'int.remediation' -Title 'Skrypty naprawcze' -Icon 'E90F' -Service 'Graph' `
+    -Description 'Skrypty naprawcze Intune (Remediations): uruchomienie na żądanie na urządzeniach zaznaczonych na liście po lewej i wyniki wykrycia i naprawy. Wymaga licencji Windows Enterprise E3/E5.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pobierz skrypty' -Icon 'E72C' -Primary -OnClick {
+        param($m)
+        if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementConfiguration.ReadWrite.All') -Feature 'Skrypty naprawcze')) { return }
+        Invoke-HTQuery -Module $m -Name 'Skrypty naprawcze' -Background -ScriptBlock { param($a) Get-HTRemediationScripts }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Zaznacz urządzenia na liście po lewej, potem prawy przycisk na skrypcie - «Uruchom teraz».' | Out-Null
+    Add-HTRowAction -Module $m -Text 'Uruchom teraz na zaznaczonych urządzeniach' -Icon 'E768' -Action {
+        param($m, $rows)
+        $script = @($rows)[0]
+        $devices = @(Get-HTTargets -Module $m)
+        if (-not $devices.Count) { return }
+        Invoke-HTTargetAction -Module $m -Name "Skrypt naprawczy: $($script.Skrypt)" -Targets $devices -KeepResults -Confirm "Uruchomić skrypt «$($script.Skrypt)» na urządzeniach (przy najbliższej synchronizacji)?" -Label { param($t) Get-HTDeviceLabel $t } -Action {
+            param($t)
+            Start-HTRemediationOnDemand -DeviceId $t.Id -ScriptId $script.Id
+            'Zlecono uruchomienie'
+        }
+    }
+    Add-HTRowAction -Module $m -Text 'Pokaż wyniki na urządzeniach' -Icon 'E9D2' -Action {
+        param($m, $rows)
+        $data = @(foreach ($r in @($rows | Where-Object { $_.Skrypt -and $_.Id } | Select-Object -First 5)) { Get-HTRemediationRunStates -ScriptId $r.Id -ScriptName $r.Skrypt })
+        Show-HTDataViewer -Title 'Wyniki skryptów naprawczych' -Data $data -ExportName 'skrypty_naprawcze' -Icon 'E9D2'
+    }
+}
+#endregion
+
+#region Porządki: duplikaty i nieaktywne obiekty
+Register-HTModule -Workspace 'Intune' -Category 'Porządki' -Key 'int.duplicates' -Title 'Duplikaty urządzeń' -Icon 'E8C8' -Service 'Graph' `
+    -Description 'Urządzenia Intune z tym samym numerem seryjnym (np. po ponownej instalacji Windows). Starsze wpisy są wyróżnione - prawy przycisk usuwa je z Intune.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Szukaj duplikatów' -Icon 'E721' -Primary -OnClick {
+        param($m)
+        Invoke-HTQuery -Module $m -Name 'Duplikaty urządzeń' -Background -ScriptBlock { param($a) Find-HTDuplicateDevices -Devices @(Get-HTIntuneDevices) }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Usuń starsze wpisy z Intune' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $stale = @($rows | Where-Object { $_.__stale })
+        if (-not $stale.Count) { Show-HTWarning 'Zaznacz wiersze oznaczone jako «starszy - do usunięcia».'; return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie duplikatu z Intune' -Rows $stale -Danger -TypeToConfirm 'USUŃ' -Confirm 'Usunąć starsze wpisy urządzeń z Intune? Najnowszy wpis każdego komputera zostaje.' -Label { param($r) "$($r.Urządzenie) ($($r.'Numer seryjny'))" } -Action { param($r) Remove-HTIntuneDevice -Id $r.Id; 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+
+Register-HTModule -Workspace 'Intune' -Category 'Porządki' -Key 'int.staleentra' -Title 'Nieaktywne urządzenia Entra ID' -Icon 'E916' -Service 'Graph' `
+    -Description 'Obiekty urządzeń w Entra ID bez logowania od N dni. Zalecane: najpierw wyłącz, po okresie obserwacji usuń. Urządzenia hybrydowe usuwaj w lokalnym AD (synchronizacja).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTLabel -Parent $row -Text 'Bez logowania od (dni):' | Out-Null
+    $m.C.Days = Add-HTNumeric -Parent $row -Value 90 -Minimum 30 -Maximum 3650
+    $m.C.Disabled = Add-HTCheckBox -Parent $row -Text 'Także wyłączone'
+    Add-HTButton -Parent $row -Module $m -Text 'Szukaj' -Icon 'E721' -Primary -OnClick {
+        param($m)
+        Invoke-HTQuery -Module $m -Name 'Nieaktywne urządzenia Entra ID' -Background -Arguments @{ Days = (Get-HTNum $m.C.Days); Disabled = (Test-HTChecked $m.C.Disabled) } -ScriptBlock { param($a) Get-HTStaleEntraDevices -Days $a.Days -IncludeDisabled:$a.Disabled }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Wyłącz urządzenie' -Icon 'E711' -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Wyłączenie urządzenia Entra ID' -Rows $rows -Confirm 'Wyłączyć zaznaczone urządzenia? Logowanie z nich do usług Microsoft 365 przestanie działać (można je włączyć ponownie).' -Label { param($r) $r.Urządzenie } -Action {
+            param($r)
+            Set-HTEntraDeviceEnabled -Id $r.Id -Enabled $false
+            Register-HTUndo -Operation 'Wyłączenie urządzenia Entra ID' -Object $r.Urządzenie -Kind 'EntraDevice' -Data @{ Id = $r.Id }
+            'Wyłączono'
+        }
+    }
+    Add-HTRowAction -Module $m -Text 'Włącz urządzenie' -Icon 'E73E' -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Włączenie urządzenia Entra ID' -Rows $rows -Label { param($r) $r.Urządzenie } -Action { param($r) Set-HTEntraDeviceEnabled -Id $r.Id -Enabled $true; 'Włączono' }
+    }
+    Add-HTRowAction -Module $m -Text 'Usuń urządzenie z Entra ID' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie urządzenia Entra ID' -Rows $rows -Danger -TypeToConfirm 'USUŃ' -Confirm 'Trwale usunąć obiekty urządzeń z Entra ID? Usunięcie kasuje też klucze BitLocker zapisane przy urządzeniu.' -Label { param($r) $r.Urządzenie } -Action { param($r) Remove-HTEntraDevice -Id $r.Id; 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
 }
 #endregion

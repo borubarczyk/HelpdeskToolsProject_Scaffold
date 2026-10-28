@@ -11,7 +11,8 @@ $script:MfaDigits = 6
 $script:MfaPeriod = 30
 $script:Base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
 
-# Uprawnienia konta, które odblokowało program. Klucze blokad: 'ws:<przestrzeń>', 'mod:<moduł>', 'app:Settings'.
+# Uprawnienia konta, które odblokowało program. Klucze blokad: 'ws:<przestrzeń>', 'mod:<moduł>', 'app:Settings',
+# 'app:Write' (tryb tylko do odczytu - bez operacji zmieniających).
 # AccountId: '#primary' (konto podstawowe albo program bez MFA) lub Id konta dodatkowego.
 $script:Access = @{ Account = ''; AccountId = '#primary'; Deny = New-Object 'System.Collections.Generic.HashSet[string]' }
 
@@ -363,6 +364,9 @@ function Test-HTAccessDenied([string]$Key) { return $script:Access.Deny.Contains
 
 function Test-HTAppAllowed([string]$Key) { return -not $script:Access.Deny.Contains("app:$Key") }
 
+# Tryb tylko do odczytu konta MFA: bez operacji zmieniających (akcje na obiektach i wierszach, zadania, cofanie)
+function Test-HTWriteAllowed { return -not $script:Access.Deny.Contains('app:Write') }
+
 function Get-HTAccessDenyText {
     <#
         Opis blokad do listy kont i dziennika. -Workspaces: klucz -> tytuł przestrzeni; -Modules: definicje modułów
@@ -385,6 +389,7 @@ function Get-HTAccessDenyText {
         })
     if ($mods.Count) { $parts.Add($(if ($mods.Count -le 3) { 'bez modułów: ' + ($mods -join ', ') } else { "zablokowane moduły: $($mods.Count)" })) }
     if ($list -contains 'app:Settings') { $parts.Add('bez Ustawień') }
+    if ($list -contains 'app:Write') { $parts.Add('tylko odczyt') }
     if (-not $parts.Count) { return 'pełny dostęp' }
     return ($parts -join '; ')
 }

@@ -2,7 +2,7 @@
 
 Register-HTWorkspace -Key 'Exchange' -Title 'Exchange' -Icon 'E715' -Panel 'mailboxes' -Service 'Exchange' `
     -Description 'Skrzynki Exchange Online: uprawnienia, kalendarze, autoodpowiedzi, reguły, kwarantanna i raporty' `
-    -Categories @('Skrzynka', 'Uprawnienia', 'Poczta', 'Grupy i adresy', 'Zgodność', 'Raporty')
+    -Categories @('Skrzynka', 'Uprawnienia', 'Poczta', 'Sale i zasoby', 'Grupy i adresy', 'Przepływ poczty', 'Zgodność', 'Raporty')
 
 $panel = New-HTTargetPanel -Key 'mailboxes' -Title 'Skrzynki' -Placeholder 'Szukaj (nazwa, adres, typ: shared, room)…' -EmptyIcon 'E715' `
     -EmptyText 'Połącz z Exchange Online i kliknij «Wczytaj».' -Describe {
@@ -129,7 +129,11 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.perms'
     Add-HTRowAction -Module $m -Text 'Odbierz uprawnienie' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Odebranie uprawnień' -Rows @($rows | Where-Object { $_.Uprawnienie }) -Danger -Confirm 'Odebrać zaznaczone uprawnienia?' `
-            -Label { param($r) "$($r.Obiekt): $($r.Uprawnienie) - $($r.Użytkownik)" } -Action { param($r) Remove-HTMailboxPermission -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Type $r.Uprawnienie } -Refresh { param($m) Invoke-HTModulePrimary $m }
+            -Label { param($r) "$($r.Obiekt): $($r.Uprawnienie) - $($r.Użytkownik)" } -Action {
+            param($r)
+            Remove-HTMailboxPermission -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Type $r.Uprawnienie
+            Register-HTUndo -Operation 'Odebranie uprawnienia do skrzynki' -Object "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" -Kind 'MailboxPermission' -Data @{ Identity = $r.__target.PrimarySmtpAddress; User = $r.Użytkownik; Type = $r.Uprawnienie }
+        } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
 }
 
@@ -498,6 +502,175 @@ Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.inacti
                 }
                 catch { [PSCustomObject]@{ Skrzynka = $x.DisplayName; Adres = $x.PrimarySmtpAddress; Status = 'Błąd'; Szczegóły = $_.Exception.Message } }
             }
+        }
+    } | Out-Null
+}
+#endregion
+
+#region Pełny raport dostępu i automapowanie
+Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.accessreport' -Title 'Kto ma dostęp do skrzynki' -Icon 'E8D7' `
+    -Description 'Pełny raport: pełny dostęp, wyślij jako, wyślij w imieniu oraz uprawnienia do folderów (skrzynka odbiorcza, kalendarz, kontakty albo wszystkie foldery). Prawy przycisk - odebranie uprawnienia, wyłączenie automapowania.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTLabel -Parent $row -Text 'Foldery:' | Out-Null
+    $m.C.Folders = Add-HTComboBox -Parent $row -Width 260 -Items @('Standardowe (odebrane, kalendarz, kontakty)', 'Wszystkie foldery (dłużej)', 'Bez folderów')
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż dostęp' -Icon 'E8A1' -Primary -OnClick {
+        param($m)
+        $folders = switch ($m.C.Folders.SelectedIndex) { 1 { 'All' } 2 { 'None' } default { 'Standard' } }
+        Invoke-HTTargetQuery -Module $m -Name 'Dostęp do skrzynek' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTMailboxAccessReport -Identity $t.PrimarySmtpAddress -Folders $folders }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Odbierz uprawnienie' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Odebranie uprawnień' -Rows @($rows | Where-Object { $_.__type }) -Danger -Confirm 'Odebrać zaznaczone uprawnienia?' `
+            -Label { param($r) "$($r.__target.PrimarySmtpAddress): $($r.Rodzaj) $($r.Folder) - $($r.Użytkownik)" } -Action {
+            param($r)
+            if ($r.__type -eq 'Folder') { Remove-HTMailboxFolderPermissionEntry -FolderIdentity $r.__folder -User $r.Użytkownik; return 'Odebrano uprawnienie do folderu' }
+            Remove-HTMailboxPermission -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Type $r.__type
+            Register-HTUndo -Operation 'Odebranie uprawnienia do skrzynki' -Object "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" -Kind 'MailboxPermission' -Data @{ Identity = $r.__target.PrimarySmtpAddress; User = $r.Użytkownik; Type = $r.__type }
+            'Odebrano'
+        } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Wyłącz automapowanie (Outlook)' -Icon 'E8F0' -Action {
+        param($m, $rows)
+        $full = @($rows | Where-Object { $_.__type -eq 'FullAccess' })
+        if (-not $full.Count) { Show-HTWarning 'Zaznacz wiersze «Pełny dostęp».'; return }
+        Invoke-HTRowAction -Module $m -Name 'Wyłączenie automapowania' -Rows $full -Confirm 'Wyłączyć automatyczne dodawanie skrzynki w Outlooku? Pełny dostęp zostanie odebrany i nadany ponownie bez automapowania (Outlook usunie skrzynkę z listy po kilku godzinach - można ją dodać ręcznie).' `
+            -Label { param($r) "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" } -Action { param($r) Set-HTMailboxAutoMapping -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Enabled $false; 'Pełny dostęp bez automapowania' }
+    }
+    Add-HTRowAction -Module $m -Text 'Włącz automapowanie' -Icon 'E8F0' -Action {
+        param($m, $rows)
+        $full = @($rows | Where-Object { $_.__type -eq 'FullAccess' })
+        if (-not $full.Count) { Show-HTWarning 'Zaznacz wiersze «Pełny dostęp».'; return }
+        Invoke-HTRowAction -Module $m -Name 'Włączenie automapowania' -Rows $full -Label { param($r) "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" } -Action { param($r) Set-HTMailboxAutoMapping -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Enabled $true; 'Pełny dostęp z automapowaniem' }
+    }
+}
+#endregion
+
+#region Sale i zasoby
+Register-HTModule -Workspace 'Exchange' -Category 'Sale i zasoby' -Key 'exo.booking' -Title 'Ustawienia rezerwacji' -Icon 'E787' `
+    -Description 'Sale konferencyjne i zasoby (np. auta, projektory): automatyczne przyjmowanie, konflikty, okno rezerwacji, maks. czas, kto może rezerwować, delegaci, prywatność tematów. Zaznacz sale na liście (szukaj: room).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż ustawienia' -Icon 'E8A1' -Primary -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Ustawienia rezerwacji' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTRoomBookingSettings -Identity $t.PrimarySmtpAddress }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Zmień ustawienia…' -Icon 'E70F' -OnClick {
+        param($m)
+        $targets = @(Get-HTTargets -Module $m)
+        if ($targets.Count -eq 0) { return }
+        $current = if ($targets.Count -eq 1) { (Get-HTRoomBookingSettings -Identity $targets[0].PrimarySmtpAddress).__settings } else { $null }
+        $keep = '(bez zmian)'
+        $boolField = { param($name, $label) @{ Name = $name; Label = $label; Type = 'Combo'; Options = @($keep, 'Tak', 'Nie'); Default = $(if ($current) { if ($current.$name) { 'Tak' } else { 'Nie' } } else { $keep }) } }
+        $form = Show-HTFormDialog -Title 'Ustawienia rezerwacji' -Description $(if ($targets.Count -eq 1) { Get-HTMailboxLabel $targets[0] } else { "Sal i zasobów: $($targets.Count) - zmienione zostaną tylko ustawione pola" }) -Icon 'E787' -Width 620 -Fields @(
+            @{ Name = 'AutomateProcessing'; Label = 'Przetwarzanie zaproszeń'; Type = 'Combo'; Options = @($keep, 'AutoAccept', 'AutoUpdate', 'None'); Default = $(if ($current) { "$($current.AutomateProcessing)" } else { $keep }) }
+            (& $boolField 'AllowConflicts' 'Zezwalaj na konflikty')
+            @{ Name = 'BookingWindowInDays'; Label = 'Okno rezerwacji (dni, puste - bez zmian)'; Default = $(if ($current) { "$($current.BookingWindowInDays)" } else { '' }) }
+            @{ Name = 'MaximumDurationInMinutes'; Label = 'Maks. czas spotkania (minuty, puste - bez zmian)'; Default = $(if ($current) { "$($current.MaximumDurationInMinutes)" } else { '' }) }
+            (& $boolField 'AllowRecurringMeetings' 'Spotkania cykliczne')
+            (& $boolField 'ScheduleOnlyDuringWorkHours' 'Tylko w godzinach pracy')
+            (& $boolField 'AllBookInPolicy' 'Wszyscy mogą rezerwować')
+            @{ Name = 'BookInPolicy'; Label = 'Tylko wybrani mogą rezerwować (adresy, jeden w linii; «-» czyści)'; Type = 'Multiline'; Height = 50; Default = $(if ($current) { @($current.BookInPolicy | ForEach-Object { "$_" }) -join "`r`n" } else { '' }) }
+            @{ Name = 'ResourceDelegates'; Label = 'Delegaci zatwierdzający (adresy, jeden w linii; «-» czyści)'; Type = 'Multiline'; Height = 50; Default = $(if ($current) { @($current.ResourceDelegates | ForEach-Object { "$_" }) -join "`r`n" } else { '' }) }
+            (& $boolField 'AddOrganizerToSubject' 'Organizator w temacie')
+            (& $boolField 'DeleteSubject' 'Usuwaj temat spotkania')
+            (& $boolField 'DeleteComments' 'Usuwaj treść zaproszenia')
+            (& $boolField 'RemovePrivateProperty' 'Usuwaj oznaczenie «prywatne»')
+            (& $boolField 'ProcessExternalMeetingMessages' 'Przyjmuj zaproszenia spoza organizacji')
+        )
+        if (-not $form) { return }
+        $settings = @{}
+        foreach ($k in $form.Keys) {
+            $v = $form[$k]
+            if ($v -eq $keep) { continue }
+            switch -Regex ($k) {
+                '^(BookingWindowInDays|MaximumDurationInMinutes)$' { $n = 0; if ("$v".Trim() -and [int]::TryParse("$v".Trim(), [ref]$n)) { if ($current -and [int]$current.$k -eq $n) { continue }; $settings[$k] = $n } }
+                '^(BookInPolicy|ResourceDelegates)$' {
+                    $text = "$v".Trim()
+                    if ($text -eq '-') { $settings[$k] = $null }
+                    elseif ($text) { $list = @(Split-HTInputList $text); if ($current -and (@($current.$k | ForEach-Object { "$_" }) -join ',') -eq ($list -join ',')) { continue }; $settings[$k] = $list }
+                }
+                '^AutomateProcessing$' { if (-not $current -or "$($current.AutomateProcessing)" -ne $v) { $settings[$k] = $v } }
+                default { $b = ($v -eq 'Tak'); if (-not $current -or [bool]$current.$k -ne $b) { $settings[$k] = $b } }
+            }
+        }
+        if ($settings.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
+        Invoke-HTTargetAction -Module $m -Name 'Ustawienia rezerwacji' -Targets $targets -Label { param($t) Get-HTMailboxLabel $t } -Action {
+            param($t)
+            Set-HTRoomBookingSettings -Identity $t.PrimarySmtpAddress -Settings $settings
+            "Zmieniono: $(@($settings.Keys) -join ', ')"
+        }
+    } | Out-Null
+}
+#endregion
+
+#region Przepływ poczty: reguły transportu, lista dozwolonych i zablokowanych
+Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.transport' -Title 'Reguły transportu' -Icon 'E71C' -Service 'Exchange' `
+    -Description 'Reguły przepływu poczty organizacji: kolejność, stan, tryb (wymuszanie / test) i opis warunków i akcji. Prawy przycisk - włączenie lub wyłączenie reguły.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pobierz reguły' -Icon 'E72C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Reguły transportu' -ScriptBlock { Get-HTTransportRules } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Centrum administracyjne Exchange' -Icon 'E8A7' -OnClick { param($m) Start-Process 'https://admin.exchange.microsoft.com/#/transportrules' } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Włącz regułę' -Icon 'E73E' -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Włączenie reguły transportu' -Rows $rows -Confirm 'Włączyć zaznaczone reguły?' -Label { param($r) $r.Reguła } -Action { param($r) Set-HTTransportRuleState -Identity $r.Id -Enabled $true; 'Włączono' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Wyłącz regułę' -Icon 'E711' -Danger -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Wyłączenie reguły transportu' -Rows $rows -Danger -Confirm 'Wyłączyć zaznaczone reguły? Reguły (np. zastrzeżenia, podpisy, blokady) przestaną działać dla całej organizacji.' -Label { param($r) $r.Reguła } -Action {
+            param($r)
+            Set-HTTransportRuleState -Identity $r.Id -Enabled $false
+            Register-HTUndo -Operation 'Wyłączenie reguły transportu' -Object $r.Reguła -Kind 'TransportRule' -Data @{ Identity = $r.Id }
+            'Wyłączono'
+        } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+
+Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.tabl' -Title 'Dozwoleni i zablokowani' -Icon 'E8F8' -Service 'Exchange' `
+    -Description 'Lista dozwolonych i zablokowanych (Tenant Allow/Block List): nadawcy i domeny, adresy URL, pliki. Szybkie zablokowanie spamera lub domeny phishingowej. Żółte - wpisy zezwalające.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pobierz listę' -Icon 'E72C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Dozwoleni i zablokowani' -ScriptBlock { Get-HTTenantAllowBlockList } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj wpisy…' -Icon 'E710' -OnClick {
+        param($m)
+        $form = Show-HTFormDialog -Title 'Lista dozwolonych i zablokowanych' -Icon 'E8F8' -OkText 'Dodaj' -Fields @(
+            @{ Name = 'Type'; Label = 'Rodzaj'; Type = 'Combo'; Options = @('Nadawca / domena', 'Adres URL', 'Plik (SHA256)') }
+            @{ Name = 'Action'; Label = 'Akcja'; Type = 'Combo'; Options = @('Blokuj', 'Zezwalaj') }
+            @{ Name = 'Entries'; Label = 'Wartości (jedna w linii, np. spam@domena.com, domena.com, *.domena.com/*)'; Type = 'Multiline'; Required = $true; Height = 80 }
+            @{ Name = 'Days'; Label = 'Ważność (dni, 0 - bez wygaśnięcia; zezwolenia: maks. 30 lub 45 od ostatniego użycia)'; Type = 'Number'; Default = 30; Min = 0; Max = 365 }
+            @{ Name = 'Notes'; Label = 'Notatka (np. numer zgłoszenia)' }
+        )
+        if (-not $form) { return }
+        $type = switch ($form.Type) { 'Adres URL' { 'Url' } 'Plik (SHA256)' { 'FileHash' } default { 'Sender' } }
+        $action = if ($form.Action -eq 'Zezwalaj') { 'Allow' } else { 'Block' }
+        $entries = @(Split-HTInputList $form.Entries)
+        if (-not (Assert-HTWriteAllowed -Operation 'Lista dozwolonych i zablokowanych')) { return }
+        try {
+            Add-HTTenantAllowBlockItem -ListType $type -Entries $entries -Action $action -Days ([int]$form.Days) -Notes $form.Notes
+            Add-HTOperationRecord -Operation "Lista $(if ($action -eq 'Block') { 'zablokowanych' } else { 'dozwolonych' }): $($form.Type)" -Object ($entries -join ', ') -Details $form.Notes -Module $m.Title
+            Write-Log -Message "Dodano do listy ($type, $action): $($entries -join ', ')" -Type 'Info&Notification'
+            Invoke-HTModulePrimary $m
+        }
+        catch { Show-HTError 'Nie dodano wpisów.' $_ }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Usuń wpis' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie wpisu z listy' -Rows $rows -Danger -Confirm 'Usunąć zaznaczone wpisy z listy dozwolonych i zablokowanych?' -Label { param($r) "$($r.Akcja): $($r.Wartość)" } -Action { param($r) Remove-HTTenantAllowBlockItem -ListType $r.__type -Ids @($r.Id); 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+#endregion
+
+#region Raporty: skrzynki współdzielone i licencje
+Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.shared' -Title 'Współdzielone a licencje' -Icon 'E8EC' -Service 'Exchange' `
+    -Description 'Skrzynki współdzielone z niepotrzebną licencją (do 50 GB, bez archiwum i blokady) i bez wymaganej licencji (ponad 50 GB, archiwum, Litigation Hold). Licencje - po połączeniu z Microsoft 365.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Generuj raport' -Icon 'E9D2' -Primary -OnClick {
+        param($m)
+        if (-not $Global:ConnectedToGraphAPI) { Show-HTToast 'Bez połączenia z Microsoft 365 raport nie pokaże licencji.' 'warn' 6 }
+        Invoke-HTQuery -Module $m -Name 'Skrzynki współdzielone a licencje' -ScriptBlock {
+            Get-HTSharedMailboxLicenseReport -OnProgress { param($i, $total, $name) if ($i % 5 -eq 0 -or $i -eq $total) { Set-HTProgress -Value $i -Maximum $total -Text "Skrzynki współdzielone [$i/$total] $name" } } |
+                Sort-Object @{ Expression = { switch ($_.__flag) { 'crit' { 0 } 'warn' { 1 } default { 2 } } } }, Skrzynka
         }
     } | Out-Null
 }

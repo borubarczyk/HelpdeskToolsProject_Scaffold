@@ -1872,12 +1872,17 @@ function Set-HTLogVisible {
     if ($Visible) {
         $c.logPanel.Visibility = 'Visible'
         $c.logSplitter.Visibility = 'Visible'
-        $c.logRow.Height = New-Object System.Windows.GridLength 200
+        $height = 200
+        try { $height = [Math]::Min(800, [Math]::Max(100, [int](Get-HTUiState).LogHeight)) } catch { Write-Verbose $_ }
+        $c.logRow.Height = New-Object System.Windows.GridLength $height
         $script:UI.LogUnread = 0
         Update-HTLogBadge
         if ($script:UI.LogItems.Count -gt 0) { $c.logList.ScrollIntoView($script:UI.LogItems[$script:UI.LogItems.Count - 1]) }
     }
     else {
+        # Wysokość dziennika ustawiona przeciągnięciem - zapamiętana na kolejne otwarcia
+        $actual = [int]$c.logRow.ActualHeight
+        if ($c.logPanel.Visibility -eq 'Visible' -and $actual -ge 100) { try { Set-HTUiStateValue -Name 'LogHeight' -Value ([Math]::Min(800, $actual)) } catch { Write-Verbose $_ } }
         $c.logPanel.Visibility = 'Collapsed'
         $c.logSplitter.Visibility = 'Collapsed'
         $c.logRow.Height = New-Object System.Windows.GridLength 0
@@ -1923,7 +1928,11 @@ function Set-HTStatus {
 function Set-HTBusy {
     # Tryb "zajęty": kursor, wskaźnik postępu, blokada przycisków modułu i połączeń
     param([bool]$Busy, [string]$Text)
-    if ($Busy) { $script:UI.BusyDepth++ } else { $script:UI.BusyDepth = [Math]::Max(0, $script:UI.BusyDepth - 1) }
+    if ($Busy) {
+        $script:UI.BusyDepth++
+        if ($script:UI.BusyDepth -eq 1) { $script:UI.BusyStarted = [datetime]::Now }
+    }
+    else { $script:UI.BusyDepth = [Math]::Max(0, $script:UI.BusyDepth - 1) }
     $c = $script:UI.Controls
     if (-not $script:UI.Window) { return }
     $isBusy = $script:UI.BusyDepth -gt 0
@@ -1941,6 +1950,15 @@ function Set-HTBusy {
         if ($isBusy -and $Text) { $m.View_.busyText.Text = $Text }
     }
     Update-HTUi
+    # Koniec długiej operacji, gdy pracujesz w innym programie: powiadomienie Windows i miganie paska zadań
+    if (-not $isBusy -and $script:UI['BusyStarted']) {
+        $elapsed = ([datetime]::Now - $script:UI.BusyStarted).TotalSeconds
+        $script:UI.BusyStarted = $null
+        $limit = [int]$Global:NotifyLongOperationsSeconds
+        if ($limit -gt 0 -and $elapsed -ge $limit -and -not (Test-HTProgramActive)) {
+            Show-HTWindowsNotification -Text $(if ($Text) { $Text } else { 'Operacja zakończona' }) -Seconds ([int]$elapsed)
+        }
+    }
 }
 
 function Set-HTProgress {
@@ -2349,6 +2367,23 @@ $script:NavEvents = @{
         try { Show-HTWorkspace -Key ([string]$s.Tag) }
         catch { Write-Log -Message "Błąd przełączania przestrzeni: $($_.Exception.Message)" -Type 'Error' }
     }
+    MenuOpening    = {
+        param($s, $e)
+        try {
+            $key = [string]$s.Tag
+            $menu = $s.ContextMenu
+            $menu.Items.Clear()
+            $fav = Test-HTFavoriteModule $key
+            [void]$menu.Items.Add((New-HTMenuItem -Text $(if ($fav) { 'Usuń z ulubionych' } else { 'Dodaj do ulubionych' }) -Icon $(if ($fav) { 'E8D9' } else { 'E734' }) -Data $key -Action {
+                        param($m, $src)
+                        $k = [string]$src.Tag.Data
+                        Set-HTFavoriteModule -Key $k -Favorite (-not (Test-HTFavoriteModule $k))
+                        Update-HTNavFavorites
+                    }))
+            [void]$menu.Items.Add((New-HTMenuItem -Text 'Szukaj modułów (Ctrl+K)' -Icon 'E721' -Action { param($m) Show-HTCommandPalette }))
+        }
+        catch { Write-Verbose $_ }
+    }
     ModuleClick    = {
         param($s, $e)
         try { Show-HTModule -Key ([string]$s.Tag) }
@@ -2424,9 +2459,27 @@ function New-HTNavItem {
     $text.VerticalAlignment = 'Center'
     [System.Windows.Controls.Grid]::SetColumn($text, 1)
     [void]$grid.Children.Add($text)
+    # Gwiazdka ulubionych (prawy przycisk na pozycji - dodanie / usunięcie)
+    $cd = New-Object System.Windows.Controls.ColumnDefinition
+    $cd.Width = [System.Windows.GridLength]::Auto
+    [void]$grid.ColumnDefinitions.Add($cd)
+    $star = New-HTGlyphBlock -Code 'E735' -Size 10 -Color '#FFC46B'
+    $star.Margin = '6,0,0,0'
+    $star.Visibility = if (Test-HTFavoriteModule $Definition.Key) { 'Visible' } else { 'Collapsed' }
+    [System.Windows.Controls.Grid]::SetColumn($star, 2)
+    [void]$grid.Children.Add($star)
+    $script:NavStars[$Definition.Key] = $star
     $rb.Content = $grid
+    $rb.ContextMenu = New-Object System.Windows.Controls.ContextMenu
+    $rb.add_ContextMenuOpening($script:NavEvents.MenuOpening)
     $rb.add_Click($script:NavEvents.ModuleClick)
     return $rb
+}
+
+$script:NavStars = @{}
+
+function Update-HTNavFavorites {
+    foreach ($key in @($script:NavStars.Keys)) { $script:NavStars[$key].Visibility = if (Test-HTFavoriteModule $key) { 'Visible' } else { 'Collapsed' } }
 }
 
 function Show-HTWorkspace {
@@ -2456,6 +2509,7 @@ function Show-HTWorkspace {
     $c.txtSubtitle.Text = $ws.Description
     if ($previous -and $previous -ne $Key) { Write-Log -Message "Przestrzeń robocza: $($ws.Title)" -Type 'Info' }
     if (-not $ModuleKey) { $ModuleKey = $ws.LastModule }
+    if (-not $ModuleKey) { try { $ModuleKey = [string](Get-HTUiState).LastModules[$Key] } catch { $ModuleKey = '' } }
     $def = Get-HTModuleDefinition $ModuleKey
     if (-not $def -or $def.Workspace -ne $Key -or -not (Test-HTModuleAllowed $def.Key)) {
         $def = $null
@@ -2496,6 +2550,7 @@ function Show-HTModule {
     $script:UI.ActiveModule = $m
     $ws = $script:UI.Workspaces[$definition.Workspace]
     $ws.LastModule = $Key
+    try { Add-HTRecentModule -Key $Key -Workspace $definition.Workspace } catch { Write-Verbose $_ }
     $nav = $ws.NavItems[$Key]
     if ($nav -and $nav.IsChecked -ne $true) { $nav.IsChecked = $true }
     if ($m.OnShow) { Invoke-HTUiAction -Module $m -Action $m.OnShow }
@@ -2545,8 +2600,16 @@ function New-HTModuleContext {
         ColumnFilters  = [ordered]@{}
         FilterButtons  = @{}
         MenuCell       = $null
-        UserHidden     = New-Object 'System.Collections.Generic.HashSet[string]'
+        UserHidden     = (New-HTUserHiddenSet -Key $Definition.Key -Remember:([bool]$Definition.Workspace))
     }
+}
+
+function New-HTUserHiddenSet {
+    # Kolumny ukryte przez użytkownika - zapamiętane między uruchomieniami dla modułów nawigacji
+    param([string]$Key, [switch]$Remember)
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    if ($Remember -and $Key) { foreach ($c in @(Get-HTModuleHiddenColumns $Key)) { [void]$set.Add($c) } }
+    return , $set
 }
 
 function Initialize-HTModule {
@@ -3062,6 +3125,8 @@ $script:ModuleViewXaml = @'
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
     <TextBlock Text="Wyniki" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
     <Border Grid.Column="1" Style="{StaticResource Chip}" Margin="10,0,0,0">
@@ -3071,10 +3136,12 @@ $script:ModuleViewXaml = @'
     <TextBlock x:Name="resultHint" Grid.Column="3" Foreground="#5E6779" FontSize="12" VerticalAlignment="Center" Margin="6,0,12,0" TextTrimming="CharacterEllipsis"/>
     <TextBox x:Name="filterBox" Grid.Column="4" Width="260" Tag="Filtruj wyniki (Ctrl+F)…" Margin="0,0,8,0"/>
     <CheckBox x:Name="chkReveal" Grid.Column="5" Content="Pokaż poufne" Margin="4,0,12,0" Visibility="Collapsed"/>
-    <Button x:Name="btnColumns" Grid.Column="6" Style="{StaticResource GhostButton}" ToolTip="Wybierz kolumny do pokazania - ukryte nie trafiają do kopiowania ani eksportu" Margin="0,0,4,0"/>
-    <Button x:Name="btnDetail" Grid.Column="7" Style="{StaticResource GhostButton}" ToolTip="Panel szczegółów wiersza" Margin="0,0,4,0"/>
-    <Button x:Name="btnCopy" Grid.Column="8" Style="{StaticResource GhostButton}" ToolTip="Kopiuj zaznaczone wiersze lub całą tabelę (format Excel)" Margin="0,0,4,0"/>
-    <Button x:Name="btnExport" Grid.Column="9" ToolTip="Eksport widocznych wierszy do CSV, raportu HTML albo JSON"/>
+    <Button x:Name="btnViews" Grid.Column="6" Style="{StaticResource GhostButton}" ToolTip="Zapisane widoki: filtr, filtry kolumn i ukryte kolumny tego modułu" Margin="0,0,4,0"/>
+    <Button x:Name="btnColumns" Grid.Column="7" Style="{StaticResource GhostButton}" ToolTip="Wybierz kolumny do pokazania - ukryte nie trafiają do kopiowania ani eksportu" Margin="0,0,4,0"/>
+    <Button x:Name="btnDetail" Grid.Column="8" Style="{StaticResource GhostButton}" ToolTip="Panel szczegółów wiersza" Margin="0,0,4,0"/>
+    <Button x:Name="btnCopy" Grid.Column="9" Style="{StaticResource GhostButton}" ToolTip="Kopiuj zaznaczone wiersze lub całą tabelę (format Excel)" Margin="0,0,4,0"/>
+    <Button x:Name="btnMail" Grid.Column="10" Style="{StaticResource GhostButton}" ToolTip="Wyślij widoczne wyniki e-mailem (Excel, raport HTML lub CSV w załączniku)" Margin="0,0,4,0"/>
+    <Button x:Name="btnExport" Grid.Column="11" ToolTip="Eksport widocznych wierszy: Excel, CSV, raport HTML albo JSON"/>
   </Grid>
 
   <Border Grid.Row="4" Style="{StaticResource Card}" Padding="0">
@@ -3169,7 +3236,7 @@ function New-HTModuleView {
     $root = New-HTUiElement $script:ModuleViewXaml
     $Module.Root = $root
     foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
-        'btnColumns', 'btnDetail', 'btnCopy', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
+        'btnViews', 'btnColumns', 'btnDetail', 'btnCopy', 'btnMail', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
         'detailPane', 'detailText', 'btnDetailCopy', 'btnCollapse') {
         $Module.View_[$n] = $root.FindName($n)
     }
@@ -3188,7 +3255,9 @@ function New-HTModuleView {
     $v = $Module.View_
     $v.btnDetail.Content = New-HTIconContent -Text '' -Icon 'E8A1'
     $v.btnColumns.Content = New-HTIconContent -Text '' -Icon 'E8FD'
+    $v.btnViews.Content = New-HTIconContent -Text '' -Icon 'E71D'
     $v.btnCopy.Content = New-HTIconContent -Text '' -Icon 'E8C8'
+    $v.btnMail.Content = New-HTIconContent -Text '' -Icon 'E715'
     $v.btnExport.Content = New-HTIconContent -Text 'Eksport' -Icon 'EDE1'
     $v.btnDetailCopy.Content = New-HTIconContent -Text '' -Icon 'E8C8' -IconSize 11
     $v.btnCollapse.Content = New-HTIconContent -Text '' -Icon 'E70E' -IconSize 12
@@ -3203,6 +3272,10 @@ function New-HTModuleView {
     Register-HTControlHandler -Control $v.btnCopy -EventName 'Click' -Module $Module -Action { param($m) Copy-HTResultView -Module $m }
     Register-HTControlHandler -Control $v.btnExport -EventName 'Click' -Module $Module -Action { param($m) Export-HTResultView -Module $m }
     Register-HTControlHandler -Control $v.btnColumns -EventName 'Click' -Module $Module -Action { param($m) Select-HTResultColumns -Module $m }
+    Register-HTControlHandler -Control $v.btnViews -EventName 'Click' -Module $Module -Action { param($m, $s) Show-HTViewsMenu -Module $m -Anchor $s }
+    Register-HTControlHandler -Control $v.btnMail -EventName 'Click' -Module $Module -Action { param($m) Send-HTResultMail -Module $m }
+    # Zapisane widoki i ukryte kolumny dotyczą modułów nawigacji (nie okien podglądu)
+    if (-not $Module.Workspace) { $v.btnViews.Visibility = 'Collapsed' }
     Register-HTControlHandler -Control $v.btnFilters -EventName 'Click' -Module $Module -Action { param($m) Clear-HTColumnFilters -Module $m; Show-HTToast 'Wyczyszczono filtry kolumn.' 'info' 2 }
     Register-HTControlHandler -Control $v.btnDetail -EventName 'Click' -Module $Module -Action {
         param($m)
@@ -3805,58 +3878,6 @@ function Copy-HTResultView {
     Show-HTToast "Skopiowano wierszy: $($rows.Count)." 'ok'
 }
 
-function Export-HTResultView {
-    # Eksport widocznych wierszy i kolumn: CSV (Excel), raport HTML (wyszukiwarka, sortowanie, filtry kolumn) albo JSON
-    param([hashtable]$Module)
-    $columns = Get-HTVisibleColumnNames -Module $Module
-    $rows = @($Module.View | ForEach-Object { $_ })
-    if ($columns.Count -eq 0 -or $rows.Count -eq 0) { Show-HTMessage -Text 'Brak wyników do eksportu.' -Title 'Eksport'; return }
-    $dialog = New-Object Microsoft.Win32.SaveFileDialog
-    $dialog.Title = 'Eksport wyników'
-    $dialog.Filter = 'CSV - Excel (*.csv)|*.csv|Raport HTML (*.html)|*.html|JSON (*.json)|*.json'
-    $dialog.InitialDirectory = Get-HTExportDirectory
-    $dialog.FileName = '{0}_{1:yyyy-MM-dd_HH-mm}' -f ($Module.Title -replace '[^\w\-]+', '_'), (Get-Date)
-    $dialog.AddExtension = $true
-    $dialog.DefaultExt = '.csv'
-    $owner = $script:UI.Window
-    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
-    if ($accepted -ne $true) { return }
-    $path = $dialog.FileName
-    # @(): przy jednym wierszu też tablica słowników (indeks [0] słownika zwróciłby pierwszą wartość)
-    $data = @(foreach ($r in $rows) {
-            $o = [ordered]@{}
-            foreach ($c in $columns) { $v = Get-HTExportValue -Module $Module -Row $r -Column $c; $o[$c] = if ($null -eq $v) { '' } else { [string]$v } }
-            $o
-        })
-    try {
-        if ($path -match '\.html?$') {
-            $filter = if ($Module.FilterBox) { $Module.FilterBox.Text.Trim() } else { '' }
-            $meta = 'Helpdesk Tools {0} • {1:yyyy-MM-dd HH:mm} • {2} • wierszy: {3}' -f $Global:AppVersion, (Get-Date), $env:USERNAME, $rows.Count
-            if ($Module.WorkspaceTitle) { $meta = "$($Module.WorkspaceTitle) • $meta" }
-            if ($filter) { $meta += " • filtr: $filter" }
-            if ($Module.ColumnFilters.Count -gt 0) { $meta += ' • filtry kolumn: ' + (Get-HTColumnFiltersText -Module $Module) }
-            $htmlRows = @(for ($i = 0; $i -lt $rows.Count; $i++) {
-                    $h = $data[$i]
-                    $h['__flag'] = [string](Get-HTObjectValue $rows[$i] '__flag')
-                    $h
-                })
-            $html = ConvertTo-HTHtmlReport -Title $Module.Title -Columns $columns -Rows @($htmlRows) -Meta $meta
-            [System.IO.File]::WriteAllText($path, $html, (New-Object System.Text.UTF8Encoding($true)))
-        }
-        elseif ($path -match '\.json$') {
-            [System.IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject @($data | ForEach-Object { [PSCustomObject]$_ }) -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
-        }
-        else {
-            @($data | ForEach-Object { [PSCustomObject]$_ }) | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding utf8BOM -Delimiter ';'
-        }
-        Write-Log -Message "Zapisano $($rows.Count) wierszy ($($Module.Title)) do pliku: $path" -Type 'Info&Notification'
-    }
-    catch {
-        Write-Log -Message "Błąd zapisu eksportu: $($_.Exception.Message)" -Type 'Error'
-        Show-HTError 'Nie zapisano pliku eksportu.' $_
-    }
-}
-
 function Invoke-HTTargetAction {
     <#
         Wykonuje operację dla każdego obiektu docelowego i dopisuje wiersze wyników (Obiekt, Status, Szczegóły).
@@ -3876,6 +3897,7 @@ function Invoke-HTTargetAction {
         [string]$Service = ''
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
+    if (-not (Assert-HTWriteAllowed -Operation $Name)) { return }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
     if (-not $Targets) { $Targets = @(Get-HTTargets -Module $Module) }
     if ($Targets.Count -eq 0) { return }
@@ -3904,7 +3926,9 @@ function Invoke-HTTargetAction {
                 $failed++
             }
             $level = if ($row.Status -eq 'Błąd') { 'Warn' } else { 'Info' }
-            Write-Log -Message "$Name - $($labels[$i]): $($row.Status) $(if ($row.Contains('Szczegóły') -and $Module.SecretColumns -notcontains 'Szczegóły') { $row['Szczegóły'] })" -Type $level
+            $detailText = if ($row.Contains('Szczegóły') -and $Module.SecretColumns -notcontains 'Szczegóły') { [string]$row['Szczegóły'] } else { '' }
+            Write-Log -Message "$Name - $($labels[$i]): $($row.Status) $detailText" -Type $level
+            Add-HTOperationRecord -Operation $Name -Object $labels[$i] -Status ([string]$row.Status) -Details $detailText -Module $Module.Title
             $row['__target'] = $t
             Add-HTResultRows -Module $Module -Objects @([PSCustomObject]$row)
         }
@@ -4353,6 +4377,12 @@ function Update-HTColumnsButton {
     if (-not $b -or -not $Module.Grid) { return }
     $n = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' -and $Module.UserHidden.Contains([string]$_.SortMemberPath) }).Count
     $b.Content = New-HTIconContent -Text $(if ($n) { "ukryte: $n" } else { '' }) -Icon 'E8FD'
+    # Zapamiętanie ukrytych kolumn modułu (przy następnym uruchomieniu też ukryte)
+    if ($Module.Workspace -and $Module.Key) {
+        $saved = @(Get-HTModuleHiddenColumns $Module.Key)
+        $current = @($Module.UserHidden)
+        if (@(Compare-Object -ReferenceObject $saved -DifferenceObject $current).Count -gt 0) { Set-HTModuleHiddenColumns -Key $Module.Key -Columns $current }
+    }
 }
 
 function Set-HTResultColumns {
@@ -4464,13 +4494,17 @@ function Invoke-HTQuery {
     <#
         Pobiera dane i wpisuje je do tabeli wyników modułu: -ScriptBlock zwraca obiekty (wiersze)
         albo sam dopisuje je przez Add-HTResultRows (np. z postępem). Zwraca liczbę wierszy.
+        -Background: blok wykonuje się w wątku w tle (okno reaguje, «Przerwij» na pasku stanu), dostaje -Arguments
+        jako jedyny parametr i może używać tylko funkcji modułów; wiersze pojawiają się na bieżąco.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Module,
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][scriptblock]$ScriptBlock,
         [string]$Service = '',
-        [switch]$KeepResults
+        [switch]$KeepResults,
+        [switch]$Background,
+        [hashtable]$Arguments = @{}
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
@@ -4478,11 +4512,43 @@ function Invoke-HTQuery {
     Set-HTBusy -Busy $true -Text "$Name…"
     $count = 0
     try {
-        $data = @(& $ScriptBlock | Where-Object { $null -ne $_ })
-        if ($data.Count -gt 0) { Add-HTResultRows -Module $Module -Objects $data }
+        $done = $false
+        if ($Background -and (Test-HTBackgroundAvailable -Service $(if ($service -eq 'Graph' -or -not $service) { 'Graph' } else { $service }))) {
+            $batch = New-Object System.Collections.Generic.List[object]
+            $flush = { if ($batch.Count) { Add-HTResultRows -Module $Module -Objects $batch.ToArray(); $batch.Clear() } }
+            try {
+                Invoke-HTBackground -ScriptBlock $ScriptBlock -Arguments $Arguments -Name $Name -OnItem {
+                    param($item)
+                    if ($null -eq $item) { return }
+                    $batch.Add($item)
+                    if ($batch.Count -ge 100) { . $flush }
+                }
+                . $flush
+                $done = $true
+            }
+            catch [System.OperationCanceledException] { . $flush; throw }
+            catch {
+                . $flush
+                if (-not (Test-HTBackgroundAuthError $_)) { throw }
+                # Połączenie Graph niedostępne w wątku w tle - dalsze zapytania w wątku okna
+                $script:Background.Disabled = $true
+                Write-Log -Message "Operacje w tle wyłączone (brak połączenia w wątku w tle): $($_.Exception.Message)" -Type 'Warn'
+                Reset-HTResults -Module $Module
+            }
+        }
+        if (-not $done) {
+            $data = @(& $ScriptBlock $Arguments | Where-Object { $null -ne $_ })
+            if ($data.Count -gt 0) { Add-HTResultRows -Module $Module -Objects $data }
+        }
         $count = $Module.Table.Rows.Count
         Write-Log -Message "$Name - wyników: $count" -Type 'Info'
         Set-HTBusy -Busy $false -Text "$Name - wyników: $count"
+    }
+    catch [System.OperationCanceledException] {
+        $count = $Module.Table.Rows.Count
+        Write-Log -Message "$Name - przerwano (wyników: $count)" -Type 'Warn'
+        Set-HTBusy -Busy $false -Text "Przerwano: $Name"
+        Show-HTToast "Przerwano: $Name (wyników: $count)" 'warn'
     }
     catch {
         Write-Log -Message "$Name - błąd: $($_.Exception.Message)" -Type 'Error'
@@ -4574,6 +4640,7 @@ function Invoke-HTRowAction {
         [string]$Service = ''
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
+    if (-not (Assert-HTWriteAllowed -Operation $Name)) { return }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
     $Rows = @($Rows | Where-Object { $null -ne $_ })
     if ($Rows.Count -eq 0) { return }
@@ -4589,11 +4656,14 @@ function Invoke-HTRowAction {
             try {
                 $detail = & $Action $Rows[$i]
                 $ok++
-                Write-Log -Message "$Name - $($labels[$i]): OK $(if ($detail -is [string]) { $detail })" -Type 'Info'
+                $detailText = if ($detail -is [string]) { $detail } else { '' }
+                Write-Log -Message "$Name - $($labels[$i]): OK $detailText" -Type 'Info'
+                Add-HTOperationRecord -Operation $Name -Object $labels[$i] -Status 'OK' -Details $detailText -Module $Module.Title
             }
             catch {
                 $errors.Add("$($labels[$i]): $($_.Exception.Message)")
                 Write-Log -Message "$Name - $($labels[$i]): $($_.Exception.Message)" -Type 'Warn'
+                Add-HTOperationRecord -Operation $Name -Object $labels[$i] -Status 'Błąd' -Details $_.Exception.Message -Module $Module.Title
             }
         }
     }
@@ -5677,6 +5747,12 @@ function Show-HTMfaAccessEditor {
     $setItem = New-Object System.Windows.Controls.TreeViewItem
     $setItem.Header = $setBox
     [void]$appNode.Items.Add($setItem)
+    $writeBox = New-HTAccessCheckBox -Key 'app:Write' -Text 'Wprowadzanie zmian (bez zaznaczenia - tylko podgląd i raporty)' -Icon 'E70F' -Allowed ($deny -notcontains 'app:Write')
+    [void]$known.Add('app:Write')
+    [void]$w.Tag.Boxes.Add($writeBox)
+    $writeItem = New-Object System.Windows.Controls.TreeViewItem
+    $writeItem.Header = $writeBox
+    [void]$appNode.Items.Add($writeItem)
     [void]$tree.Items.Add($appNode)
     $w.Tag.Unknown = @($deny | Where-Object { -not $known.Contains($_) })
     $all = New-HTButton -Text 'Pełny dostęp' -Icon 'E73E' -ToolTip 'Zaznacza wszystkie przestrzenie, moduły i Ustawienia'
@@ -5702,6 +5778,793 @@ function Get-HTMfaStatusText {
     if (-not (Test-HTPinConfigured)) { return 'PIN programu nie jest ustawiony.' }
     if ($n) { return "MFA włączone - kont: $n. Odblokowanie wymaga PIN-u i kodu z aplikacji w telefonie." }
     return 'MFA wyłączone - program odblokowuje sam PIN. Można dodać kod z aplikacji (Microsoft / Google Authenticator).'
+}
+#endregion
+
+#region Tryb tylko do odczytu (konta MFA)
+function Assert-HTWriteAllowed {
+    # Konto MFA w trybie tylko do odczytu (Uprawnienia… > «Wprowadzanie zmian») nie wykona operacji zmieniającej
+    param([string]$Operation = 'zmiana')
+    if (Test-HTWriteAllowed) { return $true }
+    Show-HTAccessDenied ("$Operation (tryb tylko do odczytu)")
+    return $false
+}
+#endregion
+
+#region Operacje w tle (zapytania Microsoft Graph w osobnym wątku)
+<#
+    Zapytania oznaczone -Background (Invoke-HTQuery) wykonują się w puli wątków z modułami programu i modułem
+    Microsoft.Graph.Authentication - połączenie Graph jest wspólne dla procesu. Okno w tym czasie reaguje (przełączanie
+    modułów, przewijanie), wiersze pojawiają się na bieżąco, a przycisk «Przerwij» na pasku stanu kończy zapytanie.
+    Blok zapytania dostaje jeden parametr (-Arguments) i może korzystać tylko z funkcji modułów (nie z plików GUI).
+    Gdy połączenie nie jest dostępne w wątku (np. inna wersja modułu Graph), zapytania wracają do wątku okna.
+#>
+$script:Background = @{ Pool = $null; PoolModules = ''; Disabled = $false; Current = $null; Tasks = (New-Object System.Collections.ArrayList); Timer = $null }
+$script:BackgroundModuleNames = @('Utils', 'Security', 'Mfa', 'ModulesConnection', 'GraphAPIM365Users', 'GraphAPIIntune', 'GraphAPISharePoint',
+    'GraphAPISecurity', 'GraphAPITeams', 'SharePointAudit', 'Reports', 'Excel', 'Integrations', 'Automation', 'ColumnFilters')
+
+$script:BackgroundWorker = @'
+param($Code, $Arguments, $Globals, $LogQueue)
+foreach ($k in $Globals.Keys) { Set-Variable -Name $k -Value $Globals[$k] -Scope Global }
+# Dziennik w tle bez zapisu do pliku - wpisy przekazuje i zapisuje okno programu
+$Global:HTNoLogFile = $true
+Clear-HTLogSinks
+Clear-HTLogHistory
+Register-HTLogSink -ScriptBlock { param($entry) $LogQueue.Enqueue($entry) }.GetNewClosure()
+$block = [scriptblock]::Create($Code)
+& $block $Arguments
+'@
+
+function Get-HTBackgroundGlobals {
+    # Ustawienia programu potrzebne funkcjom modułów w wątku w tle
+    $g = @{}
+    foreach ($n in 'DefaultUsageLocation', 'InactiveDays', 'GraphScopes', 'PasswordDefaultLength', 'PasswordSpecialCharacters', 'PasswordUseWordBased', 'AppVersion', 'HTActiveAccount', 'ExportPath', 'HTConfig', 'ConfigDir', 'LogDir') {
+        $g[$n] = Get-Variable -Name $n -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    }
+    $g.ConnectedToGraphAPI = [bool]$Global:ConnectedToGraphAPI
+    $g.ConnectedToExchange = $false
+    $g.ConnectedToSharepointPnP = $false
+    $g.ShowNotifications = $false
+    return $g
+}
+
+function Get-HTBackgroundModulePaths {
+    param([string[]]$Names = $script:BackgroundModuleNames, [switch]$NoGraph)
+    $paths = New-Object System.Collections.Generic.List[string]
+    if (-not $NoGraph) {
+        $graph = @(Get-Module -Name Microsoft.Graph.Authentication)[0]
+        if ($graph) {
+            $manifest = Join-Path $graph.ModuleBase "$($graph.Name).psd1"
+            $paths.Add($(if (Test-Path -LiteralPath $manifest) { $manifest } else { $graph.Path }))
+        }
+    }
+    foreach ($name in $Names) {
+        $mod = @(Get-Module -Name $name)[0]
+        if ($mod -and $mod.Path) { $paths.Add($mod.Path) }
+    }
+    return $paths.ToArray()
+}
+
+function Get-HTBackgroundPool {
+    # Pula wątków z modułami programu (tworzona przy pierwszym użyciu, odtwarzana po zmianie załadowanych modułów).
+    # -Async: otwieranie bez czekania (przygotowanie zaraz po połączeniu z Microsoft 365).
+    param([switch]$Async)
+    $bg = $script:Background
+    $paths = @(Get-HTBackgroundModulePaths)
+    $signature = $paths -join '|'
+    if ($bg.Pool -and $bg.PoolModules -eq $signature) {
+        $state = "$($bg.Pool.RunspacePoolStateInfo.State)"
+        if ($state -eq 'Opened' -or ($Async -and $state -eq 'Opening')) { return $bg.Pool }
+        if ($state -eq 'Opening') {
+            $limit = [datetime]::Now.AddSeconds(90)
+            while ("$($bg.Pool.RunspacePoolStateInfo.State)" -eq 'Opening' -and [datetime]::Now -lt $limit) { Update-HTUi; Start-Sleep -Milliseconds 50 }
+            if ("$($bg.Pool.RunspacePoolStateInfo.State)" -eq 'Opened') { return $bg.Pool }
+        }
+    }
+    if ($bg.Pool) { try { $bg.Pool.Dispose() } catch { Write-Verbose $_ } }
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    $iss.ImportPSModule([string[]]$paths)
+    # Bez hosta okna: Write-Progress trafia do strumienia postępu (pasek stanu), Write-Host jest pomijany
+    $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($iss)
+    [void]$pool.SetMaxRunspaces(2)
+    $bg.Pool = $pool
+    $bg.PoolModules = $signature
+    if ($Async) { [void]$pool.BeginOpen($null, $null); return $pool }
+    $opening = $pool.BeginOpen($null, $null)
+    while (-not $opening.IsCompleted) { Update-HTUi; Start-Sleep -Milliseconds 50 }
+    $pool.EndOpen($opening)
+    return $pool
+}
+
+function Start-HTBackgroundWarmup {
+    # Przygotowanie wątków w tle zaraz po połączeniu z Microsoft 365 (pierwsze zapytanie nie czeka na import modułów)
+    if (-not $Global:BackgroundQueries -or $script:Background.Disabled) { return }
+    try { [void](Get-HTBackgroundPool -Async) } catch { Write-Log -Message "Przygotowanie operacji w tle: $($_.Exception.Message)" -Type 'Warn' }
+}
+
+function Test-HTBackgroundAvailable {
+    param([string]$Service = '')
+    if (-not $Global:BackgroundQueries -or $script:Background.Disabled) { return $false }
+    if ($Service -eq 'Graph') { return ([bool]$Global:ConnectedToGraphAPI -and [bool](Get-Module -Name Microsoft.Graph.Authentication)) }
+    return (-not $Service)
+}
+
+function Test-HTBackgroundAuthError {
+    param($ErrorRecord)
+    $text = "$($ErrorRecord.Exception.Message) $($ErrorRecord.Exception.InnerException.Message)"
+    return ($text -match 'HTBackgroundUnavailable|Authentication needed|Connect-MgGraph|not connected|no.*context|InteractiveBrowserCredential|Nie zalogowano')
+}
+
+function Write-HTForwardedLog {
+    # Wpis dziennika z wątku w tle - zapis w pliku i panelu dziennika okna
+    param($Entry)
+    if (-not $Entry) { return }
+    $message = ([string]$Entry.Message -replace '^(ℹ️|⚠️|❌)\s*', '')
+    $type = [string]$Entry.Type
+    if ($type -notin 'Info', 'Warn', 'Error') { $type = 'Info' }
+    if ($Entry.Notify) { $type += '&Notification' }
+    Write-Log -Message $message -Type $type
+}
+
+function Set-HTCancelVisible([bool]$Visible) {
+    $b = $script:UI.Controls['btnCancelOps']
+    if ($b) { $b.Visibility = if ($Visible) { 'Visible' } else { 'Collapsed' } }
+}
+
+function Stop-HTBackground {
+    # «Przerwij» na pasku stanu: zatrzymanie bieżącego zapytania w tle
+    $ps = $script:Background.Current
+    if (-not $ps) { return }
+    Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
+    try { [void]$ps.BeginStop($null, $null) } catch { Write-Verbose $_ }
+}
+
+function Invoke-HTBackground {
+    <#
+        Wykonuje blok w wątku w tle i czeka na wynik, przetwarzając w tym czasie zdarzenia okna. -OnItem { param($item) }:
+        każdy zwrócony obiekt od razu (np. dopisanie wierszy); bez -OnItem - zwraca wszystkie obiekty. Write-Progress w bloku
+        aktualizuje pasek stanu. Przerwanie: OperationCanceledException; błąd bloku - wyjątek z jego komunikatem.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [hashtable]$Arguments = @{}, [scriptblock]$OnItem, [string]$Name = 'Operacja')
+    try { $pool = Get-HTBackgroundPool }
+    catch {
+        # Moduły nie wczytały się w wątku w tle - zapytania wracają do wątku okna
+        $script:Background.Disabled = $true
+        throw (New-Object System.InvalidOperationException("HTBackgroundUnavailable: $($_.Exception.Message)"))
+    }
+    $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.RunspacePool = $pool
+    [void]$ps.AddScript($script:BackgroundWorker).AddArgument($ScriptBlock.ToString()).AddArgument($Arguments).AddArgument((Get-HTBackgroundGlobals)).AddArgument($queue)
+    $inputData = New-Object 'System.Management.Automation.PSDataCollection[psobject]'
+    $inputData.Complete()
+    $output = New-Object 'System.Management.Automation.PSDataCollection[psobject]'
+    $handle = $ps.BeginInvoke($inputData, $output)
+    $bg = $script:Background
+    $previous = $bg.Current
+    $bg.Current = $ps
+    Set-HTCancelVisible $true
+    $results = New-Object System.Collections.Generic.List[object]
+    $read = 0
+    $progressRead = 0
+    $drain = {
+        while ($read -lt $output.Count) {
+            $item = $output[$read]
+            $read++
+            if ($OnItem) { & $OnItem $item } else { $results.Add($item) }
+        }
+        $entry = $null
+        while ($queue.TryDequeue([ref]$entry)) { Write-HTForwardedLog $entry }
+        $progress = $ps.Streams.Progress
+        if ($progress.Count -gt $progressRead) {
+            $record = $progress[$progress.Count - 1]
+            $progressRead = $progress.Count
+            $status = if ($record.StatusDescription -and $record.StatusDescription -ne 'Processing') { "$Name - $($record.StatusDescription)" } else { $Name }
+            if ($record.PercentComplete -ge 0) { Set-HTProgress -Value $record.PercentComplete -Maximum 100 -Text $status } else { Set-HTStatus -Text $status }
+        }
+    }
+    try {
+        while (-not $handle.IsCompleted) {
+            . $drain
+            Update-HTUi
+            Start-Sleep -Milliseconds 40
+        }
+        . $drain
+        try { [void]$ps.EndInvoke($handle) }
+        catch [System.Management.Automation.PipelineStoppedException] { throw (New-Object System.OperationCanceledException("Przerwano: $Name")) }
+        catch {
+            $inner = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $_.Exception }
+            throw $inner
+        }
+        . $drain
+        if ("$($ps.InvocationStateInfo.State)" -eq 'Stopped') { throw (New-Object System.OperationCanceledException("Przerwano: $Name")) }
+        foreach ($err in @($ps.Streams.Error)) { Write-Log -Message "$($Name): $($err.Exception.Message)" -Type 'Warn' }
+    }
+    finally {
+        $bg.Current = $previous
+        if (-not $previous) { Set-HTCancelVisible $false }
+        $ps.Dispose()
+    }
+    if (-not $OnItem) { return $results.ToArray() }
+}
+
+function Close-HTBackground {
+    # Zamknięcie programu: zatrzymanie zadań i zwolnienie puli wątków
+    $bg = $script:Background
+    if ($bg.Timer) { $bg.Timer.Stop() }
+    foreach ($task in @($bg.Tasks)) { try { $task.PS.Stop(); $task.PS.Dispose(); $task.Runspace.Dispose() } catch { Write-Verbose $_ } }
+    $bg.Tasks.Clear()
+    if ($bg.Pool) { try { $bg.Pool.Dispose() } catch { Write-Verbose $_ } }
+    $bg.Pool = $null
+    $bg.PoolModules = ''
+}
+
+function Start-HTBackgroundTask {
+    <#
+        Zadanie w tle bez czekania (np. sprawdzenie aktualizacji przy starcie): -OnComplete { param($Result, $ErrorMessage) }
+        wywoływane w wątku okna po zakończeniu. Osobny wątek z wybranymi modułami (-Modules).
+    #>
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [hashtable]$Arguments = @{}, [scriptblock]$OnComplete, [string[]]$Modules = @('Utils', 'Security', 'Integrations'))
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    $iss.ImportPSModule([string[]](Get-HTBackgroundModulePaths -Names $Modules -NoGraph))
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+    $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    [void]$ps.AddScript($script:BackgroundWorker).AddArgument($ScriptBlock.ToString()).AddArgument($Arguments).AddArgument((Get-HTBackgroundGlobals)).AddArgument($queue)
+    $task = @{ PS = $ps; Runspace = $rs; Handle = $ps.BeginInvoke(); OnComplete = $OnComplete; Queue = $queue }
+    [void]$script:Background.Tasks.Add($task)
+    if (-not $script:Background.Timer) {
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromMilliseconds(400)
+        $t.add_Tick({
+                param($s, $e)
+                foreach ($task in @($script:Background.Tasks)) {
+                    $entry = $null
+                    while ($task.Queue.TryDequeue([ref]$entry)) { Write-HTForwardedLog $entry }
+                    if (-not $task.Handle.IsCompleted) { continue }
+                    [void]$script:Background.Tasks.Remove($task)
+                    $result = $null
+                    $message = ''
+                    try { $result = @($task.PS.EndInvoke($task.Handle)) } catch { $message = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message } }
+                    try { $task.PS.Dispose(); $task.Runspace.Dispose() } catch { Write-Verbose $_ }
+                    if ($task.OnComplete) { try { & $task.OnComplete $result $message } catch { Write-Log -Message "Zadanie w tle: $($_.Exception.Message)" -Type 'Warn' } }
+                }
+                if ($script:Background.Tasks.Count -eq 0) { $s.Stop() }
+            })
+        $script:Background.Timer = $t
+    }
+    $script:Background.Timer.Start()
+}
+#endregion
+
+#region Powiadomienie Windows po długiej operacji
+$script:Notify = @{ Icon = $null; Timer = $null }
+
+function Invoke-HTFlashWindow {
+    # Miganie przycisku programu na pasku zadań (do aktywacji okna)
+    param([Parameter(Mandatory)]$Window)
+    try {
+        if (-not ('HelpdeskTools.Flash' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace HelpdeskTools {
+    public static class Flash {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
+        [DllImport("user32.dll")]
+        private static extern bool FlashWindowEx(ref FLASHWINFO info);
+        public static void Start(IntPtr handle) {
+            FLASHWINFO f = new FLASHWINFO();
+            f.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+            f.hwnd = handle;
+            f.dwFlags = 3 | 12;
+            f.uCount = 5;
+            f.dwTimeout = 0;
+            FlashWindowEx(ref f);
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper $Window).Handle
+        if ($hwnd -ne [IntPtr]::Zero) { [HelpdeskTools.Flash]::Start($hwnd) }
+    }
+    catch { Write-Verbose "Miganie okna: $_" }
+}
+
+function Show-HTWindowsNotification {
+    # Dymek w obszarze powiadomień Windows (kliknięcie przywraca okno programu) i miganie paska zadań
+    param([Parameter(Mandatory)][string]$Text, [int]$Seconds = 0, [string]$Title = 'Helpdesk Tools')
+    $main = $script:UI.Window
+    if ($main) { Invoke-HTFlashWindow -Window $main }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms, System.Drawing -ErrorAction Stop
+        $n = $script:Notify
+        if (-not $n.Icon) {
+            $icon = New-Object System.Windows.Forms.NotifyIcon
+            $icon.Icon = if ($Global:AppIconPath -and (Test-Path -LiteralPath $Global:AppIconPath)) { New-Object System.Drawing.Icon($Global:AppIconPath) } else { [System.Drawing.SystemIcons]::Information }
+            $icon.Text = 'Helpdesk Tools'
+            $icon.add_BalloonTipClicked({ try { $w = $script:UI.Window; if ($w) { if ($w.WindowState -eq 'Minimized') { $w.WindowState = 'Normal' }; [void]$w.Activate() } } catch { Write-Verbose $_ } })
+            $icon.add_Click({ try { $w = $script:UI.Window; if ($w) { [void]$w.Activate() } } catch { Write-Verbose $_ } })
+            $n.Icon = $icon
+        }
+        $n.Icon.Visible = $true
+        $n.Icon.BalloonTipTitle = $Title
+        $n.Icon.BalloonTipText = $Text + $(if ($Seconds) { " ($Seconds s)" } else { '' })
+        $n.Icon.ShowBalloonTip(10000)
+        if (-not $n.Timer) {
+            $t = New-Object System.Windows.Threading.DispatcherTimer
+            $t.Interval = [TimeSpan]::FromSeconds(20)
+            $t.add_Tick({ param($s, $e) $s.Stop(); try { $script:Notify.Icon.Visible = $false } catch { Write-Verbose $_ } })
+            $n.Timer = $t
+        }
+        $n.Timer.Stop()
+        $n.Timer.Start()
+    }
+    catch { Write-Verbose "Powiadomienie Windows: $_" }
+}
+
+function Remove-HTWindowsNotification {
+    # Usunięcie ikony z obszaru powiadomień przy zamykaniu programu
+    try { if ($script:Notify.Icon) { $script:Notify.Icon.Visible = $false; $script:Notify.Icon.Dispose(); $script:Notify.Icon = $null } } catch { Write-Verbose $_ }
+}
+#endregion
+
+#region Eksport i wysyłka wyników, zapisane widoki filtrów
+function Get-HTResultExportData {
+    # Widoczne wiersze i kolumny modułu do eksportu: kolumny, wiersze (słowniki z __flag) i opis (moduł, filtry)
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $columns = @(Get-HTVisibleColumnNames -Module $Module)
+    $rows = @($Module.View | ForEach-Object { $_ })
+    $data = @(foreach ($r in $rows) {
+            $o = [ordered]@{}
+            foreach ($c in $columns) { $v = Get-HTExportValue -Module $Module -Row $r -Column $c; $o[$c] = if ($null -eq $v -or $v -is [System.DBNull]) { '' } else { $v } }
+            $o['__flag'] = [string](Get-HTObjectValue $r '__flag')
+            $o
+        })
+    $filter = if ($Module.FilterBox) { $Module.FilterBox.Text.Trim() } else { '' }
+    $meta = [ordered]@{
+        'Moduł'        = $Module.Title
+        'Przestrzeń'   = $Module.WorkspaceTitle
+        'Data'         = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+        'Użytkownik'   = "$env:USERDOMAIN\$env:USERNAME$(if ($Global:HTActiveAccount) { " ($($Global:HTActiveAccount))" })"
+        'Wiersze'      = $rows.Count
+        'Program'      = "Helpdesk Tools $($Global:AppVersion)"
+    }
+    if ($filter) { $meta['Filtr'] = $filter }
+    if ($Module.ColumnFilters.Count -gt 0) { $meta['Filtry kolumn'] = Get-HTColumnFiltersText -Module $Module }
+    $metaText = '{0}{1} • {2} • {3} • wierszy: {4}' -f $(if ($Module.WorkspaceTitle) { "$($Module.WorkspaceTitle) • " } else { '' }), $meta.Program, $meta.Data, $env:USERNAME, $rows.Count
+    if ($filter) { $metaText += " • filtr: $filter" }
+    if ($Module.ColumnFilters.Count -gt 0) { $metaText += ' • filtry kolumn: ' + $meta['Filtry kolumn'] }
+    return @{ Title = $Module.Title; Columns = $columns; Rows = $data; Meta = $meta; MetaText = $metaText; Secrets = ($Module.RevealSecrets -and $Module.SecretColumns.Count -gt 0) }
+}
+
+function Save-HTResultFile {
+    # Zapis danych eksportu w formacie wg rozszerzenia: .xlsx, .html, .json, .csv
+    param([Parameter(Mandatory)][hashtable]$Data, [Parameter(Mandatory)][string]$Path)
+    $plain = { @($Data.Rows | ForEach-Object { $o = [ordered]@{}; foreach ($c in $Data.Columns) { $o[$c] = [string]$_[$c] }; [PSCustomObject]$o }) }
+    switch -Regex ($Path) {
+        '\.xlsx$' { [void](Export-HTXlsx -Path $Path -Columns $Data.Columns -Rows $Data.Rows -SheetName $Data.Title -Meta $Data.Meta) }
+        '\.html?$' { [System.IO.File]::WriteAllText($Path, (ConvertTo-HTHtmlReport -Title $Data.Title -Columns $Data.Columns -Rows $Data.Rows -Meta $Data.MetaText), (New-Object System.Text.UTF8Encoding($true))) }
+        '\.json$' { [System.IO.File]::WriteAllText($Path, (ConvertTo-Json -InputObject @(& $plain) -Depth 4), (New-Object System.Text.UTF8Encoding($false))) }
+        default { @(& $plain) | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding utf8BOM -Delimiter ';' }
+    }
+}
+
+function Export-HTResultView {
+    # Eksport widocznych wierszy i kolumn: Excel, CSV (Excel), raport HTML (wyszukiwarka, sortowanie, filtry kolumn) albo JSON
+    param([hashtable]$Module)
+    $data = Get-HTResultExportData -Module $Module
+    if ($data.Columns.Count -eq 0 -or $data.Rows.Count -eq 0) { Show-HTMessage -Text 'Brak wyników do eksportu.' -Title 'Eksport'; return }
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.Title = 'Eksport wyników'
+    $dialog.Filter = 'Excel (*.xlsx)|*.xlsx|CSV - Excel (*.csv)|*.csv|Raport HTML (*.html)|*.html|JSON (*.json)|*.json'
+    $dialog.InitialDirectory = Get-HTExportDirectory
+    $dialog.FileName = '{0}_{1:yyyy-MM-dd_HH-mm}' -f ($Module.Title -replace '[^\w\-]+', '_'), (Get-Date)
+    $dialog.AddExtension = $true
+    $dialog.DefaultExt = '.xlsx'
+    $owner = $script:UI.Window
+    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+    if ($accepted -ne $true) { return }
+    try {
+        Save-HTResultFile -Data $data -Path $dialog.FileName
+        Write-Log -Message "Zapisano $($data.Rows.Count) wierszy ($($Module.Title)) do pliku: $($dialog.FileName)" -Type 'Info&Notification'
+    }
+    catch {
+        Write-Log -Message "Błąd zapisu eksportu: $($_.Exception.Message)" -Type 'Error'
+        Show-HTError 'Nie zapisano pliku eksportu.' $_
+    }
+}
+
+function Select-HTOpenFile {
+    # Okno wyboru pliku do odczytu; zwraca ścieżkę albo $null
+    param([string]$Title = 'Wybierz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*')
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Title = $Title
+    $dialog.Filter = $Filter
+    $owner = $script:UI.Window
+    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+    if ($accepted -eq $true) { return $dialog.FileName }
+    return $null
+}
+
+function Select-HTSaveFile {
+    # Okno zapisu pliku (domyślnie katalog eksportu); zwraca ścieżkę albo $null
+    param([string]$Title = 'Zapisz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*', [string]$FileName = '', [string]$DefaultExt = '')
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.Title = $Title
+    $dialog.Filter = $Filter
+    $dialog.InitialDirectory = Get-HTExportDirectory
+    $dialog.FileName = $FileName
+    if ($DefaultExt) { $dialog.AddExtension = $true; $dialog.DefaultExt = $DefaultExt }
+    $owner = $script:UI.Window
+    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+    if ($accepted -eq $true) { return $dialog.FileName }
+    return $null
+}
+
+function Send-HTResultMail {
+    # Widoczne wyniki e-mailem z konta zalogowanego w Microsoft 365 (uprawnienie Mail.Send)
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $data = Get-HTResultExportData -Module $Module
+    if ($data.Rows.Count -eq 0) { Show-HTMessage -Text 'Brak wyników do wysłania.' -Title 'Wyślij e-mailem'; return }
+    if ($data.Secrets -and -not (Show-HTConfirm -Warning -Title 'Dane poufne' -ConfirmText 'Wyślij mimo to' -Message 'Wyniki zawierają odkryte dane poufne (np. hasła). Wysłać je e-mailem? Bezpieczniej wyłączyć «Pokaż poufne» przed wysyłką.')) { return }
+    if (-not (Assert-HTGraphScopes -Scopes @('Mail.Send') -Feature 'Wysyłka wyników e-mailem')) { return }
+    $formats = @('Excel (.xlsx)', 'Raport HTML (.html)', 'CSV (.csv)', 'Tabela w treści wiadomości')
+    $form = Show-HTFormDialog -Title 'Wyślij wyniki e-mailem' -Description "$($Module.Title): $($data.Rows.Count) wierszy. Wiadomość zostanie wysłana z Twojej skrzynki." -Icon 'E715' -OkText 'Wyślij' -Fields @(
+        @{ Name = 'To'; Label = 'Odbiorcy (adresy e-mail - przecinek, średnik lub nowa linia)'; Type = 'Multiline'; Required = $true; Height = 60 }
+        @{ Name = 'Subject'; Label = 'Temat'; Required = $true; Default = "$($Module.Title) - $((Get-Date).ToString('yyyy-MM-dd HH:mm'))" }
+        @{ Name = 'Format'; Label = 'Wyniki'; Type = 'Combo'; Options = $formats }
+        @{ Name = 'Message'; Label = 'Wiadomość (opcjonalnie)'; Type = 'Multiline'; Height = 70 }
+    )
+    if (-not $form) { return }
+    $to = @(Split-HTInputList $form.To)
+    $intro = if ($form.Message) { '<p>' + ((ConvertTo-HTHtmlText $form.Message) -replace "`r?`n", '<br>') + '</p>' } else { '' }
+    $info = "<p style=`"color:#666`">$(ConvertTo-HTHtmlText $data.MetaText)</p>"
+    $attachments = @()
+    $safeName = ($Module.Title -replace '[^\w\-]+', '_')
+    Set-HTBusy -Busy $true -Text 'Wysyłanie wiadomości…'
+    try {
+        switch ($form.Format) {
+            'Raport HTML (.html)' {
+                $html = ConvertTo-HTHtmlReport -Title $data.Title -Columns $data.Columns -Rows $data.Rows -Meta $data.MetaText
+                $attachments += New-HTMailAttachment -Name "$safeName.html" -Bytes ([System.Text.Encoding]::UTF8.GetPreamble() + [System.Text.Encoding]::UTF8.GetBytes($html)) -ContentType 'text/html'
+            }
+            'CSV (.csv)' {
+                $csv = (@($data.Rows | ForEach-Object { $o = [ordered]@{}; foreach ($c in $data.Columns) { $o[$c] = [string]$_[$c] }; [PSCustomObject]$o }) | ConvertTo-Csv -NoTypeInformation -Delimiter ';') -join "`r`n"
+                $attachments += New-HTMailAttachment -Name "$safeName.csv" -Bytes ([System.Text.Encoding]::UTF8.GetPreamble() + [System.Text.Encoding]::UTF8.GetBytes($csv)) -ContentType 'text/csv'
+            }
+            'Tabela w treści wiadomości' {
+                $shown = @($data.Rows | Select-Object -First 300)
+                $table = New-Object System.Text.StringBuilder
+                [void]$table.Append('<table style="border-collapse:collapse;font:13px Segoe UI,sans-serif"><tr>')
+                foreach ($c in $data.Columns) { [void]$table.Append('<th style="background:#3E6FE0;color:#fff;padding:4px 8px;text-align:left">').Append((ConvertTo-HTHtmlText $c)).Append('</th>') }
+                [void]$table.Append('</tr>')
+                foreach ($r in $shown) {
+                    $bg = switch ([string]$r['__flag']) { 'crit' { '#FDE2E4' } 'warn' { '#FFF4D6' } default { '#FFFFFF' } }
+                    [void]$table.Append("<tr style=`"background:$bg`">")
+                    foreach ($c in $data.Columns) { [void]$table.Append('<td style="border:1px solid #D9DEE7;padding:3px 8px">').Append((ConvertTo-HTHtmlText $r[$c])).Append('</td>') }
+                    [void]$table.Append('</tr>')
+                }
+                [void]$table.Append('</table>')
+                if ($data.Rows.Count -gt $shown.Count) { [void]$table.Append("<p>Pokazano $($shown.Count) z $($data.Rows.Count) wierszy - pełne dane w eksporcie do Excela.</p>") }
+                $info += $table.ToString()
+            }
+            default {
+                $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("HelpdeskTools_" + [guid]::NewGuid().ToString('N') + '.xlsx')
+                try {
+                    [void](Export-HTXlsx -Path $tmp -Columns $data.Columns -Rows $data.Rows -SheetName $data.Title -Meta $data.Meta)
+                    $attachments += New-HTMailAttachment -Name "$safeName.xlsx" -Bytes ([System.IO.File]::ReadAllBytes($tmp)) -ContentType 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
+                finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        $body = "<div style=`"font:14px Segoe UI,sans-serif`">$intro<p><b>$(ConvertTo-HTHtmlText $data.Title)</b> - wierszy: $($data.Rows.Count)$(if ($attachments.Count) { ' (w załączniku)' }).</p>$info</div>"
+        Send-HTGraphMail -To $to -Subject $form.Subject -HtmlBody $body -Attachments $attachments
+        Add-HTOperationRecord -Operation 'Wysyłka wyników e-mailem' -Object ($to -join ', ') -Details $form.Subject -Module $Module.Title
+        Show-HTToast "Wysłano do: $($to -join ', ')" 'ok'
+    }
+    catch {
+        Write-Log -Message "Wysyłka wyników e-mailem: $($_.Exception.Message)" -Type 'Error'
+        Show-HTError 'Nie wysłano wiadomości.' $_
+    }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+}
+
+function Set-HTFilterPresetView {
+    # Zastosowanie zapisanego widoku: filtr tekstowy, filtry kolumn i ukryte kolumny
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)]$Preset)
+    $Module.ColumnFilters.Clear()
+    foreach ($f in @($Preset.Filters)) {
+        if (-not $f -or -not $f.Column) { continue }
+        $values = $null
+        if ($null -ne $f.Values) { $values = [string[]]@($f.Values) }
+        [void](Set-HTColumnFilterEntry -Module $Module -Column ([string]$f.Column) -Values $values -Op ([string]$f.Op) -Text ([string]$f.Text))
+    }
+    $Module.UserHidden.Clear()
+    foreach ($h in @($Preset.Hidden)) { if ($h) { [void]$Module.UserHidden.Add([string]$h) } }
+    foreach ($c in @($Module.Grid.Columns)) { $c.Visibility = if ($Module.UserHidden.Contains([string]$c.SortMemberPath)) { 'Collapsed' } else { 'Visible' } }
+    Update-HTColumnsButton -Module $Module
+    if ($Module.FilterBox) { $Module.FilterBox.Text = [string]$Preset.Text }
+    Update-HTColumnFilterState -Module $Module
+    Show-HTToast "Widok: $($Preset.Name)" 'info' 2
+}
+
+function Show-HTViewsMenu {
+    # Menu zapisanych widoków modułu (przycisk nad tabelą wyników)
+    param([Parameter(Mandatory)][hashtable]$Module, $Anchor)
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $presets = @(Get-HTFilterPresets $Module.Key)
+    foreach ($p in $presets) {
+        [void]$menu.Items.Add((New-HTMenuItem -Text ([string]$p.Name) -Icon 'E71D' -Module $Module -Data $p -Action { param($m, $s) Set-HTFilterPresetView -Module $m -Preset $s.Tag.Data }))
+    }
+    if ($presets.Count) { [void]$menu.Items.Add((New-HTMenuSeparator)) }
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Zapisz bieżący widok…' -Icon 'E74E' -Module $Module -Action {
+                param($m)
+                $name = Show-InputBox -Title 'Zapisz widok' -Prompt "Nazwa widoku dla modułu «$($m.Title)» (filtr, filtry kolumn i ukryte kolumny):" -Icon 'E71D'
+                if (-not $name) { return }
+                $preset = ConvertTo-HTFilterPreset -Name $name -Text $(if ($m.FilterBox) { $m.FilterBox.Text } else { '' }) -ColumnFilters $m.ColumnFilters -Hidden @($m.UserHidden)
+                Save-HTFilterPreset -Key $m.Key -Preset $preset
+                Show-HTToast "Zapisano widok «$name»." 'ok'
+            }))
+    if ($presets.Count) {
+        [void]$menu.Items.Add((New-HTMenuItem -Text 'Usuń widok…' -Icon 'E74D' -Module $Module -Action {
+                    param($m)
+                    $names = @(Get-HTFilterPresets $m.Key | ForEach-Object { [string]$_.Name })
+                    $chosen = @(Show-HTSelectionDialog -Title 'Usuń widoki' -Items $names -MultiSelect -OkText 'Usuń' -Icon 'E74D')
+                    foreach ($n in $chosen) { if ($n) { Remove-HTFilterPreset -Key $m.Key -Name $n } }
+                    if ($chosen.Count) { Show-HTToast "Usunięto widoki: $($chosen.Count)" 'ok' }
+                }))
+    }
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Wyczyść filtry i pokaż wszystkie kolumny' -Icon 'E894' -Module $Module -Action {
+                param($m)
+                Set-HTFilterPresetView -Module $m -Preset @{ Name = 'domyślny'; Text = ''; Filters = @(); Hidden = @() }
+            }))
+    if ($Anchor) {
+        $menu.PlacementTarget = $Anchor
+        $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+    }
+    $menu.IsOpen = $true
+}
+#endregion
+
+#region Paleta poleceń (Ctrl+K): moduły, ulubione, ostatnie, polecenia
+$script:PaletteActions = New-Object System.Collections.ArrayList
+
+function Register-HTPaletteAction {
+    <#
+        Polecenie palety. -NeedsQuery: polecenie z wpisanym tekstem (np. «Wizytówka użytkownika: <tekst>») - pokazywane,
+        gdy wpisano co najmniej 2 znaki; -Action { param($Query) }. Bez -NeedsQuery: polecenie pokazywane według nazwy.
+    #>
+    param([Parameter(Mandatory)][string]$Text, [string]$Icon = 'E76C', [string]$Description = '', [Parameter(Mandatory)][scriptblock]$Action, [switch]$NeedsQuery, [string]$Keywords = '')
+    [void]$script:PaletteActions.Add(@{ Text = $Text; Icon = $Icon; Description = $Description; Action = $Action; NeedsQuery = [bool]$NeedsQuery; Keywords = $Keywords })
+}
+
+function Get-HTPaletteItems {
+    # Pozycje palety dla wpisanego tekstu (bez tekstu: ulubione, ostatnie i polecenia)
+    param([AllowEmptyString()][string]$Query = '')
+    $q = $Query.Trim()
+    $items = New-Object System.Collections.Generic.List[object]
+    $defs = @($script:UI.ModuleDefs | Where-Object { $script:UI.Workspaces.Contains($_.Workspace) -and (Test-HTModuleAllowed $_.Key) -and (Test-HTWorkspaceAllowed $_.Workspace) })
+    $state = Get-HTUiState
+    $newItem = {
+        param($d, [string]$Prefix)
+        $ws = $script:UI.Workspaces[$d.Workspace]
+        @{ Kind = 'Module'; Key = $d.Key; Icon = $d.Icon; Title = $d.Title; Sub = "$Prefix$($ws.Title) • $($d.Category)"; Star = (Test-HTFavoriteModule $d.Key) }
+    }
+    if (-not $q) {
+        foreach ($key in @($state.Favorites)) { $d = @($defs | Where-Object { $_.Key -eq $key })[0]; if ($d) { $items.Add((& $newItem $d 'Ulubione • ')) } }
+        foreach ($key in @($state.Recent | Select-Object -First 8)) {
+            if (@($state.Favorites) -contains $key) { continue }
+            $d = @($defs | Where-Object { $_.Key -eq $key })[0]
+            if ($d) { $items.Add((& $newItem $d 'Ostatnio • ')) }
+        }
+        foreach ($a in $script:PaletteActions) { if (-not $a.NeedsQuery) { $items.Add(@{ Kind = 'Action'; Action = $a; Icon = $a.Icon; Title = $a.Text; Sub = $a.Description; Star = $false }) } }
+        return $items.ToArray()
+    }
+    $words = @($q.ToLowerInvariant() -split '\s+' | Where-Object { $_ })
+    $scored = foreach ($d in $defs) {
+        $ws = $script:UI.Workspaces[$d.Workspace]
+        $hay = "$($d.Title) $($ws.Title) $($d.Category) $($d.Description) $($d.Key)".ToLowerInvariant()
+        $all = $true
+        foreach ($w in $words) { if (-not $hay.Contains($w)) { $all = $false; break } }
+        if (-not $all) { continue }
+        $title = "$($d.Title)".ToLowerInvariant()
+        $score = if ($title.StartsWith($q.ToLowerInvariant())) { 0 } elseif ($title.Contains($words[0])) { 1 } else { 2 }
+        if (Test-HTFavoriteModule $d.Key) { $score -= 0.5 }
+        [PSCustomObject]@{ Score = $score; Def = $d }
+    }
+    foreach ($s in @($scored | Sort-Object Score, @{ Expression = { $_.Def.Title } } | Select-Object -First 25)) { $items.Add((& $newItem $s.Def '')) }
+    foreach ($a in $script:PaletteActions) {
+        if ($a.NeedsQuery) {
+            if ($q.Length -ge 2) { $items.Add(@{ Kind = 'Action'; Action = $a; Query = $q; Icon = $a.Icon; Title = "$($a.Text): «$q»"; Sub = $a.Description; Star = $false }) }
+            continue
+        }
+        $hay = "$($a.Text) $($a.Keywords) $($a.Description)".ToLowerInvariant()
+        $all = $true
+        foreach ($w in $words) { if (-not $hay.Contains($w)) { $all = $false; break } }
+        if ($all) { $items.Add(@{ Kind = 'Action'; Action = $a; Icon = $a.Icon; Title = $a.Text; Sub = $a.Description; Star = $false }) }
+    }
+    return $items.ToArray()
+}
+
+$script:PaletteXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="660" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" WindowStartupLocation="CenterOwner" Foreground="#E4E8EF" FontFamily="Segoe UI" FontSize="13"
+        UseLayoutRounding="True" SnapsToDevicePixels="True" TextOptions.TextFormattingMode="Display">
+  <Border Background="#161B22" BorderBrush="#2F3846" BorderThickness="1" CornerRadius="12" Margin="18" Padding="14,12,14,10">
+    <Border.Effect><DropShadowEffect BlurRadius="26" ShadowDepth="4" Opacity="0.55" Color="Black"/></Border.Effect>
+    <StackPanel>
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <TextBlock Style="{StaticResource Glyph}" Text="&#xE721;" FontSize="16" Foreground="#8CB0FF" VerticalAlignment="Center" Margin="4,0,12,0"/>
+        <TextBox x:Name="plQuery" Grid.Column="1" FontSize="15" Tag="Szukaj modułów i poleceń (np. licencje, skrzynka, MFA)…"/>
+      </Grid>
+      <ListBox x:Name="plList" Margin="0,10,0,0" MaxHeight="440" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+      <TextBlock x:Name="plHint" Foreground="#5E6779" FontSize="11.5" Margin="4,8,0,0" TextWrapping="Wrap"
+                 Text="↑ ↓ wybór • Enter otwórz • Esc zamknij • prawy przycisk na module w nawigacji - dodaj do ulubionych"/>
+    </StackPanel>
+  </Border>
+</Window>
+'@
+
+$script:PaletteEvents = @{
+    Query       = { param($s, $e) Update-HTPaletteList -Window ([System.Windows.Window]::GetWindow($s)) }
+    KeyDown     = {
+        param($s, $e)
+        $list = $s.FindName('plList')
+        switch ([string]$e.Key) {
+            'Down' { if ($list.Items.Count) { $list.SelectedIndex = [Math]::Min($list.Items.Count - 1, $list.SelectedIndex + 1); $list.ScrollIntoView($list.SelectedItem) }; $e.Handled = $true }
+            'Up' { if ($list.Items.Count) { $list.SelectedIndex = [Math]::Max(0, $list.SelectedIndex - 1); $list.ScrollIntoView($list.SelectedItem) }; $e.Handled = $true }
+            'Return' { Complete-HTPalette -Window $s; $e.Handled = $true }
+            'Escape' { $s.Tag.Closing = $true; Close-HTDialog -Window $s -Ok $false; $e.Handled = $true }
+        }
+    }
+    Click       = { param($s, $e) Complete-HTPalette -Window ([System.Windows.Window]::GetWindow($s)) }
+    Deactivated = { param($s, $e) if (-not $s.Tag.Closing) { $s.Tag.Closing = $true; try { Close-HTDialog -Window $s -Ok $false } catch { Write-Verbose $_ } } }
+}
+
+function Update-HTPaletteList {
+    param([Parameter(Mandatory)]$Window)
+    $list = $Window.FindName('plList')
+    $list.Items.Clear()
+    foreach ($item in @(Get-HTPaletteItems -Query $Window.FindName('plQuery').Text)) {
+        $li = New-Object System.Windows.Controls.ListBoxItem
+        $li.Tag = $item
+        $li.Padding = '8,6'
+        $grid = New-Object System.Windows.Controls.Grid
+        foreach ($width in 'Auto', '*', 'Auto') {
+            $cd = New-Object System.Windows.Controls.ColumnDefinition
+            $cd.Width = if ($width -eq '*') { New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star) } else { [System.Windows.GridLength]::Auto }
+            [void]$grid.ColumnDefinitions.Add($cd)
+        }
+        $icon = New-HTGlyphBlock -Code $(if ($item.Icon) { $item.Icon } else { 'E76C' }) -Size 15 -Color $(if ($item.Kind -eq 'Action') { '#5EE3AE' } else { '#8CB0FF' })
+        $icon.Margin = '2,0,12,0'
+        $icon.Width = 20
+        $icon.VerticalAlignment = 'Center'
+        [void]$grid.Children.Add($icon)
+        $texts = New-Object System.Windows.Controls.StackPanel
+        $t1 = New-Object System.Windows.Controls.TextBlock
+        $t1.Text = [string]$item.Title
+        $t1.FontWeight = 'SemiBold'
+        $t1.TextTrimming = 'CharacterEllipsis'
+        [void]$texts.Children.Add($t1)
+        if ($item.Sub) {
+            $t2 = New-Object System.Windows.Controls.TextBlock
+            $t2.Text = [string]$item.Sub
+            $t2.Foreground = Get-HTBrush '#8791A5'
+            $t2.FontSize = 11.5
+            $t2.TextTrimming = 'CharacterEllipsis'
+            [void]$texts.Children.Add($t2)
+        }
+        [System.Windows.Controls.Grid]::SetColumn($texts, 1)
+        [void]$grid.Children.Add($texts)
+        if ($item.Star) {
+            $star = New-HTGlyphBlock -Code 'E735' -Size 11 -Color '#FFC46B'
+            $star.VerticalAlignment = 'Center'
+            [System.Windows.Controls.Grid]::SetColumn($star, 2)
+            [void]$grid.Children.Add($star)
+        }
+        $li.Content = $grid
+        $li.add_MouseDoubleClick($script:PaletteEvents.Click)
+        [void]$list.Items.Add($li)
+    }
+    if ($list.Items.Count) { $list.SelectedIndex = 0 }
+}
+
+function Complete-HTPalette {
+    param([Parameter(Mandatory)]$Window)
+    $selected = $Window.FindName('plList').SelectedItem
+    if (-not $selected) { return }
+    $Window.Tag.Choice = $selected.Tag
+    $Window.Tag.Closing = $true
+    Close-HTDialog -Window $Window -Ok $true
+}
+
+function Show-HTCommandPalette {
+    # Ctrl+K: szybkie przejście do modułu albo polecenia; wybrana pozycja wykonuje się po zamknięciu palety
+    $w = New-HTUiElement $script:PaletteXaml
+    $w.Tag = @{ Result = $false; Modal = $false; Choice = $null; Closing = $false }
+    $w.FindName('plQuery').add_TextChanged($script:PaletteEvents.Query)
+    $w.add_PreviewKeyDown($script:PaletteEvents.KeyDown)
+    $w.add_Deactivated($script:PaletteEvents.Deactivated)
+    $w.add_ContentRendered({ param($s, $e) [void]$s.FindName('plQuery').Focus() })
+    Update-HTPaletteList -Window $w
+    [void](Invoke-HTDialog $w)
+    $choice = $w.Tag.Choice
+    if (-not $choice) { return }
+    if ($choice.Kind -eq 'Module') { Invoke-HTUiAction -Module $null -Action { param($m, $key) Show-HTModule -Key $key } -Source $choice.Key; return }
+    $action = $choice.Action
+    Invoke-HTUiAction -Module $null -Action { param($m, $q) & $action.Action $q } -Source ([string]$choice.Query)
+}
+#endregion
+
+#region Podsumowanie operacji do zgłoszenia
+$script:OperationSummaryXaml = @'
+<StackPanel>
+  <Grid Margin="0,0,0,8">
+    <TextBox x:Name="osFilter" Width="320" HorizontalAlignment="Left" Tag="Obiekt lub operacja (np. jan.kowalski)…"/>
+    <Border Style="{StaticResource Chip}" HorizontalAlignment="Right">
+      <TextBlock x:Name="osCount" Foreground="#AEB6C4" FontSize="11.5"/>
+    </Border>
+  </Grid>
+  <TextBox x:Name="osText" Style="{StaticResource MultiText}" IsReadOnly="True" Height="360" TextWrapping="Wrap"/>
+  <TextBlock Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
+             Text="Operacje zmieniające wykonane w tej sesji programu (bez haseł i danych poufnych). Wklej tekst do zgłoszenia albo wyślij na kanał Teams."/>
+</StackPanel>
+'@
+
+$script:OperationSummaryEvents = @{
+    Filter = { param($s, $e) Update-HTOperationSummary -Window ([System.Windows.Window]::GetWindow($s)) }
+    Copy   = {
+        param($s, $e)
+        $t = [System.Windows.Window]::GetWindow($s).FindName('osText').Text
+        if ($t) { Set-HTClipboard $t; Show-HTToast 'Skopiowano podsumowanie.' 'ok' }
+    }
+    Teams  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        $records = @($w.Tag.Records)
+        if (-not $records.Count) { return }
+        $facts = [ordered]@{}
+        foreach ($g in @($records | Group-Object Operation | Select-Object -First 10)) { $facts[$g.Name] = (@($g.Group | ForEach-Object { "$($_.Object) ($($_.Status))" }) -join ', ') }
+        if (Send-HTTeamsMessage -Title 'Podsumowanie wykonanych czynności' -Text $w.FindName('osFilter').Text -Facts $facts -Tone 'ok' -Event 'Manual') { Show-HTToast 'Wysłano na kanał Teams.' 'ok' }
+        else { Show-HTWarning 'Nie wysłano - ustaw adres webhooka Teams w Ustawieniach (Integracje) i sprawdź dziennik.' }
+    }
+}
+
+function Update-HTOperationSummary {
+    param([Parameter(Mandatory)]$Window)
+    $q = $Window.FindName('osFilter').Text.Trim()
+    $records = @(Get-HTOperationRecords -Object $q)
+    $Window.Tag.Records = $records
+    $Window.FindName('osText').Text = Format-HTOperationSummary -Records $records -Title $(if ($q) { "Wykonane czynności - $q" } else { '' })
+    $Window.FindName('osCount').Text = "operacji: $($records.Count)"
+}
+
+function Show-HTOperationSummaryDialog {
+    # Tekst do zgłoszenia z operacji wykonanych w tej sesji (filtr po obiekcie)
+    param([string]$Object = '')
+    $w = New-HTDialog -Title 'Podsumowanie do zgłoszenia' -Subtitle 'Co zostało zrobione w tej sesji programu - gotowy tekst do zgłoszenia (ticketu).' -Body $script:OperationSummaryXaml -Icon 'E8A5' -OkText 'Zamknij' -NoCancel -Width 760
+    $copy = New-HTButton -Text 'Kopiuj' -Icon 'E8C8'
+    $copy.Margin = '0,0,8,0'
+    $copy.add_Click($script:OperationSummaryEvents.Copy)
+    [void]$w.FindName('dlgExtra').Children.Add($copy)
+    if (Get-HTTeamsWebhookUrl) {
+        $teams = New-HTButton -Text 'Wyślij do Teams' -Icon 'E8F2'
+        $teams.add_Click($script:OperationSummaryEvents.Teams)
+        [void]$w.FindName('dlgExtra').Children.Add($teams)
+    }
+    $filter = $w.FindName('osFilter')
+    $filter.Text = $Object
+    $filter.add_TextChanged($script:OperationSummaryEvents.Filter)
+    Update-HTOperationSummary -Window $w
+    [void](Invoke-HTDialog $w)
 }
 #endregion
 

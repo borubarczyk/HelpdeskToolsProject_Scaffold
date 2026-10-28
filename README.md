@@ -1,6 +1,6 @@
 # Helpdesk Tools
 
-**Helpdesk Tools** to aplikacja PowerShell z interfejsem WPF dla administratorów IT. Pozwala zarządzać lokalnym Active Directory, użytkownikami Microsoft 365 (Microsoft Graph), skrzynkami Exchange Online, urządzeniami Intune i witrynami SharePoint z jednego okna. Wygląd, ikony, czcionka i układ są wspólne z projektami **Domain Ops** (AD-ManagerDiamond) i **ServerReview**.
+**Helpdesk Tools** to aplikacja PowerShell z interfejsem WPF dla administratorów IT. Pozwala zarządzać użytkownikami Microsoft 365 (Microsoft Graph), bezpieczeństwem Entra ID i Microsoft Defender, skrzynkami Exchange Online, urządzeniami Intune, witrynami SharePoint i OneDrive z jednego okna, a także planować zadania, prowadzić checklisty on/offboardingu i wysyłać raporty bez otwierania programu. Funkcje lokalnego Active Directory są domyślnie ukryte (Ustawienia > Funkcje lokalne). Wygląd, ikony, czcionka i układ są wspólne z projektami **Domain Ops** (AD-ManagerDiamond) i **ServerReview**.
 
 ## Spis treści
 1. [Wymagania](#wymagania)
@@ -21,7 +21,7 @@
   - `Microsoft.Graph.Authentication` - przestrzenie Microsoft 365, Intune, Pulpit.
   - `ExchangeOnlineManagement` - przestrzeń Exchange.
   - `PnP.PowerShell` - przestrzeń SharePoint (wymaga własnej rejestracji aplikacji w Entra ID i jej Client ID).
-  - `ActiveDirectory` (RSAT) - przestrzenie Użytkownicy / Komputery / Grupy AD. Instalacja: `Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0` (Windows 10/11) lub `Install-WindowsFeature RSAT-AD-PowerShell` (Windows Server).
+  - `ActiveDirectory` (RSAT) - tylko po włączeniu funkcji lokalnych: przestrzenie Użytkownicy / Komputery / Grupy AD. Instalacja: `Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0` (Windows 10/11) lub `Install-WindowsFeature RSAT-AD-PowerShell` (Windows Server).
 - **Uprawnienia**: odpowiednie role administracyjne (np. User Administrator, Exchange Administrator, Intune Administrator). Przy pierwszym połączeniu z Graph może być wymagana zgoda administratora na uprawnienia z klucza `GraphScopes`.
 
 ## Instalacja i uruchomienie
@@ -34,6 +34,8 @@ pwsh -File .\HelpdeskTools.ps1
 
 Przy pierwszym uruchomieniu program prosi o ustawienie **PIN-u** (4-8 cyfr) - będzie wymagany przy każdym uruchomieniu.
 
+**Skrót na pulpicie bez okna konsoli**: Ustawienia > «Narzędzia» > «Skrót na pulpicie» (uruchamia program jako administrator z parametrem `-HideConsole`). **Podpisywanie skryptów** (zasada `AllSigned`): Ustawienia > «Narzędzia» > «Podpisz skrypty programu» - certyfikatem z magazynu użytkownika albo nowym certyfikatem z podpisem własnym. **Aktualizacja**: program sprawdza przy starcie nową wersję w repozytorium GitHub (Ustawienia > Aktualizacje) i instaluje ją jednym kliknięciem (Ctrl+K > «Aktualizuj program»), z kopią poprzedniej wersji w `%LOCALAPPDATA%\HelpdeskTools\Kopie`.
+
 Pliki programu (jak w Domain Ops):
 
 | Co | Gdzie |
@@ -41,19 +43,28 @@ Pliki programu (jak w Domain Ops):
 | Konfiguracja | `%APPDATA%\HelpdeskTools\config.json` |
 | Konta MFA (klucze zaszyfrowane DPAPI) | `%APPDATA%\HelpdeskTools\Mfa.json` |
 | Dziennik (plik dzienny, 30 dni) | `%LOCALAPPDATA%\HelpdeskTools\Logs\HelpdeskTools_RRRRMMDD.log` |
-| Eksport CSV, pobrane pliki | `Dokumenty\HelpdeskTools\Eksport` (zmiana: Ustawienia > Katalog eksportu) |
+| Eksport (Excel, CSV, HTML), wizytówki, pobrane pliki | `Dokumenty\HelpdeskTools\Eksport` (zmiana: Ustawienia > Katalog eksportu) |
+| Zapamiętany układ (ulubione, ostatnie moduły, kolumny, widoki filtrów, okno) | `%APPDATA%\HelpdeskTools\UiState.json` |
+| Zadania zaplanowane, checklisty, rejestr cofania zmian | `%APPDATA%\HelpdeskTools\Jobs.json`, `Checklists.json`, `ChecklistTemplates.json`, `Undo.json` |
+| Migawki konfiguracji | `%APPDATA%\HelpdeskTools\Snapshots\<rodzaj>\*.json` |
+| Wtyczki | `Plugins\*.ps1` w folderze programu i `%APPDATA%\HelpdeskTools\Plugins\*.ps1` (zob. [Plugins/README.md](Plugins/README.md)) |
 
 ## Interfejs
 
 Układ jak w Domain Ops: ciemny motyw, Segoe UI, ikony Segoe Fluent Icons / MDL2.
 
-- **Nagłówek**: logo, przełącznik **przestrzeni roboczych** (Pulpit, Microsoft 365, Exchange, Intune, Witryny, SharePoint, Użytkownicy AD, Komputery AD, Grupy AD) oraz przyciski połączeń z kropką stanu i nazwą tenantu (Exchange, Microsoft 365, SharePoint, Active Directory), generator haseł i ustawienia.
+- **Nagłówek**: logo, przełącznik **przestrzeni roboczych** (Pulpit, Microsoft 365, Bezpieczeństwo, Exchange, Intune, Witryny, SharePoint, Zadania; po włączeniu funkcji lokalnych także Użytkownicy / Komputery / Grupy AD) oraz przyciski połączeń z kropką stanu i nazwą tenantu, wyszukiwanie (Ctrl+K), blokada, generator haseł i ustawienia.
+- **Paleta poleceń (`Ctrl+K`)**: szybkie przejście do dowolnego modułu po nazwie lub opisie, ulubione i ostatnio otwierane moduły, polecenia z wpisanym tekstem (np. «Wizytówka użytkownika: jan», «Diagnoza logowania: jan@firma.pl», «Historia obiektu: …», «Szukaj w dzienniku: …»), przełączenie tenantu, podsumowanie do zgłoszenia, aktualizacja. Gwiazdka przy module (prawy przycisk w nawigacji) - ulubione.
+- **Zapamiętany układ**: ulubione i ostatnie moduły, ostatni moduł w każdej przestrzeni, ukryte kolumny, położenie i rozmiar okna, wysokość dziennika. **Zapisane widoki** (przycisk nad tabelą): filtr tekstowy, filtry kolumn i ukryte kolumny pod nazwą, do przywrócenia jednym kliknięciem.
+- **Operacje w tle**: zapytania Microsoft 365 wykonują się w osobnym wątku - okno reaguje, wiersze pojawiają się na bieżąco, a **«Przerwij»** na pasku stanu (albo `Esc`) kończy zapytanie z zachowaniem pobranych wyników. Po długiej operacji (domyślnie 20 s), gdy okno nie jest aktywne - **powiadomienie Windows** i miganie paska zadań.
+- **Profile tenantów (GDAP)**: zapisane tenanty klientów - połączenie Microsoft 365 i Exchange jednym kliknięciem i przełączanie klientów (przycisk Microsoft 365 > «Przełącz tenant…», Ctrl+K > «Przełącz tenant»). Profil proponowany po połączeniu z tenantem klienta; edycja: Ustawienia > Narzędzia > Profile tenantów.
+- **Podsumowanie do zgłoszenia**: przycisk «Do zgłoszenia» w dzienniku - tekst do ticketu z operacji zmieniających wykonanych w tej sesji (filtr po obiekcie), kopiowanie albo wysyłka na kanał Teams.
 - **Lista obiektów** (lewa kolumna): wyszukiwanie, pola wyboru (wiele obiektów naraz), «Zaznacz widoczne / odwróć / odznacz» oraz **«Zaznacz z listy»** - wklejone identyfikatory lub plik CSV/TXT. Dawne «Akcje masowe» działają teraz w każdym module: zaznacz kilka obiektów i wykonaj akcję. Lista wczytuje się sama po połączeniu z usługą.
 - **Nawigacja modułów** (środkowa kolumna) pogrupowana w kategorie.
 - **Widok modułu**: parametry, przyciski akcji, kafelki, tabela wyników z filtrem (`Ctrl+F`, słowo z minusem wyklucza), sortowaniem, panelem szczegółów wiersza, kopiowaniem (format Excel) i eksportem. Prawy przycisk na wierszach - akcje na wynikach (np. odebranie uprawnienia, przywrócenie z kosza). Wiersze z błędami i ostrzeżeniami są kolorowane.
 - **Filtry kolumn** (jak autofiltr w Excelu, jak w Domain Ops): lejek w nagłówku kolumny otwiera okienko z warunkiem (zawiera, nie zawiera, równa się, różne od, zaczyna się od, kończy się na, większe / mniejsze niż - liczbowo, puste, niepuste) i listą wartości z liczbą wierszy (wyszukiwanie, «Zaznacz wszystkie»). Filtry kilku kolumn działają razem z polem «Filtruj wyniki»; chip «Filtry kolumn: N» pokazuje aktywne filtry (kliknięcie czyści). Prawy przycisk na komórce: «Pokaż tylko …», «Ukryj …», kopiowanie wartości całej kolumny (np. lista UPN do «Zaznacz z listy»).
 - **Menu nagłówka kolumny** (prawy przycisk na nagłówku): sortowanie, kopiowanie wartości kolumny (także bez powtórzeń i pustych), filtr, ukrycie kolumny, «Pokaż tylko tę kolumnę», «Wybierz kolumny…» (przycisk z ikoną kolumn nad tabelą). Ukryte kolumny nie trafiają do kopiowania ani eksportu i zostają ukryte po odświeżeniu wyników.
-- **Eksport wyników**: CSV (Excel), **raport HTML** (samodzielny plik w ciemnym motywie: wyszukiwarka, sortowanie i filtr pod każdą kolumną, kopiowanie wiersza i widocznych wierszy, otwieranie wiersza w osobnym oknie, druk; w nagłówku raportu użyte filtry) albo JSON.
+- **Eksport wyników**: **Excel (.xlsx** z formatowaniem: pogrubiony nagłówek, zamrożony wiersz, autofiltr, kolory wierszy z błędami i ostrzeżeniami, arkusz «Informacje» z filtrami), CSV (Excel), **raport HTML** (samodzielny plik w ciemnym motywie: wyszukiwarka, sortowanie i filtr pod każdą kolumną, kopiowanie wiersza i widocznych wierszy, otwieranie wiersza w osobnym oknie, druk; w nagłówku raportu użyte filtry) albo JSON. **Wyślij e-mailem** (przycisk z kopertą): wyniki jako załącznik Excel / HTML / CSV albo tabela w treści, z Twojej skrzynki (Microsoft Graph, Mail.Send).
 - **Dane poufne** (hasła, klucze BitLocker, LAPS, TAP) są maskowane - «Pokaż poufne»; skopiowane hasło znika ze schowka po 60 s.
 - **Operacje ryzykowne** wymagają potwierdzenia z listą obiektów, a nieodwracalne - przepisania słowa (np. `USUŃ`, `OFFBOARDING`).
 - **Dziennik operacji** (`Ctrl+L`) z licznikiem ostrzeżeń: filtr poziomu (wszystkie / ostrzeżenia i błędy / tylko błędy / wykonane), wyszukiwanie w komunikatach i nazwach modułów, kopiowanie zaznaczonych lub widocznych wpisów, dzisiejszy plik dziennika i **historia z poprzednich dni** (Pulpit > «Dziennik programu»). Przy włączonym MFA każdy wpis w pliku ma nazwę konta, które odblokowało program. Powiadomienia w oknie, pasek stanu z postępem.
@@ -62,7 +73,9 @@ Układ jak w Domain Ops: ciemny motyw, Segoe UI, ikony Segoe Fluent Icons / MDL2
 - **MFA przy odblokowaniu** (jak w Domain Ops): po PIN-ie kod z aplikacji uwierzytelniającej (Microsoft / Google Authenticator i podobne, TOTP: 6 cyfr co 30 s, SHA1). Włączenie: Ustawienia > «MFA» > «Włącz MFA dla konta podstawowego» - program pokazuje klucz do wpisania w aplikacji (lub link `otpauth://` do skopiowania) i zapisuje go dopiero po poprawnym kodzie. Ten sam kod nie zadziała drugi raz (np. przy ponownej blokadzie - trzeba poczekać na następny). Klucze są w `Mfa.json` zaszyfrowane DPAPI (odczyta je tylko to konto Windows na tym komputerze). **Utrata telefonu**: usuń `Mfa.json` - program wróci do samego PIN-u.
 - **Konta dodatkowe MFA z uprawnieniami**: kolejne osoby mogą mieć własną nazwę, własny PIN i własny klucz - na ekranie blokady wybiera się konto. Dla każdego konta dodatkowego «Uprawnienia…» blokują wybrane przestrzenie robocze, pojedyncze moduły i Ustawienia (znikają z nawigacji). Dodanie konta, nowy klucz, uprawnienia i usunięcie zatwierdza się kodem z aplikacji konta podstawowego. Zmiana konta na ekranie blokady zamyka okna poprzedniego konta. W nagłówku obok konta Windows widać konto MFA. To ograniczenie interfejsu programu: uprawnienia w usługach wynikają z kont, którymi program łączy się z Microsoft 365, Exchange i AD.
 - **Weryfikacja pakietów**: przed połączeniem program sprawdza, czy zainstalowany moduł (Graph, Exchange, PnP) pasuje do tej wersji PowerShell i czy nie koliduje z bibliotekami innego modułu załadowanego w sesji. Niezgodna wersja jest pomijana (używana jest najnowsza zgodna), a gdy żadnej nie ma - program proponuje instalację zgodnej wersji z PowerShell Gallery lub aktualizację PowerShell. Przy konflikcie bibliotek proponuje ponowne uruchomienie i połączenie najpierw z tą usługą. Podgląd: Pulpit > «Moduły i środowisko».
-- **Skróty**: `Ctrl+1..9` - przestrzenie, `F5` - główna akcja modułu, `Ctrl+F` - filtr wyników, `Ctrl+L` - dziennik, `Ctrl+Shift+L` - blokada, `Ctrl+G` - generator haseł.
+- **Tryb tylko do odczytu** dla kont MFA: w «Uprawnienia…» konta dodatkowego odznacz «Wprowadzanie zmian» - konto widzi raporty i szczegóły, ale nie wykona akcji zmieniających (blokady, licencje, grupy, zadania, cofanie zmian).
+- **Integracje**: powiadomienia na kanale Teams (webhook - Przepływy pracy albo Incoming Webhook) o offboardingu, zadaniach zaplanowanych i ukończonych checklistach; wysyłka wyników i raportów e-mailem przez Microsoft Graph.
+- **Skróty**: `Ctrl+K` - paleta poleceń, `Ctrl+1..9` - przestrzenie, `F5` - główna akcja modułu, `Ctrl+F` - filtr wyników, `Ctrl+L` - dziennik, `Ctrl+Shift+L` - blokada, `Ctrl+G` - generator haseł, `Esc` - przerwanie zapytania w tle.
 
 ## Funkcje
 
@@ -70,30 +83,56 @@ Układ jak w Domain Ops: ciemny motyw, Segoe UI, ikony Segoe Fluent Icons / MDL2
 Kafelki ze wszystkich połączonych usług i lista problemów; **moduły i środowisko** (weryfikacja pakietów, instalacja zgodnych wersji, foldery dziennika i eksportu); **dziennik programu** (wpisy z wybranego dnia: poziom, konto MFA, komunikat - z filtrami kolumn i eksportem do raportu HTML); **licencje** (nazwy handlowe, wolne/wyczerpane, lista użytkowników z licencją), **kondycja usług Microsoft 365** z otwartymi incydentami, **centrum wiadomości** (zapowiedzi zmian z terminami).
 
 ### Microsoft 365
-- Konto: szczegóły, dane kontaktowe (także hurtowo), **przełożony**, urządzenia użytkownika.
-- Bezpieczeństwo: blokada logowania z unieważnieniem sesji, reset hasła (losowe / podane), metody MFA (usuwanie, telefon, Temporary Access Pass), **historia logowań** (IP, lokalizacja, dostęp warunkowy).
-- Licencje i grupy: przypisywanie / usuwanie licencji z kontrolą wolnych sztuk, grupy (także pocztowe), **kopiowanie grup od użytkownika wzorcowego**.
-- Cykl życia: nowy użytkownik (licencja i grupy z wzorca), **offboarding w jednym kroku** (blokada, hasło, autoodpowiedź, przekierowanie, skrzynka współdzielona, GAL, MFA, grupy, przełożony, licencje), **usunięci użytkownicy** (przywracanie z kosza katalogu).
+- Konto: szczegóły, dane kontaktowe (także hurtowo), **przełożony**, urządzenia użytkownika, **wizytówka (raport HTML: konto, MFA, grupy, skrzynka, urządzenia, logowania)**, **porównanie dwóch kont** (grupy, licencje, role, aplikacje - z uzupełnieniem brakujących grup).
+- Bezpieczeństwo: blokada logowania z unieważnieniem sesji, reset hasła (losowe / podane), metody MFA (usuwanie, telefon, Temporary Access Pass), **historia logowań** (IP, lokalizacja, dostęp warunkowy), **diagnoza logowania** («nie mogę się zalogować»: konto, hasło, MFA, ryzyko, dostęp warunkowy, wyjaśnienie kodów błędów 50053, 50074, 53003…), **zasady dostępu warunkowego obejmujące konto**, **zgody aplikacji konta** (z cofaniem).
+- Licencje i grupy: przypisywanie / usuwanie licencji z kontrolą wolnych sztuk, grupy (także pocztowe), **kopiowanie grup od użytkownika wzorcowego**, **błędy licencji grupowych** (z ponowieniem przypisania), **licencje do odzyskania** (konta zablokowane i nieaktywne).
+- Teams: **zespoły** z właścicielami, gośćmi, archiwizacją i ostatnią aktywnością - zespoły bez właściciela, dodanie właściciela, archiwizacja i przywrócenie.
+- Cykl życia: nowy użytkownik (licencja i grupy z wzorca), **masowe tworzenie kont z pliku CSV** (szablon, sprawdzenie pliku, licencje, grupy, przełożony), **offboarding w jednym kroku** (blokada, hasło, autoodpowiedź, przekierowanie, skrzynka współdzielona, GAL, MFA, **dostęp przełożonego do OneDrive**, grupy, przełożony, licencje; powiadomienie Teams), **OneDrive odchodzącego** (dostęp przełożonego z automatycznym odebraniem po N dniach, udostępnione pliki), **usunięci użytkownicy** (przywracanie z kosza katalogu).
 - Raporty: **nieaktywni użytkownicy**, **goście**, **rejestracja MFA**, bez licencji, **role administracyjne**, **nieudane logowania** w organizacji.
+
+### Bezpieczeństwo
+- Entra ID: **zasady dostępu warunkowego** (z nazwami grup i ról, definicja JSON), **ryzykowni użytkownicy** (potwierdzenie przejęcia, odrzucenie ryzyka, wykrycia, blokada), **wykrycia ryzyka**, **dziennik inspekcji** (kto co zmienił, wartości przed i po), **role uprzywilejowane (PIM)** - aktywne i uprawnione.
+- Aplikacje: **wygasające sekrety i certyfikaty** rejestracji aplikacji i aplikacji firmowych (SAML) z usuwaniem wygasłych sekretów, **zgody aplikacji** w tenancie (szerokie uprawnienia, niezweryfikowani wydawcy) z cofaniem.
+- Defender: **alerty** i **incydenty** Microsoft Defender XDR (zmiana stanu, klasyfikacja, portal), **izolacja urządzeń** Defender for Endpoint (pełna / selektywna, zwolnienie, historia akcji) - wymaga aplikacji z uprawnieniami Machine.Read i Machine.Isolate (Ustawienia > Defender).
+- Raporty: **administratorzy bez MFA, ze starym hasłem, synchronizowani z AD**.
 
 ### Exchange
 - Skrzynka: szczegóły, **rozmiar i wykorzystanie limitu**, typ (Shared/Regular/Room/Equipment), GAL, archiwum, urządzenia mobilne (usuwanie powiązań).
-- Uprawnienia: FullAccess / SendAs / SendOnBehalf, **do których skrzynek ma dostęp użytkownik**, kalendarz.
+- Uprawnienia: FullAccess / SendAs / SendOnBehalf, **do których skrzynek ma dostęp użytkownik**, kalendarz, **kto ma dostęp do skrzynki** (pełny raport z uprawnieniami do folderów) i **wyłączenie automapowania** w Outlooku.
+- Sale i zasoby: **ustawienia rezerwacji** (automatyczne przyjmowanie, konflikty, okno rezerwacji, maks. czas, kto może rezerwować, delegaci, prywatność).
+- Przepływ poczty: **reguły transportu** (włączanie / wyłączanie), **lista dozwolonych i zablokowanych** (nadawcy, domeny, adresy URL, pliki).
 - Poczta: autoodpowiedź (także zaplanowana), przekierowanie, reguły skrzynki (wyłączanie / usuwanie), śledzenie wiadomości.
 - Grupy i adresy: **aliasy**, **grupy dystrybucyjne** (członkowie, dodawanie / usuwanie skrzynek).
 - Zgodność: **kwarantanna** (podgląd, zwolnienie, zezwolenie nadawcy, usunięcie), **odzyskiwanie usuniętych elementów**, **Litigation Hold** i retencja usuniętych elementów.
-- Raporty: **przekierowania poza organizację** (skrzynki i reguły), **nieaktywne skrzynki**.
+- Raporty: **przekierowania poza organizację** (skrzynki i reguły), **nieaktywne skrzynki**, **skrzynki współdzielone a licencje** (zbędne licencje do 50 GB, brak wymaganej licencji powyżej 50 GB, archiwum, Litigation Hold).
 
 ### Intune
-Szczegóły i sprzęt, aplikacje, grupy, użytkownik podstawowy, zmiana nazwy; akcje zdalne: synchronizacja, restart, **skanowanie i aktualizacja Microsoft Defender**, **zdalna blokada**, **rotacja kluczy BitLocker i hasła LAPS**, lokalizacja; **wycofanie, wipe i usunięcie z Intune**; **stan zasad zgodności i konfiguracji** (dlaczego urządzenie jest niezgodne); BitLocker i LAPS; raporty: niezgodne, **nieaktywne**, **bez szyfrowania**, **mało miejsca**, wersje systemów.
+Szczegóły i sprzęt, aplikacje, grupy, użytkownik podstawowy, zmiana nazwy; akcje zdalne: synchronizacja, restart, **skanowanie i aktualizacja Microsoft Defender**, **zdalna blokada**, **rotacja kluczy BitLocker i hasła LAPS**, lokalizacja; **wycofanie, wipe i usunięcie z Intune**; **stan zasad zgodności i konfiguracji** (dlaczego urządzenie jest niezgodne); BitLocker i LAPS; raporty: niezgodne, **nieaktywne**, **bez szyfrowania**, **mało miejsca**, wersje systemów. **Autopilot**: urządzenia (group tag, usunięcie), profile, **import skrótów sprzętowych z CSV**. **Aplikacje i aktualizacje**: **błędy instalacji aplikacji** (urządzenia, kody błędów), **stan aktualizacji Windows** (wydanie, poziom poprawek na tle firmy, wsparcie) i pierścienie aktualizacji, **skrypty naprawcze na żądanie** z wynikami. **Porządki**: **duplikaty urządzeń** (ten sam numer seryjny) i **nieaktywne urządzenia Entra ID** (wyłączanie, usuwanie).
 
 ### Witryny (Microsoft Graph)
-Przeglądanie wszystkich witryn SharePoint w organizacji bez Client ID PnP: wyszukiwanie, szczegóły, **biblioteki i zajęte miejsce**, **przeglądarka plików** (nawigacja po folderach, pobieranie, kopiowanie linków), listy, podwitryny, otwarcie w przeglądarce i szybkie połączenie PnP.
+Przeglądanie wszystkich witryn SharePoint w organizacji bez Client ID PnP: wyszukiwanie, szczegóły, **biblioteki i zajęte miejsce**, **przeglądarka plików** (nawigacja po folderach, pobieranie, kopiowanie linków), listy, podwitryny, otwarcie w przeglądarce i szybkie połączenie PnP. **Udostępnienia i linki**: audyt linków anonimowych, organizacyjnych i udostępnień gościom w bibliotekach witryn (z usuwaniem). **Nieaktywne witryny i bez właściciela** (raport użycia).
 
 ### SharePoint (PnP)
-Drzewo bibliotek i folderów połączonej witryny; uprawnienia (nadawanie, odbieranie, dziedziczenie); pliki w folderze; nowy folder; **kosz witryny** (przywracanie); grupy SharePoint; **informacje o witrynie** (magazyn, administratorzy); **raport unikalnych uprawnień**; **aplikacja PnP**: utworzenie rejestracji aplikacji (Client ID) jednym kliknięciem - przez Microsoft Graph (z opcjonalną zgodą administratora i kluczem tajnym) albo przez PnP PowerShell - oraz nowy klucz tajny (client secret) dla istniejącej aplikacji. Okno połączenia ma przyciski «Wybierz witrynę» i «Utwórz Client ID».
+Drzewo bibliotek i folderów połączonej witryny; uprawnienia (nadawanie, odbieranie, dziedziczenie); pliki w folderze; nowy folder; **kosz witryny** (przywracanie); grupy SharePoint; **informacje o witrynie** (magazyn, administratorzy); **raport unikalnych uprawnień**; **stare wersje plików** (pliki z wieloma wersjami, miejsce zajęte przez wersje, usuwanie najstarszych, przycinanie w całej witrynie); **aplikacja PnP**: utworzenie rejestracji aplikacji (Client ID) jednym kliknięciem - przez Microsoft Graph (z opcjonalną zgodą administratora i kluczem tajnym) albo przez PnP PowerShell - oraz nowy klucz tajny (client secret) dla istniejącej aplikacji. Okno połączenia ma przyciski «Wybierz witrynę» i «Utwórz Client ID».
 
-### Active Directory
+### Zadania
+- **Zadania zaplanowane**: lista z terminami i wynikami, wykonanie teraz, zmiana terminu, anulowanie. Program wykonuje zaległe zadania co minutę, gdy jest uruchomiony i połączony z usługą.
+- **Uprawnienia tymczasowe**: członkostwo w grupie albo dostęp do skrzynki (pełny dostęp, wyślij jako) do wskazanej daty - odebranie trafia do zadań zaplanowanych.
+- **Zaplanowany offboarding** w wybranym terminie (np. ostatni dzień pracy o 17:00).
+- **Checklisty on/offboardingu** z postępem i terminem: kroki ręczne i automatyczne (blokada, sesje, hasło, grupy, licencje, skrzynka, GAL), edytowalne szablony, powiadomienie Teams po ukończeniu.
+- **Migawki i porównanie**: role administracyjne, dostęp warunkowy, członkowie grup, licencje, przekierowania skrzynek, sekrety aplikacji - co dodano, usunięto i zmieniono od migawki (albo między dwiema migawkami).
+- **Cofanie zmian**: blokada konta, usunięcie licencji lub z grupy, przełożony, uprawnienia do skrzynek, reguły transportu, archiwizacja zespołu, urządzenia Entra ID, izolacja - jednym kliknięciem.
+- **Historia obiektu**: wszystko, co program zrobił z kontem, skrzynką lub urządzeniem (dziennik z ostatnich dni, operacje sesji, rejestr zmian).
+- **Raporty zaplanowane bez okna**: aplikacja automatyzacji z certyfikatem (tworzona jednym kliknięciem), `HelpdeskToolsRunner.ps1` i zadanie Harmonogramu Windows - raporty e-mailem (Excel), wykonywanie zadań zaplanowanych i migawki ze zmianami:
+
+```powershell
+pwsh -File .\HelpdeskToolsRunner.ps1 -ListReports
+pwsh -File .\HelpdeskToolsRunner.ps1 -Report nieaktywni,sekrety-aplikacji,administratorzy -To helpdesk@firma.pl
+pwsh -File .\HelpdeskToolsRunner.ps1 -RunJobs -Snapshot AdminRoles,ConditionalAccess -To bezpieczenstwo@firma.pl
+```
+
+### Active Directory (funkcje lokalne - domyślnie ukryte)
+Włączenie: Ustawienia > Funkcje lokalne > «Pokazuj funkcje lokalne» i ponowne uruchomienie.
 - Użytkownicy: szczegóły, stan konta, atrybuty i profil (także hurtowo), reset hasła, **blokady: stan na każdym kontrolerze i źródło blokady (zdarzenie 4740 z PDC)**, grupy (kopiowanie z wzorca), nowy użytkownik, **odejście pracownika**, **synchronizacja Entra Connect (delta)**; raporty: nieaktywne, nigdy nie zalogowane, **wygasające / wygasłe hasła**, zablokowane, wyłączone, «hasło nie wygasa», wygasające konta.
 - Komputery: szczegóły, dostępność, **informacje systemowe (CIM: czas pracy, model, numer seryjny, dyski)**, **zalogowani użytkownicy**, pulpit zdalny, LAPS i BitLocker, zarządzanie; raporty: nieaktywne, systemy operacyjne, wyłączone.
 - Grupy: członkowie (dodawanie z listy loginów), szczegóły, nowa grupa, edycja, usunięcie, **puste grupy**.
@@ -125,11 +164,27 @@ Plik `%APPDATA%\HelpdeskTools\config.json` (brakujące klucze są uzupełniane a
   "AadSyncServer": "",
   "LoginTimeoutMinutes": 5,
   "AutoLockMinutes": 15,
-  "ConfirmBeforeClose": true
+  "ConfirmBeforeClose": true,
+  "ShowOnPremises": false,
+  "BackgroundQueries": true,
+  "NotifyLongOperationsSeconds": 20,
+  "TeamsWebhookProtected": "",
+  "TeamsNotify": [ "Offboarding", "Jobs", "Checklists" ],
+  "TenantProfiles": [ { "Name": "Klient ABC", "TenantId": "abc.onmicrosoft.com", "Organization": "abc.onmicrosoft.com", "PartnerAccount": "admin@partner.pl", "Gdap": true } ],
+  "UpdateRepository": "borubarczyk/HelpdeskToolsProject_Scaffold",
+  "UpdateBranch": "main",
+  "UpdateTokenProtected": "",
+  "CheckUpdatesOnStart": true,
+  "AutomationClientId": "",
+  "AutomationTenantId": "",
+  "AutomationCertificateThumbprint": "",
+  "AutomationOrganization": "",
+  "ReportSender": "",
+  "DefenderClientId": ""
 }
 ```
 
-Ustawienia można edytować w oknie **Ustawienia** (ikona koła zębatego). `InactiveDays` - domyślny próg raportów nieaktywności, `AadSyncServer` - serwer Microsoft Entra Connect, `LoginTimeoutMinutes` - po ilu minutach oczekiwanie na logowanie w przeglądarce jest anulowane, `AutoLockMinutes` - automatyczna blokada po bezczynności (0 = wyłączona). Klucze `PinHash`/`PinSalt`/`PinLength` zawierają skrót PIN-u (PBKDF2), nie sam PIN. Konta MFA są w osobnym pliku `Mfa.json` (klucze, skróty PIN-ów kont dodatkowych i ich uprawnienia zaszyfrowane DPAPI); zarządza się nimi w Ustawieniach > «MFA». Po aktualizacji programu do konfiguracji są automatycznie dopisywane nowe uprawnienia Graph. Pełną listę domyślnych kluczy zawiera plik [`config.example.json`](config.example.json). `LogPasswordGeneration` zapisuje hasła w logu w postaci jawnej - pozostaw tę opcję wyłączoną.
+Ustawienia można edytować w oknie **Ustawienia** (ikona koła zębatego). `InactiveDays` - domyślny próg raportów nieaktywności, `AadSyncServer` - serwer Microsoft Entra Connect, `LoginTimeoutMinutes` - po ilu minutach oczekiwanie na logowanie w przeglądarce jest anulowane, `AutoLockMinutes` - automatyczna blokada po bezczynności (0 = wyłączona). Klucze `PinHash`/`PinSalt`/`PinLength` zawierają skrót PIN-u (PBKDF2), nie sam PIN. Konta MFA są w osobnym pliku `Mfa.json` (klucze, skróty PIN-ów kont dodatkowych i ich uprawnienia zaszyfrowane DPAPI); zarządza się nimi w Ustawieniach > «MFA». Po aktualizacji programu do konfiguracji są automatycznie dopisywane nowe uprawnienia Graph. Pełną listę domyślnych kluczy zawiera plik [`config.example.json`](config.example.json). `LogPasswordGeneration` zapisuje hasła w logu w postaci jawnej - pozostaw tę opcję wyłączoną. `ShowOnPremises` - przestrzenie i przycisk Active Directory; `BackgroundQueries` - zapytania Microsoft 365 w tle; `TeamsWebhookProtected` i `UpdateTokenProtected` - adres webhooka i token GitHub zaszyfrowane DPAPI (ustawiane w oknie Ustawienia); `Automation*` i `ReportSender` - aplikacja automatyzacji i skrzynka nadawcy raportów zaplanowanych; `DefenderClientId` - aplikacja do izolacji urządzeń. Uprawnienia Graph potrzebne nowym funkcjom (np. Policy.Read.All, Application.Read.All, SecurityAlert.ReadWrite.All) program proponuje dodać przy pierwszym użyciu funkcji.
 
 ## Struktura projektu
 
@@ -139,38 +194,53 @@ Modules/
   Utils.psm1                   Dziennik, eksport, walidacja i formatowanie wartości
   Security.psm1                PIN programu (skrót PBKDF2)
   Mfa.psm1                     MFA: TOTP (RFC 6238), Base32, konta w Mfa.json (DPAPI), uprawnienia kont
+  UiState.psm1                 Zapamiętany układ: ulubione, ostatnie moduły, kolumny, widoki filtrów, okno
   ColumnFilters.psm1           Filtry kolumn tabeli wyników (logika autofiltru)
-  Reports.psm1                 Raporty HTML z tabel wyników
+  Reports.psm1                 Raporty HTML z tabel wyników, wizytówka użytkownika
+  Excel.psm1                   Eksport do Excela (.xlsx, OpenXML bez Excela)
+  Integrations.psm1            Teams (webhook), poczta przez Graph, aktualizacja z GitHub, podpisywanie skryptów, skrót
+  Automation.psm1              Dziennik operacji sesji, zadania zaplanowane, checklisty, migawki, cofanie zmian,
+                               raporty bez okna, aplikacja automatyzacji
   UIComponents.psm1            WPF: motyw Domain Ops, okna dialogowe, przestrzenie, listy obiektów, widok modułu,
                                filtry kolumn, ekran blokady (PIN, MFA), okna MFA i uprawnień
   Config.psm1                  Konfiguracja (domyślne wartości, scalanie, migracja, zapis)
   ModulesConnection.psm1       Instalacja i weryfikacja modułów, połączenia (logowanie w przeglądarce), wywołania Graph
   PasswordGenerator.psm1       Generator haseł i ocena siły hasła
   LocalActiveDirectory.psm1    Active Directory: konta, grupy, komputery, blokady, raporty, CIM
-  GraphAPIM365Users.psm1       Użytkownicy, licencje, grupy, MFA, logowania, raporty, kondycja usług
+  GraphAPIM365Users.psm1       Użytkownicy, licencje, grupy, MFA, logowania, raporty, kondycja usług, masowe konta (CSV)
+  GraphAPISecurity.psm1        Dostęp warunkowy, ryzyko, inspekcja, zgody, PIM, sekrety aplikacji, diagnoza logowania,
+                               porównanie kont, Defender (alerty, incydenty, izolacja)
+  GraphAPITeams.psm1           Zespoły Teams: właściciele, goście, archiwizacja, aktywność
   MailboxesExchangeOnline.psm1 Exchange Online: skrzynki, uprawnienia, kwarantanna, zgodność, raporty
   GraphAPIIntune.psm1          Intune: urządzenia, akcje zdalne, zasady, BitLocker, LAPS
   GraphAPISharePoint.psm1      SharePoint: PnP (uprawnienia, kosz, pliki, raport), witryny przez Graph, rejestracja aplikacji PnP
+  SharePointAudit.psm1         Udostępnienia i linki, OneDrive odchodzącego, wersje plików, nieaktywne witryny
   Dashboard.psm1               Statystyki Pulpitu
   Startup.psm1                 Inicjalizacja po zbudowaniu okna
 GUI/
-  MainWindow.ps1               Okno główne (nagłówek, połączenia, dziennik, skróty)
+  MainWindow.ps1               Okno główne (nagłówek, połączenia, profile tenantów, dziennik, skróty)
   Dialogs.ps1                  Generator haseł, ustawienia
+  Tools.ps1                    Aktualizacja, podpisywanie, skrót, profile tenantów, polecenia palety
   Common.ps1                   Wspólne pomocniki przestrzeni roboczych
   Workspaces/*.ps1             Przestrzenie robocze i ich moduły
+HelpdeskToolsRunner.ps1        Raporty, zadania i migawki bez okna (Harmonogram Windows)
+Plugins/                       Wtyczki (*.ps1) - przykład i opis
 Resources/Icons/               Ikony
-Tests/                         Testy Pester
+Tests/                         Testy Pester i test interfejsu (UiSmoke.ps1)
+.github/workflows/tests.yml    CI: Pester, PSScriptAnalyzer i test interfejsu na Windows
 ```
 
 Moduły w `Modules/` zawierają logikę (parametry wejściowe, zwracane dane), a pliki `GUI/Workspaces` opisują moduły interfejsu (parametry, przyciski, akcje na wynikach).
 
 ## Testy
 
-Testy jednostkowe (Pester 5) obejmują logikę niezależną od interfejsu WPF (m.in. TOTP z wektorami RFC 6238, konta i uprawnienia MFA, filtry kolumn, raport HTML, odczyt dziennika), z atrapami poleceń AD, Exchange i Graph:
+Testy jednostkowe (Pester 5) obejmują logikę niezależną od interfejsu WPF (m.in. TOTP z wektorami RFC 6238, konta i uprawnienia MFA, filtry kolumn, raport HTML, eksport do Excela, odczyt dziennika, zadania zaplanowane, checklisty, porównanie migawek, cofanie zmian, ocenę zasad dostępu warunkowego, diagnozę logowania, audyt udostępnień, wersje Windows, masowe konta z CSV), z atrapami poleceń AD, Exchange i Graph. Test interfejsu (`Tests/UiSmoke.ps1`) buduje okno główne, wszystkie przestrzenie i moduły oraz paletę poleceń bez połączeń z usługami. GitHub Actions uruchamia oba na Windows przy każdym wypchnięciu, razem z PSScriptAnalyzer (`PSScriptAnalyzerSettings.psd1`):
 
 ```powershell
-Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser
+Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
 Invoke-Pester -Path .\Tests
+pwsh -STA -File .\Tests\UiSmoke.ps1
+Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 ```
 
 ## Rozwiązywanie problemów
@@ -180,11 +250,14 @@ Invoke-Pester -Path .\Tests
 3. **Błąd `Could not load file or assembly Microsoft.Identity.Client`** - konflikt wersji bibliotek między modułami Graph i Exchange w jednej sesji. Program proponuje ponowne uruchomienie i połączenie najpierw z usługą, której moduł wymaga nowszej wersji.
 4. **Brak uprawnień (403) w Graph** - sprawdź role konta i zgodę administratora na uprawnienia z `GraphScopes`.
 5. **SharePoint: błąd logowania PnP** - od 2024 r. PnP.PowerShell wymaga własnej rejestracji aplikacji w Entra ID. Utworzysz ją przyciskiem «Utwórz Client ID» w oknie połączenia (lub SharePoint > «Aplikacja PnP»). Do samego przeglądania witryn wystarczy przestrzeń «Witryny» (Microsoft Graph).
-6. **Funkcje AD zgłaszają brak modułu** - brak modułu ActiveDirectory (RSAT) na tym komputerze; po instalacji kliknij «Active Directory» w nagłówku.
+6. **Funkcje AD zgłaszają brak modułu** - brak modułu ActiveDirectory (RSAT) na tym komputerze; po instalacji kliknij «Active Directory» w nagłówku. Przestrzenie AD są domyślnie ukryte - Ustawienia > Funkcje lokalne.
 7. **Logowanie Exchange otwiera osobne okno zamiast karty przeglądarki** - zaktualizuj moduł: `Update-Module ExchangeOnlineManagement` (wymagana wersja 3.7.2+). Gdy karta została zamknięta - kliknij «Anuluj logowanie» w okienku logowania (lub poczekaj na limit czasu) i połącz ponownie.
 8. **Brak danych w raportach logowań lub MFA** - wymagana licencja Microsoft Entra ID P1 i uprawnienie AuditLog.Read.All; kondycja usług wymaga ServiceHealth.Read.All (połącz ponownie, aby zatwierdzić nowe uprawnienia).
 9. **Źródło blokady AD jest puste** - konto musi mieć prawo odczytu dziennika Security na kontrolerze PDC, a zasady audytu muszą rejestrować zdarzenie 4740.
 10. **Kod z aplikacji MFA nie pasuje** - sprawdź, czy zegar telefonu i komputera wskazuje ten sam czas (tolerancja ±30 s). Komunikat «kod został już użyty» - poczekaj na następny kod (do 30 s). «Nie można odczytać danych MFA» - plik `Mfa.json` pochodzi z innego komputera lub konta Windows: usuń go i włącz MFA ponownie.
+11. **Zapytania w tle zgłaszają brak połączenia** - program automatycznie wraca do wykonywania zapytań w wątku okna (wpis w dzienniku). Można to ustawić na stałe: Ustawienia > «Zapytania Microsoft 365 w tle».
+12. **Izolacja urządzeń: błąd logowania Defender** - aplikacja z `DefenderClientId` musi mieć uprawnienia delegowane WindowsDefenderATP (Machine.Read, Machine.Isolate) ze zgodą administratora i platformę «Aplikacje mobilne i klasyczne» z adresem `http://localhost`.
+13. **Raporty zaplanowane nie wychodzą** - sprawdź Zadania > Raporty zaplanowane > «Stan konfiguracji» (certyfikat w CurrentUser\My, skrzynka nadawcy) i dziennik `%LOCALAPPDATA%\HelpdeskTools\Logs`. Zadanie Harmonogramu działa, gdy użytkownik jest zalogowany (certyfikat i ustawienia są w jego profilu).
 
 ## Licencja
 

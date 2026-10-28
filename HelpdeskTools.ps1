@@ -5,8 +5,12 @@
     Aplikacja WPF do zarządzania Active Directory, Microsoft 365 (Graph), Exchange Online, Intune i SharePoint.
     Wygląd i układ są wspólne z Domain Ops (AD-ManagerDiamond) i ServerReview.
     Uruchom w PowerShell 7 (pwsh) jako administrator: pwsh -File .\HelpdeskTools.ps1
+    Wtyczki: pliki *.ps1 w folderze Plugins programu albo %APPDATA%\HelpdeskTools\Plugins (zob. Plugins\README.md).
+    Raporty zaplanowane bez okna: HelpdeskToolsRunner.ps1.
 .PARAMETER Connect
     Usługa, z którą program połączy się zaraz po uruchomieniu (używane przy ponownym uruchomieniu po konflikcie bibliotek).
+.PARAMETER HideConsole
+    Ukrywa okno konsoli po uruchomieniu (skrót na pulpicie z Ustawienia > Narzędzia > Skrót na pulpicie).
 .NOTES
     Pliki programu: konfiguracja %APPDATA%\HelpdeskTools\config.json, dziennik %LOCALAPPDATA%\HelpdeskTools\Logs,
     eksport Dokumenty\HelpdeskTools\Eksport (zmiana w Ustawieniach).
@@ -17,7 +21,8 @@
 
 param (
     [ValidateSet("", "Exchange", "Graph", "SharePoint")]
-    [string]$Connect = ""
+    [string]$Connect = "",
+    [switch]$HideConsole
 )
 
 $ErrorActionPreference = "Continue"
@@ -30,14 +35,29 @@ if (-not $IsWindows) {
 # WPF wymaga wątku STA - w razie potrzeby uruchom ponownie w trybie STA
 if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
     Write-Warning "Ponowne uruchamianie w trybie STA..."
-    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @("-STA", "-NoProfile", "-File", "`"$PSCommandPath`"")
+    $relaunch = @("-STA", "-NoProfile", "-File", "`"$PSCommandPath`"")
+    if ($HideConsole) { $relaunch += "-HideConsole" }
+    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList $relaunch
     return
+}
+
+# Skrót na pulpicie: okno konsoli ukryte zaraz po starcie (komunikaty trafiają do dziennika w oknie programu)
+if ($HideConsole) {
+    try {
+        Add-Type -Namespace HelpdeskTools -Name ConsoleWindow -ErrorAction Stop -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+'@
+        $consoleHandle = [HelpdeskTools.ConsoleWindow]::GetConsoleWindow()
+        if ($consoleHandle -ne [IntPtr]::Zero) { [void][HelpdeskTools.ConsoleWindow]::ShowWindow($consoleHandle, 0) }
+    }
+    catch { Write-Warning "Nie ukryto okna konsoli: $_" }
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.1.0"
+$Global:AppVersion = "3.2.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -58,23 +78,37 @@ $Global:LastUsedClientID = $null
 $Global:IsModuleActiveDirectoryLoaded = $false
 $Global:DefaultSharepointSite = $null
 $Global:ShowNotifications = $true
+$Global:ShowOnPremises = $false
+
+# Funkcje lokalne (Active Directory) są ukryte, dopóki nie zostaną włączone w Ustawieniach - odczyt przed zbudowaniem interfejsu
+if (Test-Path -LiteralPath $Global:ConfigPath) {
+    try { $Global:ShowOnPremises = [bool]((Get-Content -Raw -LiteralPath $Global:ConfigPath -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop).ShowOnPremises) }
+    catch { Write-Verbose "Wstępny odczyt konfiguracji: $_" }
+}
 
 # Import modułów (kolejność: najpierw moduły bazowe)
 $moduleNames = @(
     "Utils",
     "Security",
     "Mfa",
+    "UiState",
     "ColumnFilters",
     "Reports",
+    "Excel",
+    "Integrations",
+    "Automation",
     "UIComponents",
     "Config",
     "ModulesConnection",
     "PasswordGenerator",
     "LocalActiveDirectory",
     "GraphAPIM365Users",
+    "GraphAPISecurity",
+    "GraphAPITeams",
     "MailboxesExchangeOnline",
     "GraphAPIIntune",
     "GraphAPISharePoint",
+    "SharePointAudit",
     "Dashboard",
     "Startup"
 )
@@ -99,16 +133,33 @@ $guiFiles = @(
     "GUI/Common.ps1",
     "GUI/Dialogs.ps1",
     "GUI/MainWindow.ps1",
+    "GUI/Tools.ps1",
     "GUI/Workspaces/Dashboard.ps1",
     "GUI/Workspaces/M365Users.ps1",
+    "GUI/Workspaces/Security.ps1",
     "GUI/Workspaces/Exchange.ps1",
     "GUI/Workspaces/Intune.ps1",
     "GUI/Workspaces/Sites.ps1",
     "GUI/Workspaces/SharePoint.ps1",
-    "GUI/Workspaces/ActiveDirectory.ps1"
+    "GUI/Workspaces/Tasks.ps1"
 )
+# Przestrzenie Active Directory - tylko po włączeniu funkcji lokalnych w Ustawieniach
+if ($Global:ShowOnPremises) { $guiFiles += "GUI/Workspaces/ActiveDirectory.ps1" }
 foreach ($file in $guiFiles) {
     . (Join-Path $PSScriptRoot $file)
+}
+
+# Wtyczki: własne przestrzenie, moduły i polecenia palety (Register-HTWorkspace, Register-HTModule, Register-HTPaletteAction).
+# Wtyczka działa z uprawnieniami programu - umieszczaj tylko własne, sprawdzone pliki.
+foreach ($pluginDir in @((Join-Path $PSScriptRoot "Plugins"), (Join-Path $Global:ConfigDir "Plugins"))) {
+    if (-not (Test-Path -LiteralPath $pluginDir)) { continue }
+    foreach ($plugin in @(Get-ChildItem -LiteralPath $pluginDir -Filter "*.ps1" -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        try {
+            . $plugin.FullName
+            Write-Log -Message "Wczytano wtyczkę: $($plugin.FullName)" -Type "Info"
+        }
+        catch { Write-Log -Message "Błąd wtyczki $($plugin.Name): $($_.Exception.Message)" -Type "Error" }
+    }
 }
 
 try {
@@ -149,6 +200,8 @@ try {
                 Update-HTHeaderLayout
                 Initialize-HelpdeskTools
                 Start-HTAutoLock
+                Start-HTJobScheduler
+                Start-HTUpdateCheck
                 if ($Connect) { Invoke-HTUiAction -Module $null -Action { Invoke-HTConnectionClick -Service $Connect } }
             }
             catch {
@@ -163,6 +216,7 @@ catch {
 }
 finally {
     Stop-HTAutoLock
+    try { Stop-HTJobScheduler; Close-HTBackground } catch { Write-Verbose $_ }
     # Sprzątanie zmiennych globalnych aplikacji (pozostałe zmienne sesji pozostają bez zmian)
     $appVariables = @(
         "HT_UI", "HTConfig", "AppVersion", "ConfigDir", "ConfigPath", "IconsPath", "AppIconPath",
@@ -170,7 +224,8 @@ finally {
         "ConnectedToExchange", "ConnectedToGraphAPI", "ConnectedToSharepoint", "ConnectedToSharepointPnP",
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
-        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting", "HTActiveAccount"
+        "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting", "HTActiveAccount",
+        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

@@ -8,8 +8,10 @@ $script:DashboardTiles = @(
     @{ Key = 'Intune'; Label = 'Urządzenia Intune'; Icon = 'E7F8' }
     @{ Key = 'Mailboxes'; Label = 'Skrzynki'; Icon = 'E715' }
     @{ Key = 'SharePoint'; Label = 'SharePoint'; Icon = 'E8F1' }
-    @{ Key = 'AD'; Label = 'Zablokowane konta AD'; Icon = 'E72E' }
+    @{ Key = 'AD'; Label = 'Zablokowane konta AD'; Icon = 'E72E'; OnPremises = $true }
 )
+# Kafelek Active Directory tylko przy włączonych funkcjach lokalnych (Ustawienia > Funkcje lokalne)
+$script:DashboardTiles = @($script:DashboardTiles | Where-Object { -not $_.OnPremises -or $Global:ShowOnPremises })
 
 function Update-HTDashboard {
     param([Parameter(Mandatory)][hashtable]$Module)

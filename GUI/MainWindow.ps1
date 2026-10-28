@@ -51,6 +51,9 @@ $script:MainXaml = @'
         <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
           <StackPanel x:Name="connHost" Orientation="Horizontal"/>
           <Border Width="1" Height="26" Background="#242B36" Margin="8,0,6,0"/>
+          <Button x:Name="btnSearch" Style="{StaticResource GhostButton}" ToolTip="Szukaj modułów i poleceń (Ctrl+K)" Margin="0,0,4,0" Padding="10,7">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE721;" FontSize="15"/>
+          </Button>
           <Button x:Name="btnLock" Style="{StaticResource GhostButton}" ToolTip="Zablokuj program - odblokowanie PIN-em (Ctrl+Shift+L)" Padding="10,7">
             <TextBlock Style="{StaticResource Glyph}" Text="&#xE72E;" FontSize="15"/>
           </Button>
@@ -98,6 +101,7 @@ $script:MainXaml = @'
             <TextBlock x:Name="logCount" Foreground="#5E6779" FontSize="11.5" VerticalAlignment="Center" Margin="10,0,0,0"/>
           </StackPanel>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="btnLogSummary" Style="{StaticResource GhostButton}" ToolTip="Podsumowanie do zgłoszenia - operacje wykonane w tej sesji" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogCopy" Style="{StaticResource GhostButton}" ToolTip="Kopiuj dziennik (zaznaczone wpisy lub wszystkie widoczne)" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogHistory" Style="{StaticResource GhostButton}" ToolTip="Dziennik z poprzednich dni (Pulpit > Dziennik programu)" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogFile" Style="{StaticResource GhostButton}" ToolTip="Otwórz dzisiejszy plik dziennika" MinHeight="26" Padding="8,2"/>
@@ -155,11 +159,19 @@ $script:MainXaml = @'
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="Auto"/>
           <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <Ellipse x:Name="statusDot" Width="8" Height="8" Fill="#5EE3AE" VerticalAlignment="Center"/>
         <TextBlock x:Name="txtStatus" Grid.Column="1" Text="Gotowe" Margin="10,0,0,0" Foreground="#AEB6C4" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         <ProgressBar x:Name="prgStatus" Grid.Column="2" Width="200" Margin="12,0" VerticalAlignment="Center" Visibility="Collapsed"/>
-        <Button x:Name="btnLogToggle" Grid.Column="3" Style="{StaticResource GhostButton}" MinHeight="26" Padding="8,2" Margin="8,0,0,0" ToolTip="Dziennik operacji (Ctrl+L)">
+        <Button x:Name="btnCancelOps" Grid.Column="3" Style="{StaticResource DangerButton}" MinHeight="26" Padding="10,2" Visibility="Collapsed"
+                ToolTip="Przerwij bieżące zapytanie (wyniki pobrane do tej pory pozostaną w tabeli)">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE71A;" FontSize="11" Margin="0,0,7,0"/>
+            <TextBlock Text="Przerwij" FontSize="12" VerticalAlignment="Center"/>
+          </StackPanel>
+        </Button>
+        <Button x:Name="btnLogToggle" Grid.Column="4" Style="{StaticResource GhostButton}" MinHeight="26" Padding="8,2" Margin="8,0,0,0" ToolTip="Dziennik operacji (Ctrl+L)">
           <StackPanel Orientation="Horizontal">
             <TextBlock Style="{StaticResource Glyph}" Text="&#xE81C;" FontSize="12" Margin="0,0,7,0"/>
             <TextBlock Text="Dziennik" FontSize="12" VerticalAlignment="Center"/>
@@ -174,12 +186,12 @@ $script:MainXaml = @'
 </Window>
 '@
 
-# Przyciski połączeń w nagłówku: klucz usługi, etykieta, ikona
+# Przyciski połączeń w nagłówku: klucz usługi, etykieta, ikona (OnPremises - tylko przy włączonych funkcjach lokalnych)
 $script:ConnectionDefs = @(
     @{ Service = 'Exchange'; Text = 'Exchange'; Icon = 'E715' }
     @{ Service = 'Graph'; Text = 'Microsoft 365'; Icon = 'E753' }
     @{ Service = 'SharePoint'; Text = 'SharePoint'; Icon = 'E8F1' }
-    @{ Service = 'AD'; Text = 'Active Directory'; Icon = 'E968' }
+    @{ Service = 'AD'; Text = 'Active Directory'; Icon = 'E968'; OnPremises = $true }
 )
 
 function New-HTConnectionButton {
@@ -263,6 +275,14 @@ $script:ShellEvents = @{
                 $e.Handled = $true
                 Show-HTPasswordGenerator
             }
+            elseif ($key -eq [System.Windows.Input.Key]::K -and $mods -eq $ctrl) {
+                $e.Handled = $true
+                Show-HTCommandPalette
+            }
+            elseif ($key -eq [System.Windows.Input.Key]::Escape -and $mods -eq $none -and $HT_UI.BusyDepth -gt 0) {
+                # Esc w czasie zapytania w tle - przerwanie (jak przycisk «Przerwij»)
+                Stop-HTBackground
+            }
             elseif ($mods -eq $ctrl -and [int]$key -ge [int][System.Windows.Input.Key]::D1 -and [int]$key -le [int][System.Windows.Input.Key]::D9) {
                 $index = [int]$key - [int][System.Windows.Input.Key]::D1
                 $keys = @($HT_UI.Workspaces.Keys)
@@ -295,6 +315,8 @@ $script:ShellEvents = @{
                 }
             }
             Write-Log -Message 'Zamykanie aplikacji...' -Type 'Info'
+            Save-HTWindowPlacement -Window $s
+            Remove-HTWindowsNotification
             if (@($connected).Count -gt 0) {
                 Set-HTStatus -Text 'Rozłączanie usług...'
                 Update-HTUi
@@ -323,10 +345,10 @@ function New-HTMainWindow {
     $w = New-HTUiElement $script:MainXaml
     $HT_UI.Window = $w
     $c = $HT_UI.Controls
-    foreach ($n in 'txtVersion', 'txtUser', 'wsSwitcher', 'txtSubtitle', 'connHost', 'btnLock', 'btnPassword', 'btnSettings',
+    foreach ($n in 'txtVersion', 'txtUser', 'wsSwitcher', 'txtSubtitle', 'connHost', 'btnLock', 'btnPassword', 'btnSettings', 'btnSearch',
         'targetColumn', 'targetHost', 'navHost', 'contentHost', 'toastHost', 'logRow', 'logSplitter', 'logPanel', 'logList',
         'btnLogCopy', 'btnLogFile', 'btnLogClear', 'btnLogHide', 'statusDot', 'txtStatus', 'prgStatus', 'btnLogToggle',
-        'logBadge', 'logBadgeText', 'logLevel', 'logSearch', 'logCount', 'btnLogHistory') {
+        'logBadge', 'logBadgeText', 'logLevel', 'logSearch', 'logCount', 'btnLogHistory', 'btnLogSummary', 'btnCancelOps') {
         $c[$n] = $w.FindName($n)
     }
     $w.Title = "Helpdesk Tools $($Global:AppVersion)"
@@ -335,12 +357,16 @@ function New-HTMainWindow {
     if ($Global:AppIconPath -and (Test-Path $Global:AppIconPath)) {
         try { $w.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create((New-Object System.Uri $Global:AppIconPath)) } catch { Write-Verbose $_ }
     }
-    foreach ($def in $script:ConnectionDefs) { [void]$c.connHost.Children.Add((New-HTConnectionButton -Definition $def)) }
+    foreach ($def in $script:ConnectionDefs) {
+        if ($def.OnPremises -and -not $Global:ShowOnPremises) { continue }
+        [void]$c.connHost.Children.Add((New-HTConnectionButton -Definition $def))
+    }
     $c.btnLogCopy.Content = New-HTIconContent -Text '' -Icon 'E8C8' -IconSize 12
     $c.btnLogFile.Content = New-HTIconContent -Text '' -Icon 'E8E5' -IconSize 12
     $c.btnLogClear.Content = New-HTIconContent -Text '' -Icon 'E894' -IconSize 12
     $c.btnLogHide.Content = New-HTIconContent -Text '' -Icon 'E70D' -IconSize 12
     $c.btnLogHistory.Content = New-HTIconContent -Text '' -Icon 'E81C' -IconSize 12
+    $c.btnLogSummary.Content = New-HTIconContent -Text 'Do zgłoszenia' -Icon 'E8A5' -IconSize 12
     $c.logList.ItemsSource = $HT_UI.LogItems
     foreach ($level in $script:LogLevelFilters) { [void]$c.logLevel.Items.Add($level.Text) }
     $c.logLevel.SelectedIndex = 0
@@ -357,6 +383,9 @@ function New-HTMainWindow {
         if ($work.Width -lt 1500) { $w.WindowState = 'Maximized' }
     }
 
+    $c.btnSearch.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTCommandPalette } })
+    $c.btnCancelOps.add_Click({ Stop-HTBackground })
+    $c.btnLogSummary.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTOperationSummaryDialog } })
     $c.btnLock.add_Click({ Invoke-HTUiAction -Module $null -Action { Lock-HTApplication } })
     $c.btnPassword.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTPasswordGenerator } })
     $c.btnSettings.add_Click({ Invoke-HTUiAction -Module $null -Action { if (Show-HTSettingsDialog) { Show-HTToast 'Zapisano ustawienia.' 'ok' } } })
@@ -383,9 +412,47 @@ function New-HTMainWindow {
     Register-HTIdleActivity -Window $w
     $w.add_Closing($script:ShellEvents.Closing)
     $w.add_SourceInitialized({ param($s, $e) Set-HTDarkTitleBar $s })
+    Restore-HTWindowPlacement -Window $w
     $w.add_SizeChanged({ param($s, $e) try { Update-HTHeaderLayout } catch { Write-Verbose $_ } })
     $HT_UI.HeaderChanged = { Update-HTHeaderLayout }
     return $w
+}
+
+function Restore-HTWindowPlacement {
+    # Położenie i rozmiar okna z poprzedniego uruchomienia (o ile mieszczą się na którymś z ekranów)
+    param([Parameter(Mandatory)]$Window)
+    try {
+        $p = (Get-HTUiState).Window
+        if (-not $p -or -not $p.Width -or -not $p.Height) { return }
+        $left = [double]$p.Left; $top = [double]$p.Top; $width = [double]$p.Width; $height = [double]$p.Height
+        $vLeft = [System.Windows.SystemParameters]::VirtualScreenLeft
+        $vTop = [System.Windows.SystemParameters]::VirtualScreenTop
+        $vRight = $vLeft + [System.Windows.SystemParameters]::VirtualScreenWidth
+        $vBottom = $vTop + [System.Windows.SystemParameters]::VirtualScreenHeight
+        if ($width -lt $Window.MinWidth -or $height -lt $Window.MinHeight) { return }
+        # Co najmniej pasek tytułu musi być widoczny na pulpicie
+        if ($left + 200 -gt $vRight -or $left + $width -lt $vLeft + 200 -or $top -lt $vTop - 10 -or $top + 60 -gt $vBottom) { return }
+        $Window.WindowStartupLocation = 'Manual'
+        $Window.Left = $left
+        $Window.Top = $top
+        $Window.Width = $width
+        $Window.Height = $height
+        $Window.WindowState = if ($p.State -eq 'Maximized') { 'Maximized' } else { 'Normal' }
+    }
+    catch { Write-Verbose "Położenie okna: $_" }
+}
+
+function Save-HTWindowPlacement {
+    param([Parameter(Mandatory)]$Window)
+    try {
+        $bounds = $Window.RestoreBounds
+        if ($bounds.IsEmpty -or $bounds.Width -le 0) { return }
+        $state = Get-HTUiState
+        $state.Window = @{ Left = [Math]::Round($bounds.Left); Top = [Math]::Round($bounds.Top); Width = [Math]::Round($bounds.Width); Height = [Math]::Round($bounds.Height); State = "$($Window.WindowState)" }
+        if ($HT_UI.LogVisible -and $HT_UI.Controls.logRow.ActualHeight -gt 60) { $state.LogHeight = [Math]::Round($HT_UI.Controls.logRow.ActualHeight) }
+        Save-HTUiState
+    }
+    catch { Write-Verbose "Zapis położenia okna: $_" }
 }
 
 function Set-HTHeaderMode {
@@ -412,8 +479,8 @@ function Measure-HTHeaderWidth {
     $c = $HT_UI.Controls
     $c.wsSwitcher.Measure($inf)
     $c.connHost.Measure($inf)
-    # Logo i nazwa programu, odstępy, kłódka, generator haseł i ustawienia
-    return $c.wsSwitcher.DesiredSize.Width + $c.connHost.DesiredSize.Width + 400
+    # Logo i nazwa programu, odstępy, wyszukiwanie, kłódka, generator haseł i ustawienia
+    return $c.wsSwitcher.DesiredSize.Width + $c.connHost.DesiredSize.Width + 444
 }
 
 function Update-HTHeaderLayout {
@@ -434,6 +501,90 @@ function Update-HTHeaderLayout {
     $HT_UI.Controls.txtSubtitle.Visibility = if ($width -ge $widths.Full + 320) { 'Visible' } else { 'Collapsed' }
 }
 
+#region Profile tenantów (szybkie połączenie z zapamiętanym tenantem, przełączanie klientów GDAP)
+function Get-HTTenantProfiles {
+    # Ustawienia > «Tenanty»: Name, TenantId (Graph), Organization (domena Exchange), PartnerAccount (GDAP), Gdap
+    return @($Global:HTConfig.TenantProfiles | Where-Object { $_ -and $_.Name -and ($_.TenantId -or $_.Organization) })
+}
+
+function Get-HTTenantProfileChoices {
+    param([string]$Service)
+    $i = 0
+    return @(foreach ($tp in Get-HTTenantProfiles) {
+            $target = if ($Service -eq 'Exchange') { if ($tp.Organization) { $tp.Organization } else { $tp.TenantId } } else { if ($tp.TenantId) { $tp.TenantId } else { $tp.Organization } }
+            @{ Key = "profile:$i"; Text = "Profil: $($tp.Name)"; Icon = $(if ($tp.Gdap) { 'E716' } else { 'E77B' }); Description = "$target$(if ($tp.Gdap) { ' • GDAP' })" }
+            $i++
+        })
+}
+
+function Connect-HTTenantProfile {
+    # Połączenie z tenantem z profilu; -Services: usługi do połączenia (bieżące połączenia z innym tenantem są kończone)
+    param([Parameter(Mandatory)]$TenantProfile, [string[]]$Services = @('Graph', 'Exchange'))
+    $results = @{}
+    if ('Graph' -in $Services) {
+        if ($Global:ConnectedToGraphAPI) {
+            Set-Connections -Action 'Disconnect' -Service 'Graph'
+            Clear-HTM365Cache
+            Clear-HTPanelItems -Service 'Graph'
+        }
+        $tenant = if ($TenantProfile.TenantId) { [string]$TenantProfile.TenantId } else { [string]$TenantProfile.Organization }
+        $results.Graph = Connect-Module -Name $(if ($TenantProfile.Gdap) { 'Microsoft.GraphGDAP' } else { 'Microsoft.Graph' }) -TenantId $tenant
+        if ($results.Graph) { Clear-HTM365Cache; Invoke-HTPanelAutoLoad -Service 'Graph' }
+    }
+    if ('Exchange' -in $Services -and ($TenantProfile.Organization -or -not $TenantProfile.Gdap)) {
+        if ($Global:ConnectedToExchange) {
+            Set-Connections -Action 'Disconnect' -Service 'Exchange'
+            Clear-HTPanelItems -Service 'Exchange'
+        }
+        $results.Exchange = if ($TenantProfile.Gdap) {
+            Connect-Module -Name 'ExchangeOnlineManagementGDAP' -Organization ([string]$TenantProfile.Organization) -PartnerAccount ([string]$TenantProfile.PartnerAccount)
+        }
+        else { Connect-Module -Name 'ExchangeOnlineManagement' }
+        if ($results.Exchange) { Invoke-HTPanelAutoLoad -Service 'Exchange' }
+    }
+    if ($results.Values -contains $true) {
+        Write-Log -Message "Profil tenantu «$($TenantProfile.Name)»: $(@($results.Keys | ForEach-Object { "$_ $(if ($results[$_]) { 'połączono' } else { 'bez połączenia' })" }) -join ', ')" -Type 'Info'
+    }
+    return ($results.Values -contains $true)
+}
+
+function Save-HTTenantProfile {
+    # Zapis profilu w konfiguracji (ta sama nazwa - zastąpienie)
+    param([Parameter(Mandatory)][hashtable]$TenantProfile)
+    $list = @(Get-HTTenantProfiles | Where-Object { $_.Name -ne $TenantProfile.Name })
+    Set-HTConfigValue -Name 'TenantProfiles' -Value @($list + [PSCustomObject]$TenantProfile)
+}
+
+function Request-HTSaveTenantProfile {
+    # Po połączeniu z tenantem klienta (GDAP) - propozycja zapisania profilu do szybkiego łączenia
+    param([string]$TenantId = '', [string]$Organization = '', [string]$PartnerAccount = '', [string]$DefaultName = '')
+    $known = @(Get-HTTenantProfiles | Where-Object { ($TenantId -and $_.TenantId -eq $TenantId) -or ($Organization -and $_.Organization -eq $Organization) })
+    if ($known.Count) { return }
+    $form = Show-HTFormDialog -Title 'Zapisać profil tenantu?' -Description 'Profil pozwala połączyć się z tym tenantem jednym kliknięciem (Microsoft 365 i Exchange) i przełączać klientów GDAP (Ctrl+K > Przełącz tenant).' -Icon 'E716' -OkText 'Zapisz profil' -Fields @(
+        @{ Name = 'Name'; Label = 'Nazwa profilu'; Required = $true; Default = $DefaultName }
+        @{ Name = 'TenantId'; Label = 'ID lub domena tenantu (Microsoft 365)'; Default = $TenantId }
+        @{ Name = 'Organization'; Label = 'Domena organizacji (Exchange Online)'; Default = $Organization; Placeholder = 'klient.onmicrosoft.com' }
+        @{ Name = 'PartnerAccount'; Label = 'Konto partnera (Exchange GDAP)'; Default = $PartnerAccount }
+    )
+    if (-not $form) { return }
+    Save-HTTenantProfile -TenantProfile @{ Name = $form.Name; TenantId = $form.TenantId; Organization = $form.Organization; PartnerAccount = $form.PartnerAccount; Gdap = $true }
+    Show-HTToast "Zapisano profil «$($form.Name)»." 'ok'
+}
+
+function Show-HTTenantSwitch {
+    # Przełączenie Microsoft 365 i Exchange na inny zapamiętany tenant
+    $choices = @(Get-HTTenantProfileChoices -Service 'Graph')
+    if (-not $choices.Count) {
+        Show-HTMessage -Title 'Profile tenantów' -Text "Brak zapisanych profili tenantów.`n`nProfil zapisuje się po połączeniu z tenantem klienta (GDAP) albo w Ustawieniach > Tenanty."
+        return
+    }
+    $choice = Show-HTChoiceDialog -Title 'Przełącz tenant' -Prompt 'Bieżące połączenia z Microsoft 365 i Exchange zostaną zakończone.' -Icon 'E8AB' -Choices $choices
+    if ("$choice" -notmatch '^profile:(\d+)$') { return }
+    $tp = @(Get-HTTenantProfiles)[[int]$Matches[1]]
+    [void](Connect-HTTenantProfile -TenantProfile $tp)
+}
+#endregion
+
 function Invoke-HTConnectionClick {
     param([Parameter(Mandatory)][string]$Service)
     switch ($Service) {
@@ -442,7 +593,9 @@ function Invoke-HTConnectionClick {
                 $choice = Show-HTChoiceDialog -Title 'Połączenie z Exchange Online' -Prompt 'Wybierz sposób logowania. Okno logowania pojawi się na wierzchu.' -Icon 'E715' -Choices @(
                     @{ Key = 'Standard'; Text = 'Konto organizacji'; Icon = 'E77B'; Description = 'Logowanie interaktywne do własnego tenantu' }
                     @{ Key = 'GDAP'; Text = 'Konto partnera (GDAP)'; Icon = 'E716'; Description = 'Zarządzanie tenantem klienta w ramach GDAP' }
+                    @(Get-HTTenantProfileChoices -Service 'Exchange')
                 )
+                if ("$choice" -match '^profile:(\d+)$') { [void](Connect-HTTenantProfile -TenantProfile @(Get-HTTenantProfiles)[[int]$Matches[1]] -Services @('Exchange')); return }
                 $ok = if ($choice -eq 'GDAP') { Connect-Module -Name 'ExchangeOnlineManagementGDAP' } elseif ($choice -eq 'Standard') { Connect-Module -Name 'ExchangeOnlineManagement' } else { $false }
                 if ($ok) { Invoke-HTPanelAutoLoad -Service 'Exchange' }
             }
@@ -456,17 +609,30 @@ function Invoke-HTConnectionClick {
                 $choice = Show-HTChoiceDialog -Title 'Połączenie z Microsoft 365 (Graph)' -Prompt 'Wybierz sposób logowania. Okno logowania pojawi się na wierzchu.' -Icon 'E753' -Choices @(
                     @{ Key = 'Standard'; Text = 'Konto organizacji'; Icon = 'E77B'; Description = 'Logowanie interaktywne do własnego tenantu' }
                     @{ Key = 'GDAP'; Text = 'Tenant klienta (GDAP)'; Icon = 'E716'; Description = 'Logowanie do wskazanego tenantu klienta' }
+                    @(Get-HTTenantProfileChoices -Service 'Graph')
                 )
+                if ("$choice" -match '^profile:(\d+)$') { [void](Connect-HTTenantProfile -TenantProfile @(Get-HTTenantProfiles)[[int]$Matches[1]] -Services @('Graph')); return }
                 $ok = if ($choice -eq 'GDAP') { Connect-Module -Name 'Microsoft.GraphGDAP' } elseif ($choice -eq 'Standard') { Connect-Module -Name 'Microsoft.Graph' } else { $false }
                 if ($ok) {
                     Clear-HTM365Cache
                     Invoke-HTPanelAutoLoad -Service 'Graph'
+                    if ($choice -eq 'GDAP') {
+                        $ctx = Get-MgContext
+                        Request-HTSaveTenantProfile -TenantId "$($ctx.TenantId)" -DefaultName "$($HT_UI.Controls.subGraph.Text)"
+                    }
                 }
             }
-            elseif (Show-HTConfirm -Message 'Rozłączyć z Microsoft Graph?' -Title 'Microsoft 365' -ConfirmText 'Rozłącz') {
-                Set-Connections -Action 'Disconnect' -Service 'Graph'
-                Clear-HTM365Cache
-                Clear-HTPanelItems -Service 'Graph'
+            else {
+                $choice = Show-HTChoiceDialog -Title 'Microsoft 365' -Prompt "Połączono: $($HT_UI.Controls.subGraph.Text)" -Icon 'E753' -Choices @(
+                    @{ Key = 'Switch'; Text = 'Przełącz tenant…'; Icon = 'E8AB'; Description = 'Połącz Microsoft 365 i Exchange z innym zapisanym tenantem (profile GDAP)' }
+                    @{ Key = 'Disconnect'; Text = 'Rozłącz'; Icon = 'E7E8'; Description = 'Zakończ połączenie z Microsoft Graph'; Style = 'Danger' }
+                )
+                if ($choice -eq 'Switch') { Show-HTTenantSwitch }
+                elseif ($choice -eq 'Disconnect') {
+                    Set-Connections -Action 'Disconnect' -Service 'Graph'
+                    Clear-HTM365Cache
+                    Clear-HTPanelItems -Service 'Graph'
+                }
             }
         }
         'SharePoint' {

@@ -1,0 +1,54 @@
+name: Testy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Pester, PSScriptAnalyzer i test interfejsu (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Moduły Pester i PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -MinimumVersion 5.5.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force
+          Get-Module -ListAvailable Pester, PSScriptAnalyzer | Select-Object Name, Version | Format-Table -AutoSize
+
+      - name: Testy jednostkowe (Pester)
+        shell: pwsh
+        run: |
+          Import-Module Pester -MinimumVersion 5.5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'Tests'
+          $config.Run.Exit = $true
+          $config.Output.Verbosity = 'Detailed'
+          $config.TestResult.Enabled = $true
+          $config.TestResult.OutputFormat = 'NUnitXml'
+          $config.TestResult.OutputPath = 'testResults.xml'
+          Invoke-Pester -Configuration $config
+
+      - name: Analiza skryptów (PSScriptAnalyzer)
+        shell: pwsh
+        run: |
+          $results = @(Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1)
+          $results | Sort-Object ScriptName, Line | Format-Table RuleName, Severity, ScriptName, Line, Message -AutoSize -Wrap | Out-String -Width 220
+          if ($results.Count) { throw "PSScriptAnalyzer: błędów $($results.Count)" }
+
+      - name: Test interfejsu WPF (budowa okna i wszystkich modułów)
+        shell: pwsh
+        run: pwsh -STA -NoProfile -File Tests/UiSmoke.ps1
+
+      - name: Wyniki testów
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wyniki-testow
+          path: testResults.xml
+          if-no-files-found: ignore
