@@ -1026,6 +1026,9 @@ function Invoke-HTDialog {
     if (-not ($Window.Tag -is [hashtable])) { $Window.Tag = @{} }
     # Program zablokowany: okno (inne niż ekran PIN) pokaże się dopiero po odblokowaniu
     if ($script:LockState.Locked -and -not $Window.Tag['LockScreen']) { Wait-HTUnlocked }
+    # Program zamykany awaryjnie z ekranu blokady: kolejne okna już się nie pokazują
+    if ($script:LockState.Emergency -and -not $Window.Tag['LockScreen']) { $Window.Tag['Result'] = $false; return $false }
+    if (-not $Window.Tag['LockScreen']) { Register-HTIdleActivity -Window $Window }
     $Window.Tag['Result'] = $false
     $Window.Tag['Modal'] = $true
     $main = $script:UI.Window
@@ -1578,12 +1581,14 @@ function Add-HTGridColumns {
 }
 
 function Set-HTViewFilter {
-    param([System.Data.DataView]$View, [string]$Text)
+    # Filtr tekstowy (słowo z minusem wyklucza) + dodatkowe warunki RowFilter (-Extra, np. filtry kolumn)
+    param([System.Data.DataView]$View, [string]$Text, [string[]]$Extra = @())
     $terms = @("$Text".Trim().ToLowerInvariant() -split '\s+' | Where-Object { $_ })
     $parts = foreach ($t in $terms) {
         $lit = ConvertTo-HTLikeLiteral ($(if ($t.StartsWith('-') -and $t.Length -gt 1) { $t.Substring(1) } else { $t }))
         if ($t.StartsWith('-') -and $t.Length -gt 1) { "__search NOT LIKE '*$lit*'" } else { "__search LIKE '*$lit*'" }
     }
+    $parts = @($parts) + @($Extra | Where-Object { $_ })
     try { $View.RowFilter = (@($parts) -join ' AND ') } catch { $View.RowFilter = '' }
 }
 
@@ -1834,6 +1839,7 @@ function Add-HTLogItem {
             Message = $message
         }
         $items.Add($item)
+        if ($script:LogFilter.Levels.Count -gt 0 -or $script:LogFilter.Text) { Update-HTLogCount }
         $list = $script:UI.Controls['logList']
         if ($list -and $list.IsVisible) { $list.ScrollIntoView($item) }
         if (-not $script:UI.LogVisible -and ($level -eq 'WARN' -or $level -eq 'ERROR')) {
@@ -1866,16 +1872,49 @@ function Set-HTLogVisible {
     if ($Visible) {
         $c.logPanel.Visibility = 'Visible'
         $c.logSplitter.Visibility = 'Visible'
-        $c.logRow.Height = New-Object System.Windows.GridLength 200
+        $height = 200
+        try { $height = [Math]::Min(800, [Math]::Max(100, [int](Get-HTUiState).LogHeight)) } catch { Write-Verbose $_ }
+        $c.logRow.Height = New-Object System.Windows.GridLength $height
         $script:UI.LogUnread = 0
         Update-HTLogBadge
         if ($script:UI.LogItems.Count -gt 0) { $c.logList.ScrollIntoView($script:UI.LogItems[$script:UI.LogItems.Count - 1]) }
     }
     else {
+        # Wysokość dziennika ustawiona przeciągnięciem - zapamiętana na kolejne otwarcia
+        $actual = [int]$c.logRow.ActualHeight
+        if ($c.logPanel.Visibility -eq 'Visible' -and $actual -ge 100) { try { Set-HTUiStateValue -Name 'LogHeight' -Value ([Math]::Min(800, $actual)) } catch { Write-Verbose $_ } }
         $c.logPanel.Visibility = 'Collapsed'
         $c.logSplitter.Visibility = 'Collapsed'
         $c.logRow.Height = New-Object System.Windows.GridLength 0
     }
+}
+
+# Filtr panelu dziennika: Levels - poziomy do pokazania (puste - wszystkie), Text - fragment komunikatu lub nazwy modułu
+$script:LogFilter = @{ Levels = @(); Text = '' }
+$script:LogFilterPredicate = {
+    param($item)
+    $f = $script:LogFilter
+    if ($f.Levels.Count -gt 0 -and $f.Levels -notcontains [string]$item.Level) { return $false }
+    if ($f.Text -and ([string]$item.Message).IndexOf($f.Text, [System.StringComparison]::CurrentCultureIgnoreCase) -lt 0 -and ([string]$item.Module).IndexOf($f.Text, [System.StringComparison]::CurrentCultureIgnoreCase) -lt 0) { return $false }
+    return $true
+}
+
+function Set-HTLogFilter {
+    param([string[]]$Levels = @(), [AllowEmptyString()][string]$Text = '')
+    $script:LogFilter = @{ Levels = @($Levels | Where-Object { $_ }); Text = $Text.Trim() }
+    $view = [System.Windows.Data.CollectionViewSource]::GetDefaultView($script:UI.LogItems)
+    if ($script:LogFilter.Levels.Count -eq 0 -and -not $script:LogFilter.Text) { $view.Filter = $null }
+    else { $view.Filter = [System.Predicate[object]]$script:LogFilterPredicate }
+    Update-HTLogCount
+}
+
+function Update-HTLogCount {
+    # Liczba widocznych wpisów przy aktywnym filtrze dziennika
+    $label = $script:UI.Controls['logCount']
+    if (-not $label) { return }
+    $filtered = $script:LogFilter.Levels.Count -gt 0 -or $script:LogFilter.Text
+    $list = $script:UI.Controls['logList']
+    $label.Text = if ($filtered -and $list) { 'widoczne: {0} z {1}' -f $list.Items.Count, $script:UI.LogItems.Count } else { '' }
 }
 #endregion
 
@@ -1889,7 +1928,11 @@ function Set-HTStatus {
 function Set-HTBusy {
     # Tryb "zajęty": kursor, wskaźnik postępu, blokada przycisków modułu i połączeń
     param([bool]$Busy, [string]$Text)
-    if ($Busy) { $script:UI.BusyDepth++ } else { $script:UI.BusyDepth = [Math]::Max(0, $script:UI.BusyDepth - 1) }
+    if ($Busy) {
+        $script:UI.BusyDepth++
+        if ($script:UI.BusyDepth -eq 1) { $script:UI.BusyStarted = [datetime]::Now }
+    }
+    else { $script:UI.BusyDepth = [Math]::Max(0, $script:UI.BusyDepth - 1) }
     $c = $script:UI.Controls
     if (-not $script:UI.Window) { return }
     $isBusy = $script:UI.BusyDepth -gt 0
@@ -1907,6 +1950,15 @@ function Set-HTBusy {
         if ($isBusy -and $Text) { $m.View_.busyText.Text = $Text }
     }
     Update-HTUi
+    # Koniec długiej operacji, gdy pracujesz w innym programie: powiadomienie Windows i miganie paska zadań
+    if (-not $isBusy -and $script:UI['BusyStarted']) {
+        $elapsed = ([datetime]::Now - $script:UI.BusyStarted).TotalSeconds
+        $script:UI.BusyStarted = $null
+        $limit = [int]$Global:NotifyLongOperationsSeconds
+        if ($limit -gt 0 -and $elapsed -ge $limit -and -not (Test-HTProgramActive)) {
+            Show-HTWindowsNotification -Text $(if ($Text) { $Text } else { 'Operacja zakończona' }) -Seconds ([int]$elapsed)
+        }
+    }
 }
 
 function Set-HTProgress {
@@ -2251,6 +2303,8 @@ function Invoke-HTUiAction {
         $null = & $Action $Module $Source
     }
     catch {
+        # Moduł zablokowany dla konta MFA (Show-HTModule) - wpis w dzienniku już jest, wystarczy powiadomienie
+        if ($_.Exception -is [System.UnauthorizedAccessException] -and $_.Exception.Data['HTAccess']) { Show-HTToast $_.Exception.Message 'warn' 5; return }
         Write-Log -Message "Błąd: $($_.Exception.Message)" -Type 'Error'
         Show-HTError 'Operacja nie powiodła się.' $_
     }
@@ -2313,10 +2367,28 @@ $script:NavEvents = @{
         try { Show-HTWorkspace -Key ([string]$s.Tag) }
         catch { Write-Log -Message "Błąd przełączania przestrzeni: $($_.Exception.Message)" -Type 'Error' }
     }
+    MenuOpening    = {
+        param($s, $e)
+        try {
+            $key = [string]$s.Tag
+            $menu = $s.ContextMenu
+            $menu.Items.Clear()
+            $fav = Test-HTFavoriteModule $key
+            [void]$menu.Items.Add((New-HTMenuItem -Text $(if ($fav) { 'Usuń z ulubionych' } else { 'Dodaj do ulubionych' }) -Icon $(if ($fav) { 'E8D9' } else { 'E734' }) -Data $key -Action {
+                        param($m, $src)
+                        $k = [string]$src.Tag.Data
+                        Set-HTFavoriteModule -Key $k -Favorite (-not (Test-HTFavoriteModule $k))
+                        Update-HTNavFavorites
+                    }))
+            [void]$menu.Items.Add((New-HTMenuItem -Text 'Szukaj modułów (Ctrl+K)' -Icon 'E721' -Action { param($m) Show-HTCommandPalette }))
+        }
+        catch { Write-Verbose $_ }
+    }
     ModuleClick    = {
         param($s, $e)
         try { Show-HTModule -Key ([string]$s.Tag) }
         catch {
+            if ($_.Exception -is [System.UnauthorizedAccessException] -and $_.Exception.Data['HTAccess']) { Show-HTToast $_.Exception.Message 'warn' 5; return }
             Write-Log -Message "Błąd otwierania modułu: $($_.Exception.Message)" -Type 'Error'
             Show-HTError 'Nie można otworzyć modułu.' $_
         }
@@ -2387,14 +2459,43 @@ function New-HTNavItem {
     $text.VerticalAlignment = 'Center'
     [System.Windows.Controls.Grid]::SetColumn($text, 1)
     [void]$grid.Children.Add($text)
+    # Gwiazdka ulubionych (prawy przycisk na pozycji - dodanie / usunięcie)
+    $cd = New-Object System.Windows.Controls.ColumnDefinition
+    $cd.Width = [System.Windows.GridLength]::Auto
+    [void]$grid.ColumnDefinitions.Add($cd)
+    $star = New-HTGlyphBlock -Code 'E735' -Size 10 -Color '#FFC46B'
+    $star.Margin = '6,0,0,0'
+    $star.Visibility = if (Test-HTFavoriteModule $Definition.Key) { 'Visible' } else { 'Collapsed' }
+    [System.Windows.Controls.Grid]::SetColumn($star, 2)
+    [void]$grid.Children.Add($star)
+    $script:NavStars[$Definition.Key] = $star
     $rb.Content = $grid
+    $rb.ContextMenu = New-Object System.Windows.Controls.ContextMenu
+    $rb.add_ContextMenuOpening($script:NavEvents.MenuOpening)
     $rb.add_Click($script:NavEvents.ModuleClick)
     return $rb
+}
+
+$script:NavStars = @{}
+
+function Update-HTNavFavorites {
+    foreach ($key in @($script:NavStars.Keys)) { $script:NavStars[$key].Visibility = if (Test-HTFavoriteModule $key) { 'Visible' } else { 'Collapsed' } }
 }
 
 function Show-HTWorkspace {
     param([string]$Key, [string]$ModuleKey = '')
     if (-not $script:UI.Workspaces.Contains($Key)) { $Key = @($script:UI.Workspaces.Keys)[0] }
+    if (-not (Test-HTWorkspaceAllowed $Key)) {
+        # Przestrzeń zablokowana dla konta MFA: pierwsza dostępna
+        $Key = @($script:UI.Workspaces.Keys | Where-Object { Test-HTWorkspaceAllowed $_ })[0]
+        $ModuleKey = ''
+        if (-not $Key) {
+            if ($script:UI.ActiveModule) { $script:UI.ActiveModule.Root.Visibility = 'Collapsed'; $script:UI.ActiveModule = $null }
+            foreach ($other in $script:UI.Workspaces.Values) { if ($other.NavHost) { $other.NavHost.Visibility = 'Collapsed' } }
+            $script:UI.ActiveWorkspace = $null
+            return
+        }
+    }
     $ws = $script:UI.Workspaces[$Key]
     $previous = $script:UI.ActiveWorkspace
     $script:UI.ActiveWorkspace = $Key
@@ -2408,10 +2509,11 @@ function Show-HTWorkspace {
     $c.txtSubtitle.Text = $ws.Description
     if ($previous -and $previous -ne $Key) { Write-Log -Message "Przestrzeń robocza: $($ws.Title)" -Type 'Info' }
     if (-not $ModuleKey) { $ModuleKey = $ws.LastModule }
+    if (-not $ModuleKey) { try { $ModuleKey = [string](Get-HTUiState).LastModules[$Key] } catch { $ModuleKey = '' } }
     $def = Get-HTModuleDefinition $ModuleKey
-    if (-not $def -or $def.Workspace -ne $Key) {
+    if (-not $def -or $def.Workspace -ne $Key -or -not (Test-HTModuleAllowed $def.Key)) {
         $def = $null
-        foreach ($d in $script:UI.ModuleDefs) { if ($d.Workspace -eq $Key) { $def = $d; break } }
+        foreach ($d in $script:UI.ModuleDefs) { if ($d.Workspace -eq $Key -and (Test-HTModuleAllowed $d.Key)) { $def = $d; break } }
     }
     if ($def) { Show-HTModule -Key $def.Key }
     elseif ($script:UI.ActiveModule) { $script:UI.ActiveModule.Root.Visibility = 'Collapsed'; $script:UI.ActiveModule = $null }
@@ -2430,6 +2532,15 @@ function Show-HTModule {
     param([string]$Key)
     $definition = Get-HTModuleDefinition $Key
     if (-not $definition) { return }
+    if (-not (Test-HTModuleAllowed $Key)) {
+        # Moduł zablokowany dla konta MFA (Uprawnienia…) - wyjątek przerywa też akcje, które po otwarciu modułu
+        # wypełniają jego pola albo uruchamiają jego operacje
+        $text = 'Konto «{0}» nie ma dostępu do modułu «{1}».' -f (Get-HTAccess).Account, $definition.Title
+        Write-Log -Message $text -Type 'Warn'
+        $ex = New-Object System.UnauthorizedAccessException($text)
+        $ex.Data['HTAccess'] = $true
+        throw $ex
+    }
     if ($script:UI.ActiveWorkspace -ne $definition.Workspace) { Show-HTWorkspace -Key $definition.Workspace -ModuleKey $Key; return }
     $m = $script:UI.Modules[$Key]
     if (-not $m) { $m = Initialize-HTModule -Definition $definition }
@@ -2439,6 +2550,7 @@ function Show-HTModule {
     $script:UI.ActiveModule = $m
     $ws = $script:UI.Workspaces[$definition.Workspace]
     $ws.LastModule = $Key
+    try { Add-HTRecentModule -Key $Key -Workspace $definition.Workspace } catch { Write-Verbose $_ }
     $nav = $ws.NavItems[$Key]
     if ($nav -and $nav.IsChecked -ne $true) { $nav.IsChecked = $true }
     if ($m.OnShow) { Invoke-HTUiAction -Module $m -Action $m.OnShow }
@@ -2484,7 +2596,20 @@ function New-HTModuleContext {
         View           = $null
         FilterBox      = $null
         Objects        = New-Object System.Collections.ArrayList
+        # Filtry kolumn (ColumnFilters.psm1), lejki w nagłówkach, kliknięta komórka menu, kolumny ukryte przez użytkownika
+        ColumnFilters  = [ordered]@{}
+        FilterButtons  = @{}
+        MenuCell       = $null
+        UserHidden     = (New-HTUserHiddenSet -Key $Definition.Key -Remember:([bool]$Definition.Workspace))
     }
+}
+
+function New-HTUserHiddenSet {
+    # Kolumny ukryte przez użytkownika - zapamiętane między uruchomieniami dla modułów nawigacji
+    param([string]$Key, [switch]$Remember)
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    if ($Remember -and $Key) { foreach ($c in @(Get-HTModuleHiddenColumns $Key)) { [void]$set.Add($c) } }
+    return , $set
 }
 
 function Initialize-HTModule {
@@ -2992,7 +3117,11 @@ $script:ModuleViewXaml = @'
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="*"/>
+      <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="Auto"/>
@@ -3003,12 +3132,16 @@ $script:ModuleViewXaml = @'
     <Border Grid.Column="1" Style="{StaticResource Chip}" Margin="10,0,0,0">
       <TextBlock x:Name="countText" Text="0" Foreground="#AEB6C4" FontSize="11.5"/>
     </Border>
-    <TextBlock x:Name="resultHint" Grid.Column="2" Foreground="#5E6779" FontSize="12" VerticalAlignment="Center" Margin="6,0,12,0" TextTrimming="CharacterEllipsis"/>
-    <TextBox x:Name="filterBox" Grid.Column="3" Width="260" Tag="Filtruj wyniki (Ctrl+F)…" Margin="0,0,8,0"/>
-    <CheckBox x:Name="chkReveal" Grid.Column="4" Content="Pokaż poufne" Margin="4,0,12,0" Visibility="Collapsed"/>
-    <Button x:Name="btnDetail" Grid.Column="5" Style="{StaticResource GhostButton}" ToolTip="Panel szczegółów wiersza" Margin="0,0,4,0"/>
-    <Button x:Name="btnCopy" Grid.Column="6" Style="{StaticResource GhostButton}" ToolTip="Kopiuj zaznaczone wiersze lub całą tabelę (format Excel)" Margin="0,0,4,0"/>
-    <Button x:Name="btnExport" Grid.Column="7" ToolTip="Eksport widocznych wierszy do CSV"/>
+    <Button x:Name="btnFilters" Grid.Column="2" Style="{StaticResource GhostButton}" Foreground="#8CB0FF" Background="#1A2640" Padding="10,3" MinHeight="26" Margin="8,0,0,0" Visibility="Collapsed"/>
+    <TextBlock x:Name="resultHint" Grid.Column="3" Foreground="#5E6779" FontSize="12" VerticalAlignment="Center" Margin="6,0,12,0" TextTrimming="CharacterEllipsis"/>
+    <TextBox x:Name="filterBox" Grid.Column="4" Width="260" Tag="Filtruj wyniki (Ctrl+F)…" Margin="0,0,8,0"/>
+    <CheckBox x:Name="chkReveal" Grid.Column="5" Content="Pokaż poufne" Margin="4,0,12,0" Visibility="Collapsed"/>
+    <Button x:Name="btnViews" Grid.Column="6" Style="{StaticResource GhostButton}" ToolTip="Zapisane widoki: filtr, filtry kolumn i ukryte kolumny tego modułu" Margin="0,0,4,0"/>
+    <Button x:Name="btnColumns" Grid.Column="7" Style="{StaticResource GhostButton}" ToolTip="Wybierz kolumny do pokazania - ukryte nie trafiają do kopiowania ani eksportu" Margin="0,0,4,0"/>
+    <Button x:Name="btnDetail" Grid.Column="8" Style="{StaticResource GhostButton}" ToolTip="Panel szczegółów wiersza" Margin="0,0,4,0"/>
+    <Button x:Name="btnCopy" Grid.Column="9" Style="{StaticResource GhostButton}" ToolTip="Kopiuj zaznaczone wiersze lub całą tabelę (format Excel)" Margin="0,0,4,0"/>
+    <Button x:Name="btnMail" Grid.Column="10" Style="{StaticResource GhostButton}" ToolTip="Wyślij widoczne wyniki e-mailem (Excel, raport HTML lub CSV w załączniku)" Margin="0,0,4,0"/>
+    <Button x:Name="btnExport" Grid.Column="11" ToolTip="Eksport widocznych wierszy: Excel, CSV, raport HTML albo JSON"/>
   </Grid>
 
   <Border Grid.Row="4" Style="{StaticResource Card}" Padding="0">
@@ -3081,30 +3214,20 @@ $script:GridEvents = @{
         try {
             $m = $null
             if (-not $script:GridModules.TryGetValue($s, [ref]$m)) { return }
+            # Nagłówek kolumny - menu kolumny; komórka - zapamiętana do szybkiego filtra po wartości
+            $m.MenuCell = $null
+            $hdr = Find-HTVisualParent -Element $e.OriginalSource -Type ([System.Windows.Controls.Primitives.DataGridColumnHeader])
+            if ($hdr) {
+                if (-not $hdr.Column) { $e.Handled = $true; return }
+                $m.MenuCell = @{ Column = [string]$hdr.Column.SortMemberPath; Row = $null; Header = $true }
+            }
+            else {
+                $cell = Find-HTVisualParent -Element $e.OriginalSource -Type ([System.Windows.Controls.DataGridCell])
+                if ($cell -and $cell.Column -and $cell.DataContext -is [System.Data.DataRowView]) { $m.MenuCell = @{ Column = [string]$cell.Column.SortMemberPath; Row = $cell.DataContext; Header = $false } }
+            }
             Update-HTGridMenu -Module $m
         }
         catch { Write-Verbose $_ }
-    }
-    MenuClick          = {
-        param($s, $e)
-        try {
-            $entry = $s.Tag
-            $m = $entry.Module
-            switch ($entry.Kind) {
-                'Copy' { Copy-HTResultView -Module $m -SelectedOnly }
-                'CopyValue' {
-                    $cell = $m.Grid.CurrentCell
-                    if ($cell.Column -and $cell.Item -is [System.Data.DataRowView]) {
-                        $v = Get-HTExportValue -Module $m -Row $cell.Item -Column ([string]$cell.Column.SortMemberPath)
-                        Set-HTClipboard ([string]$v)
-                        Show-HTToast 'Skopiowano wartość.' 'ok'
-                    }
-                }
-                'Details' { if ($m.Grid.SelectedItem) { Show-HTRowDetails -Module $m -Row $m.Grid.SelectedItem } }
-                default { Invoke-HTUiAction -Module $m -Action $entry.Action -Source @(Get-HTResultSelection -Module $m) }
-            }
-        }
-        catch { Show-HTError 'Operacja nie powiodła się.' $_ }
     }
 }
 
@@ -3112,8 +3235,8 @@ function New-HTModuleView {
     param([Parameter(Mandatory)][hashtable]$Module)
     $root = New-HTUiElement $script:ModuleViewXaml
     $Module.Root = $root
-    foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'countText', 'resultHint', 'filterBox', 'chkReveal',
-        'btnDetail', 'btnCopy', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
+    foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
+        'btnViews', 'btnColumns', 'btnDetail', 'btnCopy', 'btnMail', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
         'detailPane', 'detailText', 'btnDetailCopy', 'btnCollapse') {
         $Module.View_[$n] = $root.FindName($n)
     }
@@ -3131,7 +3254,10 @@ function New-HTModuleView {
 
     $v = $Module.View_
     $v.btnDetail.Content = New-HTIconContent -Text '' -Icon 'E8A1'
+    $v.btnColumns.Content = New-HTIconContent -Text '' -Icon 'E8FD'
+    $v.btnViews.Content = New-HTIconContent -Text '' -Icon 'E71D'
     $v.btnCopy.Content = New-HTIconContent -Text '' -Icon 'E8C8'
+    $v.btnMail.Content = New-HTIconContent -Text '' -Icon 'E715'
     $v.btnExport.Content = New-HTIconContent -Text 'Eksport' -Icon 'EDE1'
     $v.btnDetailCopy.Content = New-HTIconContent -Text '' -Icon 'E8C8' -IconSize 11
     $v.btnCollapse.Content = New-HTIconContent -Text '' -Icon 'E70E' -IconSize 12
@@ -3145,6 +3271,12 @@ function New-HTModuleView {
     Register-HTControlHandler -Control $v.filterBox -EventName 'TextChanged' -Module $Module -Action { param($m) Request-HTResultFilter -Module $m }
     Register-HTControlHandler -Control $v.btnCopy -EventName 'Click' -Module $Module -Action { param($m) Copy-HTResultView -Module $m }
     Register-HTControlHandler -Control $v.btnExport -EventName 'Click' -Module $Module -Action { param($m) Export-HTResultView -Module $m }
+    Register-HTControlHandler -Control $v.btnColumns -EventName 'Click' -Module $Module -Action { param($m) Select-HTResultColumns -Module $m }
+    Register-HTControlHandler -Control $v.btnViews -EventName 'Click' -Module $Module -Action { param($m, $s) Show-HTViewsMenu -Module $m -Anchor $s }
+    Register-HTControlHandler -Control $v.btnMail -EventName 'Click' -Module $Module -Action { param($m) Send-HTResultMail -Module $m }
+    # Zapisane widoki i ukryte kolumny dotyczą modułów nawigacji (nie okien podglądu)
+    if (-not $Module.Workspace) { $v.btnViews.Visibility = 'Collapsed' }
+    Register-HTControlHandler -Control $v.btnFilters -EventName 'Click' -Module $Module -Action { param($m) Clear-HTColumnFilters -Module $m; Show-HTToast 'Wyczyszczono filtry kolumn.' 'info' 2 }
     Register-HTControlHandler -Control $v.btnDetail -EventName 'Click' -Module $Module -Action {
         param($m)
         $script:UI.DetailVisible = -not $script:UI.DetailVisible
@@ -3386,32 +3518,54 @@ function Add-HTRowAction {
 }
 
 function Update-HTGridMenu {
+    # Menu kontekstowe budowane przy otwarciu: nagłówek - menu kolumny; wiersze - akcje modułu, kopiowanie, eksport, szybki filtr
     param([hashtable]$Module)
     $menu = $Module.Grid.ContextMenu
     $menu.Items.Clear()
-    $hasRows = $Module.Grid.SelectedItems.Count -gt 0
+    if ($Module.MenuCell -and $Module.MenuCell.Header) { Update-HTHeaderMenu -Module $Module -Menu $menu -Column $Module.MenuCell.Column; return }
+    $selected = @($Module.Grid.SelectedItems | Where-Object { $_ -is [System.Data.DataRowView] })
+    $hasRows = $selected.Count -gt 0
     foreach ($a in $Module.RowActions) {
-        $mi = New-Object System.Windows.Controls.MenuItem
-        $mi.Header = $a.Text
-        $mi.Icon = New-HTGlyphBlock -Code $a.Icon -Size 13 -Color $(if ($a.Danger) { '#FF7A86' } else { '' })
-        $mi.IsEnabled = $hasRows
-        $mi.Tag = @{ Module = $Module; Kind = 'Action'; Action = $a.Action }
-        $mi.add_Click($script:GridEvents.MenuClick)
-        [void]$menu.Items.Add($mi)
+        # Akcja dostaje oryginalne obiekty zaznaczonych wierszy: { param($m, $rows) }
+        [void]$menu.Items.Add((New-HTMenuItem -Text $a.Text -Icon $a.Icon -Module $Module -Danger:$a.Danger -Enabled $hasRows -Data $a.Action -Action {
+                    param($m, $s)
+                    $rows = @(Get-HTResultSelection -Module $m)
+                    if ($rows.Count -eq 0) { Show-HTWarning 'Zaznacz wiersze w tabeli wyników.'; return }
+                    $null = & $s.Tag.Data $m $rows
+                }))
     }
-    if ($Module.RowActions.Count -gt 0) {
-        $sep = New-Object System.Windows.Controls.Separator
-        $sep.Style = Get-HTThemeResource 'MenuSeparator'
-        [void]$menu.Items.Add($sep)
+    if ($menu.Items.Count -gt 0) { [void]$menu.Items.Add((New-HTMenuSeparator)) }
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Szczegóły wiersza' -Icon 'E8A1' -Module $Module -Enabled $hasRows -Action {
+                param($m)
+                if ($m.Grid.SelectedItem) { Show-HTRowDetails -Module $m -Row $m.Grid.SelectedItem }
+            }))
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Kopiuj wartość komórki' -Icon 'E8C8' -Module $Module -Enabled ($hasRows -or [bool]$Module.MenuCell) -Action {
+                param($m)
+                $row = $null
+                $name = ''
+                if ($m.MenuCell -and $m.MenuCell.Row) { $row = $m.MenuCell.Row; $name = [string]$m.MenuCell.Column }
+                else {
+                    $cell = $m.Grid.CurrentCell
+                    if ($cell.Column -and $cell.Item -is [System.Data.DataRowView]) { $row = $cell.Item; $name = [string]$cell.Column.SortMemberPath }
+                }
+                if (-not $row) { return }
+                Set-HTClipboard ([string](Get-HTExportValue -Module $m -Row $row -Column $name)) -Secret:($m.RevealSecrets -and $m.SecretColumns -contains $name)
+                Show-HTToast "Skopiowano: $name" 'ok' 2
+            }))
+    if ($Module.MenuCell -and $Module.MenuCell.Column -and $null -ne $Module.View) {
+        # Wartości jednej kolumny (np. adresy do «Zaznacz z listy»): zaznaczone wiersze albo wszystkie widoczne
+        $colName = [string]$Module.MenuCell.Column
+        if ($selected.Count -gt 1) {
+            [void]$menu.Items.Add((New-HTMenuItem -Text ("Kopiuj kolumnę «{0}» - zaznaczone wiersze ({1})" -f $colName, $selected.Count) -Icon 'E8C8' -Module $Module -Action { param($m) Copy-HTColumnValues -Module $m -Column $m.MenuCell.Column -SelectedOnly }))
+        }
+        [void]$menu.Items.Add((New-HTMenuItem -Text ("Kopiuj kolumnę «{0}» - wszystkie widoczne ({1})" -f $colName, $Module.View.Count) -Icon 'E8C8' -Module $Module -Action { param($m) Copy-HTColumnValues -Module $m -Column $m.MenuCell.Column }))
     }
-    foreach ($item in @(@('Details', 'Szczegóły wiersza', 'E8A1'), @('CopyValue', 'Kopiuj wartość komórki', 'E8C8'), @('Copy', 'Kopiuj zaznaczone wiersze', 'E8C8'))) {
-        $mi = New-Object System.Windows.Controls.MenuItem
-        $mi.Header = $item[1]
-        $mi.Icon = New-HTGlyphBlock -Code $item[2] -Size 13
-        $mi.IsEnabled = $hasRows
-        $mi.Tag = @{ Module = $Module; Kind = $item[0] }
-        $mi.add_Click($script:GridEvents.MenuClick)
-        [void]$menu.Items.Add($mi)
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Kopiuj zaznaczone wiersze' -Icon 'E8C8' -Module $Module -Enabled $hasRows -Action { param($m) Copy-HTResultView -Module $m -SelectedOnly }))
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Eksport…' -Icon 'EDE1' -Module $Module -Action { param($m) Export-HTResultView -Module $m }))
+    if ($Module.MenuCell -or $Module.ColumnFilters.Count -gt 0) {
+        [void]$menu.Items.Add((New-HTMenuSeparator))
+        if ($Module.MenuCell) { Add-HTQuickFilterMenu -Module $Module -Menu $menu }
+        elseif ($Module.ColumnFilters.Count -gt 0) { [void]$menu.Items.Add((New-HTMenuItem -Text 'Wyczyść filtry kolumn' -Icon 'E894' -Module $Module -Action { param($m) Clear-HTColumnFilters -Module $m })) }
     }
 }
 
@@ -3458,8 +3612,12 @@ function Reset-HTResults {
     # Czyści tabelę wyników (nowe wyniki - nowe kolumny)
     param([Parameter(Mandatory)][hashtable]$Module)
     $table = New-Object System.Data.DataTable 'Wyniki'
-    foreach ($c in '__search', '__flag') { [void]$table.Columns.Add($c, [string]) }
+    foreach ($c in '__search', '__flag', '__cf') { [void]$table.Columns.Add($c, [string]) }
     [void]$table.Columns.Add('__obj', [object])
+    # Nowe wyniki - nowe kolumny: filtry kolumn i ich lejki od zera (pole «Filtruj wyniki» i ukryte kolumny zostają)
+    if ($null -ne $Module.ColumnFilters) { $Module.ColumnFilters.Clear() }
+    $Module.FilterButtons = @{}
+    if ($Module.View_ -and $Module.View_['btnFilters']) { $Module.View_['btnFilters'].Visibility = 'Collapsed' }
     $view = [System.Data.DataView]::new($table)
     $Module.Table = $table
     $Module.View = $view
@@ -3488,12 +3646,17 @@ function Add-HTGridColumn {
     $col.ElementStyle = $style
     if ($Module.GoodWhenNo -contains $Name) { $col.CellStyle = Get-HTThemeResource 'BoolCellInv' }
     elseif ($Module.ColorBools) { $col.CellStyle = Get-HTThemeResource 'BoolCell' }
-    $col.Header = $Name
+    # Nagłówek: nazwa i lejek filtra (bez filtra dla wartości poufnych)
+    $col.Header = New-HTColumnHeader -Module $Module -Name $Name -NoFilter:($Module.SecretColumns -contains $Name)
     $col.SortMemberPath = $Name
     $col.IsReadOnly = $true
     $col.MaxWidth = 520
     $col.MinWidth = 54
     $g.Columns.Add($col)
+    if ($Module.UserHidden -and $Module.UserHidden.Contains($Name)) {
+        $col.Visibility = 'Collapsed'
+        Update-HTColumnsButton -Module $Module
+    }
 }
 
 function Add-HTResultRows {
@@ -3546,6 +3709,7 @@ function Add-HTResultRows {
             }
             $row['__search'] = $search.ToString().ToLowerInvariant()
             $row['__obj'] = $obj
+            if ($Module.ColumnFilters.Count -gt 0) { $row['__cf'] = $(if (Test-HTRowColumnFilters -Module $Module -Row $row) { '1' } else { '0' }) }
             if (-not $values.Contains('__flag')) {
                 $status = [string]$values['Status']
                 if ($status.StartsWith('Błąd')) { $row['__flag'] = 'crit' }
@@ -3607,7 +3771,8 @@ function Update-HTResultFilter {
     param([hashtable]$Module)
     if ($null -eq $Module.View) { return }
     $text = if ($Module.FilterBox) { $Module.FilterBox.Text } else { '' }
-    Set-HTViewFilter -View $Module.View -Text $text
+    $extra = if ($Module.ColumnFilters.Count -gt 0) { @("[__cf] = '1'") } else { @() }
+    Set-HTViewFilter -View $Module.View -Text $text -Extra $extra
     Update-HTResultCount -Module $Module
 }
 
@@ -3661,8 +3826,9 @@ function Get-HTExportValue {
 }
 
 function Get-HTVisibleColumnNames {
+    # Kolumny w kolejności z tabeli, bez ukrytych (kopiowanie i eksport)
     param([hashtable]$Module)
-    return @($Module.Grid.Columns | Sort-Object DisplayIndex | ForEach-Object { [string]$_.SortMemberPath })
+    return @($Module.Grid.Columns | Where-Object { $_.Visibility -eq 'Visible' } | Sort-Object DisplayIndex | ForEach-Object { [string]$_.SortMemberPath })
 }
 
 function Format-HTRowDetails {
@@ -3712,20 +3878,6 @@ function Copy-HTResultView {
     Show-HTToast "Skopiowano wierszy: $($rows.Count)." 'ok'
 }
 
-function Export-HTResultView {
-    param([hashtable]$Module)
-    $columns = Get-HTVisibleColumnNames -Module $Module
-    $rows = @($Module.View | ForEach-Object { $_ })
-    if ($columns.Count -eq 0 -or $rows.Count -eq 0) { Show-HTMessage -Text 'Brak wyników do eksportu.' -Title 'Eksport'; return }
-    $data = foreach ($r in $rows) {
-        $o = [ordered]@{}
-        foreach ($c in $columns) { $v = Get-HTExportValue -Module $Module -Row $r -Column $c; $o[$c] = if ($null -eq $v) { '' } else { [string]$v } }
-        [PSCustomObject]$o
-    }
-    $name = ($Module.Title -replace '[^\w\-]+', '_')
-    Save-ContentToFile -Data @($data) -Format 'csv' -Title 'Eksport wyników' -DefaultName $name | Out-Null
-}
-
 function Invoke-HTTargetAction {
     <#
         Wykonuje operację dla każdego obiektu docelowego i dopisuje wiersze wyników (Obiekt, Status, Szczegóły).
@@ -3745,6 +3897,7 @@ function Invoke-HTTargetAction {
         [string]$Service = ''
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
+    if (-not (Assert-HTWriteAllowed -Operation $Name)) { return }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
     if (-not $Targets) { $Targets = @(Get-HTTargets -Module $Module) }
     if ($Targets.Count -eq 0) { return }
@@ -3773,7 +3926,9 @@ function Invoke-HTTargetAction {
                 $failed++
             }
             $level = if ($row.Status -eq 'Błąd') { 'Warn' } else { 'Info' }
-            Write-Log -Message "$Name - $($labels[$i]): $($row.Status) $(if ($row.Contains('Szczegóły') -and $Module.SecretColumns -notcontains 'Szczegóły') { $row['Szczegóły'] })" -Type $level
+            $detailText = if ($row.Contains('Szczegóły') -and $Module.SecretColumns -notcontains 'Szczegóły') { [string]$row['Szczegóły'] } else { '' }
+            Write-Log -Message "$Name - $($labels[$i]): $($row.Status) $detailText" -Type $level
+            Add-HTOperationRecord -Operation $Name -Object $labels[$i] -Status ([string]$row.Status) -Details $detailText -Module $Module.Title
             $row['__target'] = $t
             Add-HTResultRows -Module $Module -Objects @([PSCustomObject]$row)
         }
@@ -3796,18 +3951,560 @@ function Get-HTTargetLabel {
 }
 #endregion
 
+#region Filtry kolumn tabeli wyników, menu nagłówka i wybór kolumn (jak w Domain Ops)
+# Logika filtrów (bez interfejsu) jest w Modules/ColumnFilters.psm1; tutaj lejki w nagłówkach, okienko filtra,
+# menu pod prawym przyciskiem (nagłówek: sortowanie, kopiowanie wartości, filtr, ukrywanie kolumn; komórka: szybki filtr).
+$script:FilterListLimit = 500
+
+function Find-HTVisualParent {
+    param($Element, [type]$Type)
+    $e = $Element
+    while ($e) {
+        if ($e -is $Type) { return $e }
+        if ($e -is [System.Windows.Media.Visual] -or $e -is [System.Windows.Media.Media3D.Visual3D]) { $e = [System.Windows.Media.VisualTreeHelper]::GetParent($e) }
+        elseif ($e -is [System.Windows.FrameworkContentElement]) { $e = $e.Parent }
+        else { $e = $null }
+    }
+    return $null
+}
+
+$script:MenuEvents = @{
+    # Pozycja menu: Tag = @{ Module; Action = { param($m, $s) }; Data } - bez rejestru obsługi (menu budowane przy każdym otwarciu)
+    Click = {
+        param($s, $e)
+        $tag = $s.Tag
+        if ($tag -is [hashtable] -and $tag.Action) { Invoke-HTUiAction -Module $tag.Module -Action $tag.Action -Source $s }
+    }
+}
+
+function New-HTMenuItem {
+    param([string]$Text, [string]$Icon = '', [hashtable]$Module, [scriptblock]$Action, $Data = $null, [switch]$Danger, [bool]$Enabled = $true)
+    $mi = New-Object System.Windows.Controls.MenuItem
+    $mi.Header = $Text
+    if ($Icon) { $mi.Icon = New-HTGlyphBlock -Code $Icon -Size 13 -Color $(if ($Danger) { '#FF7A86' } else { '' }) }
+    $mi.IsEnabled = $Enabled
+    $mi.Tag = @{ Module = $Module; Action = $Action; Data = $Data }
+    if ($Action) { $mi.add_Click($script:MenuEvents.Click) }
+    return $mi
+}
+
+function New-HTMenuSeparator {
+    $sep = New-Object System.Windows.Controls.Separator
+    $sep.Style = Get-HTThemeResource 'MenuSeparator'
+    return $sep
+}
+
+$script:ColumnHeaderEvents = @{
+    # Lejek w nagłówku kolumny: moduł z tabeli, w której jest przycisk (bez rejestru obsługi dla każdej kolumny)
+    FilterClick = {
+        param($s, $e)
+        try {
+            $grid = Find-HTVisualParent -Element $s -Type ([System.Windows.Controls.DataGrid])
+            $m = $null
+            if (-not $grid -or -not $script:GridModules.TryGetValue($grid, [ref]$m)) { return }
+            Invoke-HTUiAction -Module $m -Action { param($m, $src) Show-HTColumnFilter -Module $m -Column ([string]$src.CommandParameter) -Anchor $src } -Source $s
+        }
+        catch { Write-Log -Message "Filtr kolumny: $($_.Exception.Message)" -Type 'Error' }
+    }
+}
+
+function New-HTColumnHeader {
+    # Nagłówek kolumny: nazwa i lejek filtra
+    param([hashtable]$Module, [string]$Name, [switch]$NoFilter)
+    $g = New-Object System.Windows.Controls.Grid
+    $c1 = New-Object System.Windows.Controls.ColumnDefinition
+    $c1.Width = New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star)
+    $c2 = New-Object System.Windows.Controls.ColumnDefinition
+    $c2.Width = [System.Windows.GridLength]::Auto
+    [void]$g.ColumnDefinitions.Add($c1)
+    [void]$g.ColumnDefinitions.Add($c2)
+    $t = New-Object System.Windows.Controls.TextBlock
+    $t.Text = $Name
+    $t.VerticalAlignment = 'Center'
+    [void]$g.Children.Add($t)
+    if (-not $NoFilter) {
+        $b = New-Object System.Windows.Controls.Button
+        $b.Style = Get-HTThemeResource 'HeaderFilterButton'
+        $b.Margin = '8,0,-6,0'
+        $b.CommandParameter = $Name
+        [System.Windows.Controls.Grid]::SetColumn($b, 1)
+        $b.add_Click($script:ColumnHeaderEvents.FilterClick)
+        [void]$g.Children.Add($b)
+        if ($Module.FilterButtons) { $Module.FilterButtons[$Name] = $b }
+        if ($Module.ColumnFilters -and $Module.ColumnFilters.Contains($Name)) { $b.Tag = 'on' }
+    }
+    return $g
+}
+
+function Set-HTColumnFilter {
+    # Ustawia (albo usuwa, gdy brak wartości i warunku) filtr kolumny i odświeża widok
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Column, $Values = $null, [string]$Op = '', [string]$Text = '')
+    $set = Set-HTColumnFilterEntry -Module $Module -Column $Column -Values $Values -Op $Op -Text $Text
+    Update-HTColumnFilterState -Module $Module
+    if ($set) { Write-Log -Message ("Filtr kolumny ({0}) - {1}" -f $Module.Title, (Get-HTColumnFilterText -Module $Module -Column $Column)) -Type 'Info' }
+}
+
+function Clear-HTColumnFilters {
+    param([Parameter(Mandatory)][hashtable]$Module, [string]$Column = '')
+    if ($Column) { [void]$Module.ColumnFilters.Remove($Column) } else { $Module.ColumnFilters.Clear() }
+    Update-HTColumnFilterState -Module $Module
+}
+
+function Update-HTColumnFilterState {
+    # Flagi wierszy, wyróżnienie lejków w nagłówkach, przycisk «Filtry kolumn» i filtr widoku
+    param([hashtable]$Module)
+    Update-HTColumnFilterFlags -Module $Module
+    foreach ($col in @($Module.FilterButtons.Keys)) {
+        $Module.FilterButtons[$col].Tag = $(if ($Module.ColumnFilters.Contains($col)) { 'on' } else { $null })
+    }
+    $chip = $Module.View_['btnFilters']
+    if ($chip) {
+        $n = $Module.ColumnFilters.Count
+        if ($n -gt 0) {
+            $chip.Content = New-HTIconContent -Text ("Filtry kolumn: {0}" -f $n) -Icon 'E71C' -IconSize 11
+            $chip.ToolTip = (Get-HTColumnFiltersText -Module $Module).Replace(' • ', [Environment]::NewLine) + [Environment]::NewLine + '(kliknij, aby wyczyścić filtry kolumn)'
+            $chip.Visibility = 'Visible'
+        }
+        else { $chip.Visibility = 'Collapsed' }
+    }
+    Update-HTResultFilter -Module $Module
+}
+
+function Set-HTResultSort {
+    # Sortowanie tabeli po kolumnie (jak kliknięcie nagłówka)
+    param([hashtable]$Module, [string]$Column, [switch]$Descending)
+    $g = $Module.Grid
+    $dir = if ($Descending) { [System.ComponentModel.ListSortDirection]::Descending } else { [System.ComponentModel.ListSortDirection]::Ascending }
+    foreach ($c in $g.Columns) { $c.SortDirection = $(if ([string]$c.SortMemberPath -eq $Column) { $dir } else { $null }) }
+    $g.Items.SortDescriptions.Clear()
+    $g.Items.SortDescriptions.Add((New-Object System.ComponentModel.SortDescription($Column, $dir)))
+}
+
+$script:ColumnFilterXaml = @'
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Background="#1B212A" BorderBrush="#2F3846" BorderThickness="1" CornerRadius="10" Padding="14,12,14,12" Width="330" Margin="0,4,14,14">
+  <Border.Effect>
+    <DropShadowEffect BlurRadius="18" ShadowDepth="4" Opacity="0.5" Color="#000000"/>
+  </Border.Effect>
+  <StackPanel>
+    <Grid Margin="0,0,0,8">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,76,0">
+        <TextBlock Style="{StaticResource Glyph}" Text="&#xE71C;" FontSize="12" Foreground="#8CB0FF" Margin="0,0,8,0"/>
+        <TextBlock x:Name="fTitle" FontWeight="SemiBold" Foreground="#E4E8EF" TextTrimming="CharacterEllipsis"/>
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button x:Name="fSortAsc" Style="{StaticResource GhostButton}" Padding="7,3" MinHeight="26" ToolTip="Sortuj rosnąco (A → Z, 0 → 9)"/>
+        <Button x:Name="fSortDesc" Style="{StaticResource GhostButton}" Padding="7,3" MinHeight="26" ToolTip="Sortuj malejąco (Z → A, 9 → 0)"/>
+      </StackPanel>
+    </Grid>
+    <TextBlock Text="WARUNEK" Foreground="#5E6779" FontSize="10.5" FontWeight="SemiBold" Margin="1,2,0,5"/>
+    <Grid Margin="0,0,0,12">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="138"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <ComboBox x:Name="fOp" Margin="0,0,6,0"/>
+      <TextBox x:Name="fText" Grid.Column="1" Tag="tekst lub liczba…"/>
+    </Grid>
+    <Grid Margin="1,0,0,5">
+      <TextBlock Text="WARTOŚCI" Foreground="#5E6779" FontSize="10.5" FontWeight="SemiBold"/>
+      <TextBlock x:Name="fCount" Foreground="#5E6779" FontSize="10.5" HorizontalAlignment="Right"/>
+    </Grid>
+    <TextBox x:Name="fSearch" Tag="Szukaj wartości…" Margin="0,0,0,6"/>
+    <Border BorderBrush="#2A323F" BorderThickness="1" CornerRadius="6" Background="#161B22">
+      <StackPanel>
+        <CheckBox x:Name="fAll" Content="(Zaznacz wszystkie)" Margin="10,7,8,5" FontWeight="SemiBold"/>
+        <Border Height="1" Background="#242B36" Margin="8,0"/>
+        <ScrollViewer x:Name="fScroll" Height="200" VerticalScrollBarVisibility="Auto" Padding="10,4,6,6">
+          <StackPanel x:Name="fList"/>
+        </ScrollViewer>
+      </StackPanel>
+    </Border>
+    <TextBlock x:Name="fNote" Foreground="#7B8496" FontSize="11.5" TextWrapping="Wrap" Margin="1,6,0,0" Visibility="Collapsed"/>
+    <Grid Margin="0,12,0,0">
+      <Button x:Name="fClear" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" ToolTip="Usuń filtr tej kolumny"/>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button x:Name="fCancel" Style="{StaticResource GhostButton}" Content="Anuluj" Margin="0,0,6,0"/>
+        <Button x:Name="fApply" Style="{StaticResource PrimaryButton}" Content="Filtruj"/>
+      </StackPanel>
+    </Grid>
+  </StackPanel>
+</Border>
+'@
+
+$script:ColumnFilterUi = $null
+$script:ColumnFilterEvents = @{
+    ItemToggled = {
+        param($s, $e)
+        try {
+            $ui = $script:ColumnFilterUi
+            if ($ui.Rendering) { return }
+            $cb = $e.OriginalSource
+            if (-not ($cb -is [System.Windows.Controls.CheckBox]) -or $null -eq $cb.Tag) { return }
+            if ($cb.IsChecked -eq $true) { [void]$ui.Checked.Add([string]$cb.Tag) } else { [void]$ui.Checked.Remove([string]$cb.Tag) }
+            Update-HTColumnFilterAllBox
+        }
+        catch { Write-Verbose $_ }
+    }
+    KeyDown     = {
+        param($s, $e)
+        try {
+            if ($e.Key -eq [System.Windows.Input.Key]::Escape) { $script:ColumnFilterUi.Popup.IsOpen = $false; $e.Handled = $true }
+            elseif ($e.Key -eq [System.Windows.Input.Key]::Enter -and -not ($e.OriginalSource -is [System.Windows.Controls.ComboBox] -or $e.OriginalSource -is [System.Windows.Controls.ComboBoxItem])) {
+                $e.Handled = $true
+                Invoke-HTUiAction -Module $script:ColumnFilterUi.Module -Action { param($m) Complete-HTColumnFilterUi }
+            }
+        }
+        catch { Write-Verbose $_ }
+    }
+}
+
+function Initialize-HTColumnFilterUi {
+    # Jedno okienko filtra (Popup) używane przez wszystkie tabele
+    if ($script:ColumnFilterUi) { return $script:ColumnFilterUi }
+    $root = New-HTUiElement $script:ColumnFilterXaml
+    $ui = @{ Root = $root; Module = $null; Column = ''; Values = @(); Matches = @(); Rendering = $false; Checked = $null; AllState = $true }
+    foreach ($n in 'fTitle', 'fSortAsc', 'fSortDesc', 'fOp', 'fText', 'fCount', 'fSearch', 'fAll', 'fScroll', 'fList', 'fNote', 'fClear', 'fCancel', 'fApply') { $ui[$n] = $root.FindName($n) }
+    foreach ($k in (Get-HTFilterOps).Keys) { [void]$ui.fOp.Items.Add($k) }
+    $ui.fSortAsc.Content = New-HTIconContent -Text '' -Icon 'E74A' -IconSize 12
+    $ui.fSortDesc.Content = New-HTIconContent -Text '' -Icon 'E74B' -IconSize 12
+    $ui.fClear.Content = New-HTIconContent -Text 'Wyczyść' -Icon 'E894' -IconSize 11
+    $popup = New-Object System.Windows.Controls.Primitives.Popup
+    $popup.Child = $root
+    $popup.StaysOpen = $false
+    $popup.AllowsTransparency = $true
+    $popup.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+    $popup.PopupAnimation = [System.Windows.Controls.Primitives.PopupAnimation]::None
+    $ui.Popup = $popup
+    $script:ColumnFilterUi = $ui
+    $ui.fList.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::CheckedEvent, [System.Windows.RoutedEventHandler]$script:ColumnFilterEvents.ItemToggled)
+    $ui.fList.AddHandler([System.Windows.Controls.Primitives.ToggleButton]::UncheckedEvent, [System.Windows.RoutedEventHandler]$script:ColumnFilterEvents.ItemToggled)
+    $root.add_PreviewKeyDown($script:ColumnFilterEvents.KeyDown)
+    Register-HTControlHandler -Control $ui.fSearch -EventName 'TextChanged' -Module $null -Action { param($m) Update-HTColumnFilterList }
+    Register-HTControlHandler -Control $ui.fAll -EventName 'Click' -Module $null -Action {
+        param($m)
+        $ui = $script:ColumnFilterUi
+        # Stan sprzed kliknięcia: częściowy albo pusty -> zaznacz wszystkie (jak w Excelu), pełny -> odznacz
+        $on = ($ui.AllState -ne $true)
+        foreach ($v in $ui.Matches) { if ($on) { [void]$ui.Checked.Add($v) } else { [void]$ui.Checked.Remove($v) } }
+        $ui.Rendering = $true
+        try { foreach ($cb in $ui.fList.Children) { if ($cb -is [System.Windows.Controls.CheckBox]) { $cb.IsChecked = $on } } }
+        finally { $ui.Rendering = $false }
+        Update-HTColumnFilterAllBox
+    }
+    Register-HTControlHandler -Control $ui.fApply -EventName 'Click' -Module $null -Action { param($m) Complete-HTColumnFilterUi }
+    Register-HTControlHandler -Control $ui.fCancel -EventName 'Click' -Module $null -Action { param($m) $script:ColumnFilterUi.Popup.IsOpen = $false }
+    Register-HTControlHandler -Control $ui.fClear -EventName 'Click' -Module $null -Action {
+        param($m)
+        $ui = $script:ColumnFilterUi
+        $ui.Popup.IsOpen = $false
+        Clear-HTColumnFilters -Module $ui.Module -Column $ui.Column
+    }
+    Register-HTControlHandler -Control $ui.fSortAsc -EventName 'Click' -Module $null -Action { param($m) $ui = $script:ColumnFilterUi; $ui.Popup.IsOpen = $false; Set-HTResultSort -Module $ui.Module -Column $ui.Column }
+    Register-HTControlHandler -Control $ui.fSortDesc -EventName 'Click' -Module $null -Action { param($m) $ui = $script:ColumnFilterUi; $ui.Popup.IsOpen = $false; Set-HTResultSort -Module $ui.Module -Column $ui.Column -Descending }
+    return $ui
+}
+
+function Show-HTColumnFilter {
+    # Okienko filtra kolumny pod lejkiem w nagłówku (albo pod tabelą, gdy wywołane z menu)
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Column, $Anchor = $null)
+    $ui = Initialize-HTColumnFilterUi
+    $ui.Module = $Module
+    $ui.Column = $Column
+    $ui.Values = @(Get-HTColumnValueCounts -Module $Module -Column $Column)
+    $f = $Module.ColumnFilters[$Column]
+    $ui.Checked = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($v in $ui.Values) { if ($null -eq $f -or $null -eq $f.Values -or $f.Values.Contains($v.Text)) { [void]$ui.Checked.Add($v.Text) } }
+    $ui.fTitle.Text = $Column
+    $ui.fOp.SelectedItem = $(if ($f -and $f.Op) { Get-HTFilterOpLabel $f.Op } else { 'zawiera' })
+    $ui.fText.Text = $(if ($f -and $f.Op) { [string]$f.Text } else { '' })
+    $ui.fClear.IsEnabled = ($null -ne $f)
+    $ui.Rendering = $true
+    try { $ui.fSearch.Text = '' } finally { $ui.Rendering = $false }
+    Update-HTColumnFilterList
+    if (-not $Anchor) { $Anchor = $(if ($Module.FilterButtons.ContainsKey($Column)) { $Module.FilterButtons[$Column] } else { $Module.Grid }) }
+    if (-not $Anchor.IsVisible) { $Anchor = $Module.Grid }
+    $ui.Popup.PlacementTarget = $Anchor
+    $ui.Popup.IsOpen = $true
+    [void]$ui.fSearch.Focus()
+}
+
+function Update-HTColumnFilterList {
+    # Lista pól wyboru wartości (z wyszukiwaniem; najwyżej $script:FilterListLimit pozycji naraz)
+    $ui = $script:ColumnFilterUi
+    if (-not $ui -or $ui.Rendering) { return }
+    $q = $ui.fSearch.Text.Trim()
+    $hits = @(if ($q) { $ui.Values | Where-Object { $_.Text.IndexOf($q, [StringComparison]::CurrentCultureIgnoreCase) -ge 0 -or ($_.Text -eq '' -and '(puste)'.Contains($q.ToLowerInvariant())) } } else { $ui.Values })
+    $ui.Matches = @($hits | ForEach-Object { $_.Text })
+    $ui.Rendering = $true
+    try {
+        $ui.fList.Children.Clear()
+        foreach ($v in @($hits | Select-Object -First $script:FilterListLimit)) {
+            $cb = New-Object System.Windows.Controls.CheckBox
+            $cb.Tag = $v.Text
+            $cb.Margin = '0,3,0,3'
+            $cb.IsChecked = $ui.Checked.Contains($v.Text)
+            $sp = New-Object System.Windows.Controls.StackPanel
+            $sp.Orientation = 'Horizontal'
+            $label = New-Object System.Windows.Controls.TextBlock
+            if ($v.Text -eq '') { $label.Text = '(puste)'; $label.FontStyle = 'Italic'; $label.Foreground = Get-HTBrush '#8791A5' }
+            else { $label.Text = $(if ($v.Text.Length -gt 80) { $v.Text.Substring(0, 80) + '…' } else { $v.Text }) -replace '[\r\n]+', ' ' }
+            $label.MaxWidth = 230
+            $label.TextTrimming = 'CharacterEllipsis'
+            [void]$sp.Children.Add($label)
+            $count = New-Object System.Windows.Controls.TextBlock
+            $count.Text = '  ' + $v.Count
+            $count.Foreground = Get-HTBrush '#5E6779'
+            $count.FontSize = 11
+            $count.VerticalAlignment = 'Center'
+            [void]$sp.Children.Add($count)
+            $cb.Content = $sp
+            if ($v.Text.Length -gt 30) { $cb.ToolTip = $v.Text }
+            [void]$ui.fList.Children.Add($cb)
+        }
+    }
+    finally { $ui.Rendering = $false }
+    $ui.fScroll.ScrollToTop()
+    $ui.fCount.Text = $(if ($q) { "{0} z {1}" -f $hits.Count, $ui.Values.Count } else { [string]$ui.Values.Count })
+    if ($hits.Count -gt $script:FilterListLimit) {
+        $ui.fNote.Text = "Pokazano $script:FilterListLimit z $($hits.Count) wartości - zawęź listę wyszukiwaniem albo użyj warunku. «Zaznacz wszystkie» obejmuje także niewidoczne."
+        $ui.fNote.Visibility = 'Visible'
+    }
+    elseif ($q) {
+        $ui.fNote.Text = 'Filtr obejmie tylko zaznaczone wartości spośród wyszukanych.'
+        $ui.fNote.Visibility = 'Visible'
+    }
+    else { $ui.fNote.Visibility = 'Collapsed' }
+    Update-HTColumnFilterAllBox
+}
+
+function Update-HTColumnFilterAllBox {
+    $ui = $script:ColumnFilterUi
+    $on = 0
+    foreach ($v in $ui.Matches) { if ($ui.Checked.Contains($v)) { $on++ } }
+    $ui.AllState = $(if ($ui.Matches.Count -gt 0 -and $on -eq $ui.Matches.Count) { $true } elseif ($on -eq 0) { $false } else { $null })
+    $ui.Rendering = $true
+    try {
+        $ui.fAll.IsChecked = $ui.AllState
+        $ui.fAll.Content = $(if ($ui.fSearch.Text.Trim()) { '(Zaznacz wszystkie wyszukane)' } else { '(Zaznacz wszystkie)' })
+    }
+    finally { $ui.Rendering = $false }
+}
+
+function Complete-HTColumnFilterUi {
+    # «Filtruj»: wybrane wartości + warunek -> filtr kolumny
+    $ui = $script:ColumnFilterUi
+    $all = @($ui.Values | ForEach-Object { $_.Text })
+    $source = if ($ui.fSearch.Text.Trim()) { $ui.Matches } else { $all }
+    $selected = @($source | Where-Object { $ui.Checked.Contains($_) })
+    # Bezpośrednie przypisanie: pusta tablica (nic nie zaznaczono) nie może zamienić się w $null (= brak filtra)
+    $values = $null
+    if ($selected.Count -ne $all.Count) { $values = $selected }
+    $ops = Get-HTFilterOps
+    $op = if ($ui.fOp.SelectedItem) { $ops[[string]$ui.fOp.SelectedItem] } else { '' }
+    $text = $ui.fText.Text
+    if ($op -ne 'empty' -and $op -ne 'notempty' -and $text.Trim() -eq '') { $op = '' }
+    $ui.Popup.IsOpen = $false
+    Set-HTColumnFilter -Module $ui.Module -Column $ui.Column -Values $values -Op $op -Text $text.Trim()
+}
+
+function Add-HTQuickFilterMenu {
+    # Pozycje menu kontekstowego: filtr po wartości klikniętej komórki
+    param([hashtable]$Module, $Menu)
+    $cell = $Module.MenuCell
+    if (-not $cell -or -not $cell.Column -or $Module.SecretColumns -contains $cell.Column -or -not $Module.Table.Columns.Contains($cell.Column)) { return }
+    $text = Get-HTFilterText (Get-HTObjectValue $cell.Row $cell.Column)
+    $shown = if ($text -eq '') { '(puste)' } elseif ($text.Length -gt 40) { $text.Substring(0, 40) + '…' } else { $text }
+    $shown = $shown -replace '[\r\n]+', ' '
+    [void]$Menu.Items.Add((New-HTMenuItem -Text ("Pokaż tylko «{0}»" -f $shown) -Icon 'E71C' -Module $Module -Action {
+                param($m)
+                $c = $m.MenuCell
+                Set-HTColumnFilter -Module $m -Column $c.Column -Values @(Get-HTFilterText (Get-HTObjectValue $c.Row $c.Column))
+            }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text ("Ukryj «{0}»" -f $shown) -Icon 'E8F6' -Module $Module -Action {
+                param($m)
+                $c = $m.MenuCell
+                $hide = Get-HTFilterText (Get-HTObjectValue $c.Row $c.Column)
+                $current = $m.ColumnFilters[$c.Column]
+                $keep = @(Get-HTColumnValueCounts -Module $m -Column $c.Column | ForEach-Object { $_.Text } | Where-Object { $_ -ne $hide -and ($null -eq $current -or $null -eq $current.Values -or $current.Values.Contains($_)) })
+                Set-HTColumnFilter -Module $m -Column $c.Column -Values $keep -Op $(if ($current) { $current.Op } else { '' }) -Text $(if ($current) { $current.Text } else { '' })
+            }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text ("Filtruj kolumnę «{0}»…" -f $cell.Column) -Icon 'E71C' -Module $Module -Action { param($m) Show-HTColumnFilter -Module $m -Column $m.MenuCell.Column }))
+    if ($Module.ColumnFilters.Count -gt 0) {
+        [void]$Menu.Items.Add((New-HTMenuItem -Text 'Wyczyść filtry kolumn' -Icon 'E894' -Module $Module -Action { param($m) Clear-HTColumnFilters -Module $m }))
+    }
+}
+
+function Update-HTHeaderMenu {
+    # Menu pod prawym przyciskiem na nagłówku kolumny
+    param([hashtable]$Module, $Menu, [string]$Column)
+    $canFilter = $Module.SecretColumns -notcontains $Column
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Sortuj rosnąco' -Icon 'E74A' -Module $Module -Action { param($m) Set-HTResultSort -Module $m -Column $m.MenuCell.Column }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Sortuj malejąco' -Icon 'E74B' -Module $Module -Action { param($m) Set-HTResultSort -Module $m -Column $m.MenuCell.Column -Descending }))
+    [void]$Menu.Items.Add((New-HTMenuSeparator))
+    # Wartości całej kolumny (wiersze widoczne po filtrach), każda w osobnej linii
+    $count = if ($Module.View) { $Module.View.Count } else { 0 }
+    [void]$Menu.Items.Add((New-HTMenuItem -Text ("Kopiuj wartości kolumny ({0})" -f $count) -Icon 'E8C8' -Module $Module -Enabled ($count -gt 0) -Action { param($m) Copy-HTColumnValues -Module $m -Column $m.MenuCell.Column }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Kopiuj wartości bez powtórzeń i pustych' -Icon 'E8C8' -Module $Module -Enabled ($count -gt 0) -Action { param($m) Copy-HTColumnValues -Module $m -Column $m.MenuCell.Column -Unique }))
+    [void]$Menu.Items.Add((New-HTMenuSeparator))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Filtruj…' -Icon 'E71C' -Module $Module -Enabled $canFilter -Action { param($m) Show-HTColumnFilter -Module $m -Column $m.MenuCell.Column }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Wyczyść filtr kolumny' -Icon 'E894' -Module $Module -Enabled ($Module.ColumnFilters.Contains($Column)) -Action { param($m) Clear-HTColumnFilters -Module $m -Column $m.MenuCell.Column }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Wyczyść wszystkie filtry kolumn' -Icon 'E894' -Module $Module -Enabled ($Module.ColumnFilters.Count -gt 0) -Action { param($m) Clear-HTColumnFilters -Module $m }))
+    [void]$Menu.Items.Add((New-HTMenuSeparator))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Ukryj kolumnę' -Icon 'ED1A' -Module $Module -Action {
+                param($m)
+                foreach ($c in $m.Grid.Columns) { if ([string]$c.SortMemberPath -eq $m.MenuCell.Column) { $c.Visibility = 'Collapsed' } }
+                [void]$m.UserHidden.Add([string]$m.MenuCell.Column)
+                Update-HTColumnsButton -Module $m
+                Show-HTToast "Ukryto kolumnę «$($m.MenuCell.Column)» - nie trafi do kopiowania ani eksportu. «Pokaż wszystkie kolumny» w menu nagłówka ją przywróci." 'info'
+            }))
+    $hidden = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' }).Count
+    [void]$Menu.Items.Add((New-HTMenuItem -Text $(if ($hidden) { "Pokaż wszystkie kolumny (ukryte: $hidden)" } else { 'Pokaż wszystkie kolumny' }) -Icon 'E7B3' -Module $Module -Enabled ($hidden -gt 0) -Action {
+                param($m)
+                foreach ($c in $m.Grid.Columns) { $c.Visibility = 'Visible' }
+                $m.UserHidden.Clear()
+                Update-HTColumnsButton -Module $m
+            }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Pokaż tylko tę kolumnę' -Icon 'E8FD' -Module $Module -Action { param($m) Set-HTResultColumns -Module $m -Visible @([string]$m.MenuCell.Column) }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Wybierz kolumny…' -Icon 'E8FD' -Module $Module -Action { param($m) Select-HTResultColumns -Module $m }))
+}
+
+function Update-HTColumnsButton {
+    # Przycisk «Kolumny» nad tabelą: liczba kolumn ukrytych przez użytkownika
+    param([hashtable]$Module)
+    $b = $Module.View_['btnColumns']
+    if (-not $b -or -not $Module.Grid) { return }
+    $n = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' -and $Module.UserHidden.Contains([string]$_.SortMemberPath) }).Count
+    $b.Content = New-HTIconContent -Text $(if ($n) { "ukryte: $n" } else { '' }) -Icon 'E8FD'
+    # Zapamiętanie ukrytych kolumn modułu (przy następnym uruchomieniu też ukryte)
+    if ($Module.Workspace -and $Module.Key) {
+        $saved = @(Get-HTModuleHiddenColumns $Module.Key)
+        $current = @($Module.UserHidden)
+        if (@(Compare-Object -ReferenceObject $saved -DifferenceObject $current).Count -gt 0) { Set-HTModuleHiddenColumns -Key $Module.Key -Columns $current }
+    }
+}
+
+function Set-HTResultColumns {
+    # Widoczne tylko podane kolumny, pozostałe ukryte - także w kopiowaniu i eksporcie, a po odświeżeniu wyników dalej ukryte
+    param([Parameter(Mandatory)][hashtable]$Module, [string[]]$Visible)
+    foreach ($c in @($Module.Grid.Columns)) {
+        $n = [string]$c.SortMemberPath
+        if ($Visible -contains $n) { $c.Visibility = 'Visible'; [void]$Module.UserHidden.Remove($n) }
+        else { $c.Visibility = 'Collapsed'; [void]$Module.UserHidden.Add($n) }
+    }
+    Update-HTColumnsButton -Module $Module
+}
+
+$script:CheckListEvents = @{
+    Filter = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        $q = $s.Text.Trim()
+        foreach ($cb in $w.FindName('clList').Children) { $cb.Visibility = if (-not $q -or ([string]$cb.Tag).IndexOf($q, [StringComparison]::CurrentCultureIgnoreCase) -ge 0) { 'Visible' } else { 'Collapsed' } }
+    }
+    Bulk   = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        foreach ($cb in $w.FindName('clList').Children) {
+            if ($cb.Visibility -ne 'Visible') { continue }
+            $cb.IsChecked = switch ([string]$s.Tag) { 'All' { $true } 'None' { $false } default { $cb.IsChecked -ne $true } }
+        }
+    }
+}
+
+function Show-HTCheckListDialog {
+    # Lista pól wyboru (filtr nazw, zaznacz / odznacz / odwróć widoczne). Zwraca zaznaczone pozycje albo $null (anulowano).
+    param([Parameter(Mandatory)][string]$Title, [string]$Prompt = '', [Parameter(Mandatory)][string[]]$Items, [string[]]$Checked = @(), [string]$OkText = 'OK', [string]$Icon = 'E8FD')
+    $body = @'
+<StackPanel>
+  <Grid Margin="0,0,0,8">
+    <TextBox x:Name="clSearch" Tag="Szukaj…" Width="220" HorizontalAlignment="Left"/>
+    <StackPanel x:Name="clButtons" Orientation="Horizontal" HorizontalAlignment="Right"/>
+  </Grid>
+  <Border Style="{StaticResource Card}" Padding="10,6">
+    <ScrollViewer Height="320" VerticalScrollBarVisibility="Auto">
+      <StackPanel x:Name="clList"/>
+    </ScrollViewer>
+  </Border>
+</StackPanel>
+'@
+    $w = New-HTDialog -Title $Title -Subtitle $Prompt -Body $body -Icon $Icon -OkText $OkText -Width 520 -Validate {
+        param($w)
+        if (-not @($w.FindName('clList').Children | Where-Object { $_.IsChecked -eq $true }).Count) { Show-HTWarning 'Zaznacz co najmniej jedną pozycję.'; return $false }
+        return $true
+    }
+    $list = $w.FindName('clList')
+    foreach ($i in $Items) {
+        $cb = New-Object System.Windows.Controls.CheckBox
+        $cb.Content = $i
+        $cb.Tag = $i
+        $cb.Margin = '0,3,0,3'
+        $cb.IsChecked = ($Checked -contains $i)
+        [void]$list.Children.Add($cb)
+    }
+    foreach ($def in @(@('All', 'Zaznacz', 'E73A'), @('None', 'Odznacz', 'E739'), @('Invert', 'Odwróć', 'E8AB'))) {
+        $b = New-HTButton -Text $def[1] -Icon $def[2] -Ghost
+        $b.Tag = $def[0]
+        $b.Margin = '4,0,0,0'
+        $b.add_Click($script:CheckListEvents.Bulk)
+        [void]$w.FindName('clButtons').Children.Add($b)
+    }
+    $w.FindName('clSearch').add_TextChanged($script:CheckListEvents.Filter)
+    if (-not (Invoke-HTDialog $w)) { return $null }
+    return @($list.Children | Where-Object { $_.IsChecked -eq $true } | ForEach-Object { [string]$_.Tag })
+}
+
+function Select-HTResultColumns {
+    # Okno wyboru kolumn (kolejność zmienia się, przeciągając nagłówki tabeli)
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $cols = @(if ($Module.Grid) { $Module.Grid.Columns | Sort-Object DisplayIndex })
+    if ($cols.Count -eq 0) { Show-HTWarning 'Brak kolumn - najpierw pobierz dane.'; return }
+    $names = @($cols | ForEach-Object { [string]$_.SortMemberPath })
+    $visible = @($cols | Where-Object { $_.Visibility -eq 'Visible' } | ForEach-Object { [string]$_.SortMemberPath })
+    $chosen = Show-HTCheckListDialog -Title 'Kolumny widoku' -Prompt 'Pokazane zostaną tylko zaznaczone kolumny - pozostałe nie trafią do kopiowania ani eksportu (np. lista do importu). Kolejność zmienisz, przeciągając nagłówki tabeli.' -Items $names -Checked $visible -OkText 'Pokaż zaznaczone'
+    if ($null -eq $chosen) { return }
+    Set-HTResultColumns -Module $Module -Visible $chosen
+}
+
+function Get-HTColumnTextValues {
+    # Wartości jednej kolumny jako tekst (bez tabulatorów i nowych linii): widoczne wiersze albo zaznaczone; -Unique bez pustych i powtórzeń
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Column, [switch]$SelectedOnly, [switch]$Unique)
+    $rows = if ($SelectedOnly) { @($Module.Grid.SelectedItems | Where-Object { $_ -is [System.Data.DataRowView] }) } elseif ($null -ne $Module.View) { @($Module.View | ForEach-Object { $_ }) } else { @() }
+    $values = @(foreach ($r in $rows) { ([string](Get-HTExportValue -Module $Module -Row $r -Column $Column)) -replace '[\t\r\n]+', ' ' })
+    if ($Unique) {
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $values = @($values | Where-Object { $_.Trim() -ne '' -and $seen.Add($_.Trim()) })
+    }
+    return $values
+}
+
+function Copy-HTColumnValues {
+    # Wartości kolumny do schowka - każda w osobnej linii (np. lista UPN do «Zaznacz z listy» w innym module)
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Column, [switch]$SelectedOnly, [switch]$Unique)
+    $values = @(Get-HTColumnTextValues -Module $Module -Column $Column -SelectedOnly:$SelectedOnly -Unique:$Unique)
+    if ($values.Count -eq 0) { Show-HTWarning "Brak wartości w kolumnie «$Column» do skopiowania."; return }
+    Set-HTClipboard -Text ($values -join "`r`n") -Secret:($Module.RevealSecrets -and $Module.SecretColumns -contains $Column)
+    Show-HTToast ("Skopiowano wartości kolumny «{0}»: {1}{2}" -f $Column, $values.Count, $(if ($Unique) { ' (bez powtórzeń)' } else { '' })) 'ok'
+}
+#endregion
+
 #region Zapytania: wyniki dla zaznaczonych obiektów i dane ogólne
 function Invoke-HTQuery {
     <#
         Pobiera dane i wpisuje je do tabeli wyników modułu: -ScriptBlock zwraca obiekty (wiersze)
         albo sam dopisuje je przez Add-HTResultRows (np. z postępem). Zwraca liczbę wierszy.
+        -Background: blok wykonuje się w wątku w tle (okno reaguje, «Przerwij» na pasku stanu), dostaje -Arguments
+        jako jedyny parametr i może używać tylko funkcji modułów; wiersze pojawiają się na bieżąco.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Module,
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][scriptblock]$ScriptBlock,
         [string]$Service = '',
-        [switch]$KeepResults
+        [switch]$KeepResults,
+        [switch]$Background,
+        [hashtable]$Arguments = @{}
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
@@ -3815,11 +4512,43 @@ function Invoke-HTQuery {
     Set-HTBusy -Busy $true -Text "$Name…"
     $count = 0
     try {
-        $data = @(& $ScriptBlock | Where-Object { $null -ne $_ })
-        if ($data.Count -gt 0) { Add-HTResultRows -Module $Module -Objects $data }
+        $done = $false
+        if ($Background -and (Test-HTBackgroundAvailable -Service $(if ($service -eq 'Graph' -or -not $service) { 'Graph' } else { $service }))) {
+            $batch = New-Object System.Collections.Generic.List[object]
+            $flush = { if ($batch.Count) { Add-HTResultRows -Module $Module -Objects $batch.ToArray(); $batch.Clear() } }
+            try {
+                Invoke-HTBackground -ScriptBlock $ScriptBlock -Arguments $Arguments -Name $Name -OnItem {
+                    param($item)
+                    if ($null -eq $item) { return }
+                    $batch.Add($item)
+                    if ($batch.Count -ge 100) { . $flush }
+                }
+                . $flush
+                $done = $true
+            }
+            catch [System.OperationCanceledException] { . $flush; throw }
+            catch {
+                . $flush
+                if (-not (Test-HTBackgroundAuthError $_)) { throw }
+                # Połączenie Graph niedostępne w wątku w tle - dalsze zapytania w wątku okna
+                $script:Background.Disabled = $true
+                Write-Log -Message "Operacje w tle wyłączone (brak połączenia w wątku w tle): $($_.Exception.Message)" -Type 'Warn'
+                Reset-HTResults -Module $Module
+            }
+        }
+        if (-not $done) {
+            $data = @(& $ScriptBlock $Arguments | Where-Object { $null -ne $_ })
+            if ($data.Count -gt 0) { Add-HTResultRows -Module $Module -Objects $data }
+        }
         $count = $Module.Table.Rows.Count
         Write-Log -Message "$Name - wyników: $count" -Type 'Info'
         Set-HTBusy -Busy $false -Text "$Name - wyników: $count"
+    }
+    catch [System.OperationCanceledException] {
+        $count = $Module.Table.Rows.Count
+        Write-Log -Message "$Name - przerwano (wyników: $count)" -Type 'Warn'
+        Set-HTBusy -Busy $false -Text "Przerwano: $Name"
+        Show-HTToast "Przerwano: $Name (wyników: $count)" 'warn'
     }
     catch {
         Write-Log -Message "$Name - błąd: $($_.Exception.Message)" -Type 'Error'
@@ -3911,6 +4640,7 @@ function Invoke-HTRowAction {
         [string]$Service = ''
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
+    if (-not (Assert-HTWriteAllowed -Operation $Name)) { return }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
     $Rows = @($Rows | Where-Object { $null -ne $_ })
     if ($Rows.Count -eq 0) { return }
@@ -3926,11 +4656,14 @@ function Invoke-HTRowAction {
             try {
                 $detail = & $Action $Rows[$i]
                 $ok++
-                Write-Log -Message "$Name - $($labels[$i]): OK $(if ($detail -is [string]) { $detail })" -Type 'Info'
+                $detailText = if ($detail -is [string]) { $detail } else { '' }
+                Write-Log -Message "$Name - $($labels[$i]): OK $detailText" -Type 'Info'
+                Add-HTOperationRecord -Operation $Name -Object $labels[$i] -Status 'OK' -Details $detailText -Module $Module.Title
             }
             catch {
                 $errors.Add("$($labels[$i]): $($_.Exception.Message)")
                 Write-Log -Message "$Name - $($labels[$i]): $($_.Exception.Message)" -Type 'Warn'
+                Add-HTOperationRecord -Operation $Name -Object $labels[$i] -Status 'Błąd' -Details $_.Exception.Message -Module $Module.Title
             }
         }
     }
@@ -4017,15 +4750,21 @@ function Select-HTOne {
 }
 #endregion
 
-#region Blokada programu (PIN) - jak w Domain Ops
+#region Blokada programu (PIN i MFA) - jak w Domain Ops
 <#
     Ekran PIN przed oknem głównym i blokada w trakcie pracy (przycisk z kłódką, Ctrl+Shift+L, automatycznie po
-    bezczynności). Blokada ukrywa zawartość okna głównego i czyści poufne dane ze schowka; połączenia z usługami trwają.
-    Skrót PIN-u (PBKDF2) jest w konfiguracji - zob. Modules/Security.psm1.
+    bezczynności). Blokada ukrywa zawartość okna głównego i otwartych okien, czyści poufne dane ze schowka;
+    połączenia z usługami trwają. Skrót PIN-u (PBKDF2) jest w konfiguracji - zob. Modules/Security.psm1.
+    Z włączonym MFA (Modules/Mfa.psm1) po PIN-ie wymagany jest kod z aplikacji; konta dodatkowe mają własny PIN,
+    klucz i uprawnienia (wybór konta nad klawiaturą). Z ekranu blokady program można zamknąć bez PIN-u
+    przyciskiem «Zakończ awaryjnie» (z potwierdzeniem).
 #>
 $script:UnlockMaxAttempts = 5
 $script:UnlockCooldownSec = 30
-$script:LockState = @{ Locked = $false; LastActivity = [datetime]::Now; Timer = $null }
+$script:UnlockExitConfirmSec = 10
+# Emergency: zamknięcie programu z ekranu blokady bez PIN-u; Hidden: okna, których zawartość ukryto na czas blokady;
+# LastActivity / Pos: ostatnia aktywność w oknach programu i pozycja kursora (blokada po bezczynności)
+$script:LockState = @{ Locked = $false; Emergency = $false; Hidden = @(); LastActivity = [datetime]::Now; Timer = $null; Pos = $null }
 
 $script:UnlockXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -4046,18 +4785,22 @@ $script:UnlockXaml = @'
       </Border>
       <TextBlock Text="Helpdesk Tools" FontSize="18" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Center" Margin="0,14,0,0"/>
       <TextBlock x:Name="lockHint" Text="Wpisz PIN, aby uruchomić program" Foreground="#8791A5" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="0,4,0,0"/>
+      <ComboBox x:Name="lockUser" Margin="0,14,0,0" Visibility="Collapsed" ToolTip="Konto MFA"/>
       <StackPanel x:Name="lockDots" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,22,0,0"/>
       <TextBlock x:Name="lockMsg" Foreground="#FF7A86" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MinHeight="18" Margin="0,12,0,0"/>
       <UniformGrid x:Name="lockPad" Columns="3" Margin="0,12,0,0"/>
       <Button x:Name="lockClose" Content="Zamknij" Style="{StaticResource GhostButton}" HorizontalAlignment="Center" MinWidth="110" Margin="0,14,0,0" Focusable="False"/>
+      <Button x:Name="lockExit" Style="{StaticResource GhostButton}" HorizontalAlignment="Center" MinWidth="170" Margin="0,14,0,0" Focusable="False" Visibility="Collapsed"
+              ToolTip="Zamyka program bez odblokowania - połączenia z usługami zostaną zakończone"/>
+      <TextBlock x:Name="lockExitMsg" Foreground="#E5B567" FontSize="12" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
     </StackPanel>
   </Grid>
 </Window>
 '@
 
 $script:UnlockEvents = @{
-    Key     = { param($s, $e) Add-HTUnlockKey -Window ([System.Windows.Window]::GetWindow($s)) -Key ([string]$s.Tag) }
-    KeyDown = {
+    Key      = { param($s, $e) Add-HTUnlockKey -Window ([System.Windows.Window]::GetWindow($s)) -Key ([string]$s.Tag) }
+    KeyDown  = {
         param($s, $e)
         # Cyfry z górnego rzędu (bez Shift) i z klawiatury numerycznej; Backspace kasuje cyfrę, Esc i Delete wszystkie
         $k = [string]$e.Key
@@ -4070,30 +4813,39 @@ $script:UnlockEvents = @{
         $e.Handled = $true
         Add-HTUnlockKey -Window $s -Key $key
     }
-    Close   = { param($s, $e) Close-HTDialog -Window ([System.Windows.Window]::GetWindow($s)) -Ok $false }
-    # Okno blokady zamyka tylko poprawny PIN (krzyżyk, Alt+F4 są ignorowane)
-    Closing = { param($s, $e) if ($s.Tag.Mode -eq 'Lock' -and -not $s.Tag.Result) { $e.Cancel = $true } }
+    Close    = { param($s, $e) Close-HTDialog -Window ([System.Windows.Window]::GetWindow($s)) -Ok $false }
+    # Inne konto MFA: od nowa od PIN-u
+    User     = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); $w.FindName('lockMsg').Text = ''; Set-HTUnlockPhase -Window $w -Phase 'Pin' }
+    Exit     = { param($s, $e) Request-HTUnlockExit -Window ([System.Windows.Window]::GetWindow($s)) }
+    # Okno blokady zamyka poprawny PIN albo potwierdzone zamknięcie awaryjne. Krzyżyk i Alt+F4 działają jak przycisk
+    # «Zakończ awaryjnie»: pierwsze naciśnięcie tylko ostrzega, drugie w czasie potwierdzenia zamyka program bez PIN-u.
+    Closing  = {
+        param($s, $e)
+        if ($s.Tag.Mode -ne 'Lock' -or $s.Tag.Result -or $script:LockState.Emergency) { return }
+        if ([datetime]::UtcNow -lt $s.Tag.ExitArmed) {
+            if ($s.Tag.ExitTimer) { $s.Tag.ExitTimer.Stop() }
+            $script:LockState.Emergency = $true
+            return
+        }
+        $e.Cancel = $true
+        Request-HTUnlockExit -Window $s
+    }
+    # Aktywność w oknach programu (klawisz, kliknięcie, kółko myszy) odsuwa blokadę po bezczynności
+    Activity = { param($s, $e) $script:LockState.LastActivity = [datetime]::Now }
 }
 
 function New-HTUnlockWindow {
-    # -Lock: blokada w trakcie pracy (bez «Zamknij»; po wyczerpaniu prób przerwa zamiast zamknięcia programu)
+    # -Lock: blokada w trakcie pracy (bez «Zamknij», z «Zakończ awaryjnie»; po wyczerpaniu prób przerwa zamiast zamknięcia programu)
     param([switch]$Lock)
     $w = New-HTUiElement $script:UnlockXaml
     $w.Title = $(if ($Lock) { 'Helpdesk Tools - zablokowany' } else { 'Helpdesk Tools - odblokowanie' })
     if ($Lock) {
-        $w.FindName('lockHint').Text = 'Program zablokowany - wpisz PIN'
         $w.FindName('lockClose').Visibility = 'Collapsed'
-    }
-    $w.FindName('lockIcon').Text = Get-HTGlyph 'E72E'
-    $length = [Math]::Max(4, [int]$Global:HTConfig.PinLength)
-    $dots = $w.FindName('lockDots')
-    for ($i = 0; $i -lt $length; $i++) {
-        $d = New-Object System.Windows.Shapes.Ellipse
-        $d.Width = 14
-        $d.Height = 14
-        $d.Margin = New-Object System.Windows.Thickness(7, 0, 7, 0)
-        $d.StrokeThickness = 2
-        [void]$dots.Children.Add($d)
+        # Krzyżyk nie zamyka okna blokady, więc bez PIN-u program można zamknąć tylko tym przyciskiem (z potwierdzeniem)
+        $exit = $w.FindName('lockExit')
+        $exit.Visibility = 'Visible'
+        $exit.Content = New-HTIconContent -Text 'Zakończ awaryjnie' -Icon 'E7E8' -IconSize 12
+        $exit.add_Click($script:UnlockEvents.Exit)
     }
     $pad = $w.FindName('lockPad')
     foreach ($key in '1', '2', '3', '4', '5', '6', '7', '8', '9', 'Clear', '0', 'Back') {
@@ -4117,10 +4869,67 @@ function New-HTUnlockWindow {
     $w.FindName('lockClose').add_Click($script:UnlockEvents.Close)
     $w.add_PreviewKeyDown($script:UnlockEvents.KeyDown)
     $w.add_Closing($script:UnlockEvents.Closing)
-    $w.Tag = @{ Result = $false; Modal = $false; Pin = ''; PinLength = $length; Attempts = 0; Failed = 0; Error = $false; Locked = $false
-        Mode = $(if ($Lock) { 'Lock' } else { 'Start' }); LockScreen = $true; CooldownEnd = [datetime]::MinValue }
-    Update-HTUnlockView -Window $w
+    $w.Tag = @{ Result = $false; Modal = $false; Pin = ''; Attempts = 0; Failed = 0; Error = $false; Locked = $false
+        Mode = $(if ($Lock) { 'Lock' } else { 'Start' }); LockScreen = $true; CooldownEnd = [datetime]::MinValue
+        ExitArmed = [datetime]::MinValue; ExitTimer = $null; Phase = 'Pin'; Need = 4; Accounts = @(); Switched = $false }
+    # MFA: konta z pliku (pusta lista - sam PIN); przy kilku kontach wybór konta nad klawiaturą
+    $w.Tag.Accounts = @(Get-HTMfaUnlockAccounts)
+    if ($w.Tag.Accounts.Count -gt 1) {
+        $combo = $w.FindName('lockUser')
+        foreach ($a in $w.Tag.Accounts) { [void]$combo.Items.Add([string]$a.Name) }
+        # Na ekranie blokady wybrane konto, które pracowało przed blokadą
+        $current = (Get-HTAccess).AccountId
+        $index = 0
+        for ($i = 0; $i -lt $w.Tag.Accounts.Count; $i++) {
+            $a = $w.Tag.Accounts[$i]
+            if (($current -eq '#primary' -and $a.Primary) -or ($a.Id -and $a.Id -eq $current)) { $index = $i; break }
+        }
+        $combo.SelectedIndex = $(if ($Lock) { $index } else { 0 })
+        $combo.Visibility = 'Visible'
+        $combo.add_SelectionChanged($script:UnlockEvents.User)
+    }
+    Set-HTUnlockPhase -Window $w -Phase 'Pin'
     return $w
+}
+
+function Get-HTUnlockAccount {
+    # Wybrane konto MFA albo $null (MFA wyłączone)
+    param([Parameter(Mandatory)]$Window)
+    $list = @($Window.Tag.Accounts)
+    if (-not $list.Count) { return $null }
+    $i = [Math]::Max(0, $Window.FindName('lockUser').SelectedIndex)
+    if ($i -ge $list.Count) { $i = 0 }
+    return $list[$i]
+}
+
+function Set-HTUnlockPhase {
+    # Pin: PIN konta; Code: kod z aplikacji (po poprawnym PIN-ie konta z MFA). Kropki według długości wpisu.
+    param([Parameter(Mandatory)]$Window, [ValidateSet('Pin', 'Code')][string]$Phase)
+    $st = $Window.Tag
+    $acc = Get-HTUnlockAccount -Window $Window
+    $st.Phase = $Phase
+    $st.Need = if ($Phase -eq 'Code') { [int](Get-HTMfaSettings).Digits }
+    elseif ($acc -and -not $acc.Primary -and [int]$acc.PinLength -ge 4) { [int]$acc.PinLength }
+    else { [Math]::Max(4, [int]$Global:HTConfig.PinLength) }
+    $st.Pin = ''
+    $st.Error = $false
+    $dots = $Window.FindName('lockDots')
+    $dots.Children.Clear()
+    $gap = if ($st.Need -gt 5) { 5 } else { 7 }
+    for ($i = 0; $i -lt $st.Need; $i++) {
+        $d = New-Object System.Windows.Shapes.Ellipse
+        $d.Width = 14
+        $d.Height = 14
+        $d.Margin = New-Object System.Windows.Thickness($gap, 0, $gap, 0)
+        $d.StrokeThickness = 2
+        [void]$dots.Children.Add($d)
+    }
+    $who = if ($acc -and @($st.Accounts).Count -gt 1) { " (konto: $($acc.Name))" } else { '' }
+    $Window.FindName('lockIcon').Text = Get-HTGlyph $(if ($Phase -eq 'Code') { 'E8EA' } else { 'E72E' })
+    $Window.FindName('lockHint').Text = if ($Phase -eq 'Code') { "Wpisz kod z aplikacji uwierzytelniającej$who" }
+    elseif ($st.Mode -eq 'Lock') { "Program zablokowany - wpisz PIN$who" }
+    else { "Wpisz PIN, aby uruchomić program$who" }
+    Update-HTUnlockView -Window $Window
 }
 
 function Update-HTUnlockView {
@@ -4137,21 +4946,67 @@ function Update-HTUnlockView {
 }
 
 function Add-HTUnlockKey {
-    # Cyfra, 'Back' albo 'Clear'; po wpisaniu pełnego PIN-u od razu sprawdzenie
+    # Cyfra, 'Back' albo 'Clear'; po wpisaniu pełnego PIN-u (albo kodu z aplikacji) od razu sprawdzenie
     param([Parameter(Mandatory)]$Window, [Parameter(Mandatory)][string]$Key)
     $st = $Window.Tag
     if ($st.Locked) { return }
     if ($st.Error) { $st.Error = $false }
     switch -Regex ($Key) {
-        '^\d$' { if ($st.Pin.Length -lt $st.PinLength) { $st.Pin += $Key } }
+        '^\d$' { if ($st.Pin.Length -lt $st.Need) { $st.Pin += $Key } }
         '^Back$' { if ($st.Pin.Length) { $st.Pin = $st.Pin.Substring(0, $st.Pin.Length - 1) } }
         '^Clear$' { $st.Pin = '' }
     }
     $msg = $Window.FindName('lockMsg')
-    if ($st.Pin.Length -lt $st.PinLength) { Update-HTUnlockView -Window $Window; return }
-    if (Test-HTPin -Pin $st.Pin) {
+    if ($st.Pin.Length -lt $st.Need) { Update-HTUnlockView -Window $Window; return }
+    $acc = Get-HTUnlockAccount -Window $Window
+    $mfa = [bool]($acc -and -not $acc['NoMfa'])
+    $ok = $false
+    $codeResult = ''
+    $unreadable = 'Nie można odczytać danych MFA tego konta na tym komputerze (usuń plik Mfa.json, aby wrócić do samego PIN-u).'
+    try {
+        if ($st.Phase -eq 'Code') { $codeResult = Test-HTMfaCodeFor -Account $acc -Code $st.Pin; $ok = ($codeResult -eq 'Ok') }
+        elseif ($mfa) { $ok = Test-HTMfaAccountPin -Account $acc -Pin $st.Pin }
+        else { $ok = Test-HTPin -Pin $st.Pin }
+    }
+    catch {
+        # Klucza nie da się odczytać (DPAPI: inny komputer albo konto Windows) - bez liczenia próby
         $st.Pin = ''
-        if ($st.Mode -eq 'Lock') { Restore-HTAfterLock }
+        Update-HTUnlockView -Window $Window
+        $msg.Text = $unreadable
+        return
+    }
+    if ($codeResult -eq 'Used') {
+        # Kod poprawny, ale z okna 30 s już użytego (np. ponowna blokada zaraz po odblokowaniu) - bez liczenia próby
+        $st.Pin = ''
+        Update-HTUnlockView -Window $Window
+        $msg.Text = 'Ten kod został już użyty - poczekaj, aż aplikacja pokaże następny (do 30 s).'
+        return
+    }
+    if ($ok -and $st.Phase -eq 'Pin' -and $mfa) {
+        # PIN poprawny - teraz kod z aplikacji
+        $msg.Text = ''
+        Set-HTUnlockPhase -Window $Window -Phase 'Code'
+        return
+    }
+    if ($ok) {
+        $st.Pin = ''
+        $deny = @()
+        if ($mfa -and -not $acc.Primary) {
+            # Blokady dostępu konta dodatkowego; bez nich nie odblokowujemy (nie pełny dostęp przez błąd odczytu)
+            try { $deny = @((Get-HTMfaAccountSecret -Account $acc).Deny) }
+            catch {
+                Set-HTUnlockPhase -Window $Window -Phase 'Pin'
+                $msg.Text = $unreadable
+                return
+            }
+        }
+        $user = if ($mfa) { [string]$acc.Name } else { '' }
+        $id = if (-not $mfa -or $acc.Primary) { '#primary' } else { [string]$acc.Id }
+        # Inne konto niż przed blokadą: okna poprzedniego konta zamyka Lock-HTApplication (nie wracają na ekran)
+        $st.Switched = ($st.Mode -eq 'Lock' -and $id -ne [string](Get-HTAccess).AccountId)
+        Set-HTAccessAccount -Name $user -Id $id -Deny $deny
+        # Odblokowanie od razu (zanim okno się zamknie): wstrzymane okna mogą się pokazać
+        if ($st.Mode -eq 'Lock' -and -not $st.Switched) { Restore-HTAfterLock }
         Close-HTDialog -Window $Window -Ok $true
         return
     }
@@ -4161,7 +5016,9 @@ function Add-HTUnlockKey {
     $st.Error = $true
     $left = $script:UnlockMaxAttempts - $st.Attempts
     Update-HTUnlockView -Window $Window
-    Write-Log -Message "Nieprawidłowy PIN (próba $($st.Failed))." -Type 'Warn'
+    $what = if ($st.Phase -eq 'Code') { 'kod z aplikacji' } else { 'PIN' }
+    $who = if ($acc -and @($st.Accounts).Count -gt 1) { ", konto: $($acc.Name)" } else { '' }
+    Write-Log -Message "Nieprawidłowy $what (próba $($st.Failed)$who)." -Type 'Warn'
     if ($left -le 0 -and $st.Mode -eq 'Lock') {
         # Blokada w trakcie pracy: przerwa zamiast zamknięcia programu (połączenia z usługami trwają)
         $st.Locked = $true
@@ -4176,6 +5033,7 @@ function Add-HTUnlockKey {
         return
     }
     if ($left -le 0) {
+        # Komunikat widoczny przez chwilę, potem zamknięcie (bez odblokowania)
         $msg.Text = 'Zbyt wiele błędnych prób - program zostanie zamknięty.'
         $st.Locked = $true
         $Window.FindName('lockPad').IsEnabled = $false
@@ -4186,11 +5044,11 @@ function Add-HTUnlockKey {
         $t.Start()
         return
     }
-    $msg.Text = 'Nieprawidłowy PIN. Pozostało prób: {0}' -f $left
+    $msg.Text = '{0} Pozostało prób: {1}' -f $(if ($st.Phase -eq 'Code') { 'Nieprawidłowy kod z aplikacji.' } else { 'Nieprawidłowy PIN.' }), $left
 }
 
 function Update-HTUnlockCooldown {
-    # Odliczanie przerwy po wyczerpaniu prób; $false, gdy przerwa minęła (klawiatura znów aktywna)
+    # Odliczanie przerwy po wyczerpaniu prób; $false, gdy przerwa minęła (klawiatura znów aktywna, nowe próby od PIN-u)
     param([Parameter(Mandatory)]$Window)
     $st = $Window.Tag
     $left = ($st.CooldownEnd - (Get-Date)).TotalSeconds
@@ -4201,11 +5059,51 @@ function Update-HTUnlockCooldown {
     }
     $st.Locked = $false
     $st.Attempts = 0
-    $st.Error = $false
     $msg.Text = ''
     $Window.FindName('lockPad').IsEnabled = $true
-    Update-HTUnlockView -Window $Window
+    Set-HTUnlockPhase -Window $Window -Phase 'Pin'
     return $false
+}
+
+function Request-HTUnlockExit {
+    <#
+        Zamknięcie awaryjne z ekranu blokady: pierwsze kliknięcie tylko uzbraja przycisk (ostrzeżenie pod nim),
+        drugie w ciągu kilku sekund zamyka okno blokady bez PIN-u; Lock-HTApplication zamyka wtedy program.
+        Działa też w czasie przerwy po błędnych próbach (klawiatura PIN-u jest wtedy wyłączona).
+    #>
+    param([Parameter(Mandatory)]$Window)
+    $st = $Window.Tag
+    $exit = $Window.FindName('lockExit')
+    $note = $Window.FindName('lockExitMsg')
+    if ([datetime]::UtcNow -lt $st.ExitArmed) {
+        if ($st.ExitTimer) { $st.ExitTimer.Stop() }
+        $script:LockState.Emergency = $true
+        Close-HTDialog -Window $Window -Ok $false
+        return
+    }
+    $st.ExitArmed = [datetime]::UtcNow.AddSeconds($script:UnlockExitConfirmSec)
+    $exit.Content = New-HTIconContent -Text 'Potwierdź zamknięcie' -Icon 'E7BA' -IconSize 12
+    $note.Text = 'Program zostanie zamknięty bez odblokowania, a połączenia z usługami zakończone. Kliknij ponownie (przycisk albo krzyżyk okna), aby potwierdzić.'
+    $note.Visibility = 'Visible'
+    if (-not $st.ExitTimer) {
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromSeconds($script:UnlockExitConfirmSec)
+        $t.Tag = $Window
+        $t.add_Tick({ param($s, $e) $s.Stop(); Reset-HTUnlockExit -Window $s.Tag })
+        $st.ExitTimer = $t
+    }
+    $st.ExitTimer.Stop()
+    $st.ExitTimer.Start()
+}
+
+function Reset-HTUnlockExit {
+    # Brak potwierdzenia w wyznaczonym czasie: przycisk wraca do stanu wyjściowego
+    param([Parameter(Mandatory)]$Window)
+    $Window.Tag.ExitArmed = [datetime]::MinValue
+    $Window.FindName('lockExit').Content = New-HTIconContent -Text 'Zakończ awaryjnie' -Icon 'E7E8' -IconSize 12
+    $note = $Window.FindName('lockExitMsg')
+    $note.Text = ''
+    $note.Visibility = 'Collapsed'
 }
 
 function Show-HTPinSetupDialog {
@@ -4224,7 +5122,7 @@ function Show-HTPinSetupDialog {
         $p1 = $w.FindName('pin1').Password
         if (-not (Test-HTPinFormat $p1)) { Show-HTWarning 'PIN musi składać się z 4-8 cyfr.'; return $false }
         if ($p1 -ne $w.FindName('pin2').Password) { Show-HTWarning 'Wpisane PIN-y różnią się.'; return $false }
-        if ($p1 -match '^(\d)\1+$' -or '0123456789876543210'.Contains($p1)) { Show-HTWarning 'PIN jest zbyt prosty (powtórzona lub kolejne cyfry).'; return $false }
+        if (-not (Test-HTPinStrength $p1)) { Show-HTWarning 'PIN jest zbyt prosty (powtórzona lub kolejne cyfry).'; return $false }
         return $true
     }
     $w.add_ContentRendered({ param($s, $e) [void]$s.FindName('pin1').Focus() })
@@ -4232,81 +5130,176 @@ function Show-HTPinSetupDialog {
     return $w.FindName('pin1').Password
 }
 
+function Test-HTPinStrength([string]$Pin) {
+    # Odrzuca PIN-y z jednej powtórzonej cyfry i kolejnych cyfr (1234, 98765)
+    return -not ($Pin -match '^(\d)\1+$' -or '0123456789876543210'.Contains($Pin))
+}
+
 function Unlock-HTApplication {
-    # Start programu: PIN (przy pierwszym uruchomieniu - ustawienie PIN-u). $true - można uruchomić program.
+    # Start programu: PIN (przy pierwszym uruchomieniu - ustawienie PIN-u), z MFA także kod. $true - można uruchomić program.
     if (-not (Test-HTPinConfigured)) {
         $pin = Show-HTPinSetupDialog -Subtitle 'Pierwsze uruchomienie: ustaw PIN. Będzie wymagany przy każdym uruchomieniu programu i do odblokowania po blokadzie.'
         if (-not $pin) { return $false }
         Set-HTPin -Pin $pin
-        return $true
+        # Nowy PIN po usunięciu starego z konfiguracji nie omija MFA - dalej wymagany kod z aplikacji
+        if (-not (Test-HTMfaEnabled)) { Set-HTAccessAccount; return $true }
     }
     $w = New-HTUnlockWindow
     $ok = Invoke-HTDialog $w
     if (-not $ok -and $w.Tag.Failed -gt 0) { Write-Log -Message "Nie odblokowano programu (błędne próby: $($w.Tag.Failed))." -Type 'Warn' }
+    if ($ok) {
+        $access = Get-HTAccess
+        if ($access.Account) {
+            $limits = if ($access.Deny.Count) { '; ' + (Get-HTAccessText -Deny @($access.Deny)) } else { '' }
+            Write-Log -Message ("Odblokowano program - konto: {0} (PIN i kod z aplikacji){1}." -f $access.Account, $limits) -Type 'Info'
+        }
+    }
     return $ok
 }
 
 function Restore-HTAfterLock {
+    # Koniec blokady: zawartość okna głównego i otwartych okien z powrotem (wywołanie wielokrotne bez skutków)
     $script:LockState.Locked = $false
     $script:LockState.LastActivity = [datetime]::Now
     $main = $script:UI.Window
     if ($main -and $main.Content) { $main.Content.Visibility = 'Visible' }
+    foreach ($c in @($script:LockState.Hidden)) { try { $c.Visibility = 'Visible' } catch { Write-Verbose $_ } }
+    $script:LockState.Hidden = @()
 }
 
 function Test-HTLocked { return [bool]$script:LockState.Locked }
 
+function Test-HTEmergencyExit { return [bool]$script:LockState.Emergency }
+
 function Lock-HTApplication {
     <#
-        Blokada w trakcie pracy: zawartość okna głównego ukryta, nad nim okno PIN (modalne). Okna głównego nie ukrywamy -
-        jest pokazane przez ShowDialog, a ukrycie zakończyłoby program. Poufne dane w schowku są czyszczone.
+        Blokada w trakcie pracy: zawartość okna głównego (i okien już otwartych, np. formularza) ukryta, nad nimi okno PIN
+        (modalne). Okna głównego nie ukrywamy - jest pokazane przez ShowDialog, a ukrycie zakończyłoby program.
+        Poufne dane w schowku są czyszczone. -IdleMinutes: blokada po bezczynności (inny wpis dziennika).
     #>
-    if ($script:LockState.Locked -or -not (Test-HTPinConfigured)) { return }
+    param([int]$IdleMinutes = 0)
+    if ($script:LockState.Locked -or $script:LockState.Emergency -or -not (Test-HTPinConfigured)) { return }
     $main = $script:UI.Window
     if (-not $main) { return }
     $script:LockState.Locked = $true
     Clear-HTClipboardSecret
-    Write-Log -Message 'Program zablokowany.' -Type 'Info'
+    Write-Log -Message $(if ($IdleMinutes) { "Program zablokowany po $IdleMinutes min bez aktywności." } else { 'Program zablokowany.' }) -Type 'Info'
     if ($main.Content) { $main.Content.Visibility = 'Hidden' }
+    $script:LockState.Hidden = @(foreach ($ow in @($main.OwnedWindows)) {
+            $c = $ow.Content
+            if ($c -is [System.Windows.UIElement] -and $c.Visibility -eq 'Visible') { $c.Visibility = 'Hidden'; $c }
+        })
     $w = New-HTUnlockWindow -Lock
+    $closed = 0
     try { [void](Invoke-HTDialog $w) }
-    finally { Restore-HTAfterLock }
+    finally {
+        if ($w.Tag.ExitTimer) { $w.Tag.ExitTimer.Stop() }
+        if (-not $script:LockState.Emergency) {
+            if ($w.Tag['Switched']) { $closed = Close-HTLockedWindows }
+            # Nawigacja według uprawnień konta, które odblokowało - zanim zawartość okna wróci na ekran
+            try { Update-HTAccessView } catch { Write-Log -Message "Błąd uprawnień po odblokowaniu: $($_.Exception.Message)" -Type 'Error' }
+            Restore-HTAfterLock
+        }
+    }
+    if ($script:LockState.Emergency) {
+        Close-HTApplicationEmergency
+        return
+    }
     $n = [int]$w.Tag.Failed
-    Write-Log -Message ('Program odblokowany{0}.' -f $(if ($n) { " (nieudane próby: $n)" } else { '' })) -Type $(if ($n) { 'Warn' } else { 'Info' })
+    $access = Get-HTAccess
+    $who = if ($access.Account) { " - konto: $($access.Account), MFA" } else { '' }
+    if ($w.Tag['Switched']) { $who += $(if ($closed) { " (zmiana konta - zamknięte okna poprzedniego konta: $closed)" } else { ' (zmiana konta)' }) }
+    if ($access.Deny.Count) { $who += '; ' + (Get-HTAccessText -Deny @($access.Deny)) }
+    Write-Log -Message ('Program odblokowany{0}{1}.' -f $who, $(if ($n) { " (nieudane próby: $n)" } else { '' })) -Type $(if ($n) { 'Warn' } else { 'Info' })
+}
+
+function Close-HTLockedWindows {
+    # Inne konto odblokowało program: okna poprzedniego konta ukryte na czas blokady (formularze, potwierdzenia)
+    # są zamykane - jak «Anuluj»; zwraca liczbę zamkniętych okien
+    $n = 0
+    foreach ($c in @($script:LockState.Hidden)) {
+        try {
+            $win = [System.Windows.Window]::GetWindow($c)
+            if ($win) { $win.Close(); $n++ }
+        }
+        catch { Write-Verbose $_ }
+    }
+    $script:LockState.Hidden = @()
+    return $n
+}
+
+function Close-HTApplicationEmergency {
+    # Zamknięcie awaryjne z ekranu blokady: otwarte okna i okno główne zamykane bez pytań (zawartość zostaje ukryta);
+    # połączenia z usługami kończy obsługa zamykania okna głównego
+    $main = $script:UI.Window
+    Write-Log -Message 'Zamknięcie awaryjne z ekranu blokady (bez PIN-u).' -Type 'Warn'
+    if (-not $main) { return }
+    foreach ($ow in @($main.OwnedWindows)) { try { $ow.Close() } catch { Write-Verbose $_ } }
+    try { $main.Close() } catch { Write-Verbose $_ }
 }
 
 function Update-HTActivity { $script:LockState.LastActivity = [datetime]::Now }
 
+function Register-HTIdleActivity {
+    # Okno programu zgłasza aktywność użytkownika (klawisze i przyciski myszy także obsłużone przez kontrolki)
+    param([Parameter(Mandatory)][System.Windows.Window]$Window)
+    foreach ($ev in [System.Windows.UIElement]::PreviewKeyDownEvent, [System.Windows.UIElement]::PreviewMouseDownEvent, [System.Windows.UIElement]::PreviewMouseWheelEvent) {
+        $Window.AddHandler($ev, ($script:UnlockEvents.Activity -as $ev.HandlerType), $true)
+    }
+}
+
+function Test-HTProgramActive {
+    # Czy któreś okno programu (główne albo otwarte z niego) jest aktywne - ruch myszy w innym programie się nie liczy
+    $main = $script:UI.Window
+    if (-not $main) { return $false }
+    if ($main.IsActive) { return $true }
+    foreach ($ow in @($main.OwnedWindows)) { if ($ow.IsActive) { return $true } }
+    return $false
+}
+
+function Test-HTIdleLock {
+    <#
+        Takt licznika bezczynności (co kilkanaście sekund): ruch kursora nad aktywnym oknem programu też jest aktywnością
+        (sprawdzany tutaj, nie w zdarzeniu każdego ruchu myszy). Po AutoLockMinutes minut bez aktywności - blokada.
+        Blokada wyłączona (brak PIN-u, 0 minut), już trwa albo trwa operacja (np. logowanie): licznik od nowa.
+    #>
+    $st = $script:LockState
+    $now = [datetime]::Now
+    $limit = [int]$Global:AutoLockMinutes
+    $main = $script:UI.Window
+    if (-not (Test-HTPinConfigured) -or $limit -le 0 -or $st.Locked -or $script:UI.BusyDepth -gt 0 -or -not $main -or -not $main.IsVisible) { $st.LastActivity = $now; return }
+    $pos = $null
+    try { $pos = $main.PointToScreen([System.Windows.Input.Mouse]::GetPosition($main)) } catch { Write-Verbose $_ }
+    if ($null -ne $pos -and $null -ne $st.Pos -and $pos -ne $st.Pos -and (Test-HTProgramActive)) { $st.LastActivity = $now }
+    $st.Pos = $pos
+    if (($now - $st.LastActivity).TotalMinutes -ge $limit) { Lock-HTApplication -IdleMinutes $limit }
+}
+
 function Start-HTAutoLock {
-    # Automatyczna blokada po bezczynności (AutoLockMinutes; 0 = wyłączona). Nie blokuje w trakcie operacji ani przy otwartym oknie dialogowym.
-    if ($script:LockState.Timer) { return }
-    $t = New-Object System.Windows.Threading.DispatcherTimer
-    $t.Interval = [TimeSpan]::FromSeconds(20)
-    $t.add_Tick({
-            param($s, $e)
-            try {
-                $minutes = [int]$Global:AutoLockMinutes
-                if ($minutes -le 0 -or $script:LockState.Locked -or $script:UI.BusyDepth -gt 0) { return }
-                $main = $script:UI.Window
-                if (-not $main -or $main.OwnedWindows.Count -gt 0) { return }
-                if (([datetime]::Now - $script:LockState.LastActivity).TotalMinutes -ge $minutes) {
-                    Write-Log -Message "Automatyczna blokada po $minutes min bezczynności." -Type 'Info'
-                    Lock-HTApplication
-                }
-            }
-            catch { Write-Verbose "Automatyczna blokada: $_" }
-        })
-    $script:LockState.Timer = $t
-    $t.Start()
+    # Licznik bezczynności (AutoLockMinutes; 0 = wyłączona) - tylko w uruchomionym programie
+    $st = $script:LockState
+    $st.LastActivity = [datetime]::Now
+    if (-not $st.Timer) {
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromSeconds(15)
+        $t.add_Tick({ param($s, $e) try { Test-HTIdleLock } catch { Write-Log -Message "Błąd blokady po bezczynności: $($_.Exception.Message)" -Type 'Error' } })
+        $st.Timer = $t
+    }
+    $st.Timer.Start()
+}
+
+function Stop-HTAutoLock {
+    if ($script:LockState.Timer) { $script:LockState.Timer.Stop() }
 }
 
 function Wait-HTUnlocked {
-    # Okno otwierane w czasie blokady czeka na odblokowanie
+    # Okno otwierane w czasie blokady czeka na odblokowanie (albo zamknięcie awaryjne); okno programu dalej reaguje
     if (-not $script:LockState.Locked) { return }
     $frame = New-Object System.Windows.Threading.DispatcherFrame
     $t = New-Object System.Windows.Threading.DispatcherTimer
     $t.Interval = [TimeSpan]::FromMilliseconds(200)
     $t.Tag = $frame
-    $t.add_Tick({ param($s, $e) if (-not $script:LockState.Locked) { $s.Stop(); $s.Tag.Continue = $false } })
+    $t.add_Tick({ param($s, $e) if (-not $script:LockState.Locked -or $script:LockState.Emergency) { $s.Stop(); $s.Tag.Continue = $false } })
     $t.Start()
     [System.Windows.Threading.Dispatcher]::PushFrame($frame)
 }
@@ -4320,6 +5313,1258 @@ function Clear-HTClipboardSecret {
     }
     catch { Write-Verbose "Schowek: $_" }
     $script:Clipboard.Secret = $null
+}
+#endregion
+
+#region Uprawnienia kont MFA (dostęp do przestrzeni roboczych, modułów i Ustawień)
+# Konto dodatkowe MFA może mieć zablokowane przestrzenie robocze, pojedyncze moduły i Ustawienia programu
+# (stan w Modules/Mfa.psm1: Set-HTAccessAccount / Get-HTAccess). Konto podstawowe i program bez MFA - pełny dostęp.
+function Test-HTModuleAllowed([string]$Key) {
+    $deny = (Get-HTAccess).Deny
+    if ($deny.Count -eq 0) { return $true }
+    if ($deny.Contains("mod:$Key")) { return $false }
+    $d = Get-HTModuleDefinition $Key
+    return -not ($d -and $deny.Contains("ws:$($d.Workspace)"))
+}
+
+function Test-HTWorkspaceAllowed([string]$Key) {
+    # Przestrzeń niezablokowana i z co najmniej jednym dostępnym modułem
+    $deny = (Get-HTAccess).Deny
+    if ($deny.Count -eq 0) { return $true }
+    if ($deny.Contains("ws:$Key")) { return $false }
+    foreach ($d in $script:UI.ModuleDefs) { if ($d.Workspace -eq $Key -and -not $deny.Contains("mod:$($d.Key)")) { return $true } }
+    return $false
+}
+
+function Show-HTAccessDenied([string]$What) {
+    $name = (Get-HTAccess).Account
+    Write-Log -Message ('Brak dostępu (konto «{0}»): {1}.' -f $name, $What) -Type 'Warn'
+    Show-HTToast ('Konto «{0}» nie ma dostępu: {1}.' -f $name, $What) 'warn' 5
+}
+
+function Get-HTAccessText {
+    # Opis blokad z nazwami przestrzeni i modułów tego programu
+    param([string[]]$Deny = @())
+    $titles = [ordered]@{}
+    foreach ($ws in $script:UI.Workspaces.Values) { $titles[$ws.Key] = $ws.Title }
+    return (Get-HTAccessDenyText -Deny $Deny -Workspaces $titles -Modules @($script:UI.ModuleDefs))
+}
+
+function Get-HTAccessSummary {
+    param([Parameter(Mandatory)][hashtable]$Account)
+    try { return (Get-HTAccessText -Deny (Get-HTMfaAccountSecret -Account $Account).Deny) }
+    catch { return 'uprawnienia: nie odczytano' }
+}
+
+function Update-HTNavAccess {
+    # Nawigacja według uprawnień: ukryte zablokowane przestrzenie, moduły i kategorie bez dostępnych modułów
+    foreach ($ws in $script:UI.Workspaces.Values) {
+        if ($ws.Tab) { $ws.Tab.Visibility = if (Test-HTWorkspaceAllowed $ws.Key) { 'Visible' } else { 'Collapsed' } }
+        if (-not $ws.NavHost) { continue }
+        $header = $null
+        $any = $false
+        foreach ($child in @($ws.NavHost.Children)) {
+            if ($child -is [System.Windows.Controls.TextBlock]) {
+                if ($header) { $header.Visibility = if ($any) { 'Visible' } else { 'Collapsed' } }
+                $header = $child
+                $any = $false
+                continue
+            }
+            $ok = Test-HTModuleAllowed ([string]$child.Tag)
+            $child.Visibility = if ($ok) { 'Visible' } else { 'Collapsed' }
+            if ($ok) { $any = $true }
+        }
+        if ($header) { $header.Visibility = if ($any) { 'Visible' } else { 'Collapsed' } }
+    }
+    $c = $script:UI.Controls
+    if ($c['btnSettings']) { $c.btnSettings.Visibility = if (Test-HTAppAllowed 'Settings') { 'Visible' } else { 'Collapsed' } }
+    if ($c['txtUser']) {
+        # Konto Windows i - z MFA - konto, które odblokowało program
+        $windows = if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { [string]$env:USERNAME }
+        $account = (Get-HTAccess).Account
+        $c.txtUser.Text = if ($account) { "$windows  •  $account" } else { $windows }
+        $c.txtUser.ToolTip = if ($account) { "Konto Windows: $windows`nKonto MFA: $account ($(Get-HTAccessText -Deny @((Get-HTAccess).Deny)))" } else { "Konto Windows: $windows" }
+    }
+    if ($script:UI.HeaderChanged) { try { & $script:UI.HeaderChanged } catch { Write-Verbose $_ } }
+}
+
+function Update-HTAccessView {
+    # Po zmianie konta: nawigacja i - gdy otwarty moduł jest teraz niedostępny - pierwszy dostępny
+    if (-not $script:UI.Window) { return }
+    Update-HTNavAccess
+    $active = $script:UI.ActiveModule
+    if ($script:UI.ActiveWorkspace -and (-not (Test-HTWorkspaceAllowed $script:UI.ActiveWorkspace) -or ($active -and -not (Test-HTModuleAllowed $active.Key)))) {
+        Show-HTWorkspace -Key $script:UI.ActiveWorkspace
+    }
+}
+#endregion
+
+#region Okna MFA: włączenie, konta, uprawnienia (Ustawienia > «MFA - konta i klucze»)
+function Read-HTMfaConfirmation {
+    # Potwierdzenie zmiany kodem z aplikacji danego konta; $true = poprawny
+    param([Parameter(Mandatory)][hashtable]$Account, [string]$Action = 'zmianę')
+    $digits = [int](Get-HTMfaSettings).Digits
+    $code = Show-InputBox -Title 'Potwierdź kodem z aplikacji' -Prompt ("Konto «{0}»: wpisz aktualny kod z aplikacji uwierzytelniającej, aby potwierdzić {1}." -f $Account.Name, $Action) -Icon 'E8D7'
+    if ($null -eq $code) { return $false }
+    if ($code.Trim() -notmatch "^\d{$digits}$") { Show-HTWarning "Kod ma $digits cyfr."; return $false }
+    try {
+        $res = Test-HTMfaCodeFor -Account $Account -Code $code.Trim()
+        if ($res -eq 'Ok') { return $true }
+        if ($res -eq 'Used') { Show-HTWarning 'Ten kod został już użyty - poczekaj, aż aplikacja pokaże następny (do 30 s), i spróbuj ponownie.' }
+        else {
+            Write-Log -Message "MFA: nieprawidłowy kod potwierdzenia (konto «$($Account.Name)»)." -Type 'Warn'
+            Show-HTWarning 'Nieprawidłowy kod. Sprawdź, czy zegar telefonu i komputera wskazuje ten sam czas.'
+        }
+    }
+    catch { Show-HTError 'Nie można odczytać danych MFA tego konta na tym komputerze.' $_ }
+    return $false
+}
+
+$script:MfaEnrollXaml = @'
+<StackPanel>
+  <TextBlock Text="Nazwa konta (na ekranie blokady i w aplikacji)" Foreground="#8791A5" FontSize="12" Margin="0,0,0,5"/>
+  <TextBox x:Name="enName"/>
+  <Grid x:Name="enPinPanel" Margin="0,12,0,0">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*"/>
+      <ColumnDefinition Width="14"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <StackPanel>
+      <TextBlock Text="PIN tego konta (4-8 cyfr)" Foreground="#8791A5" FontSize="12" Margin="0,0,0,5"/>
+      <PasswordBox x:Name="enPin" MaxLength="8"/>
+    </StackPanel>
+    <StackPanel Grid.Column="2">
+      <TextBlock Text="Powtórz PIN" Foreground="#8791A5" FontSize="12" Margin="0,0,0,5"/>
+      <PasswordBox x:Name="enPin2" MaxLength="8"/>
+    </StackPanel>
+  </Grid>
+  <Border Style="{StaticResource Card}" Padding="14,12" Margin="0,14,0,0">
+    <StackPanel>
+      <TextBlock TextWrapping="Wrap" Foreground="#C9D0DC"
+                 Text="1. W aplikacji uwierzytelniającej (Microsoft Authenticator, Google Authenticator i podobne) dodaj konto, wybierz wpisanie klucza ręcznie i konto oparte na czasie:"/>
+      <TextBox x:Name="enKey" IsReadOnly="True" FontFamily="Consolas" FontSize="17" Margin="0,10,0,0" HorizontalContentAlignment="Center"/>
+      <TextBlock x:Name="enLabel" Foreground="#8791A5" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"/>
+      <WrapPanel x:Name="enButtons" Margin="0,8,0,0"/>
+    </StackPanel>
+  </Border>
+  <TextBlock Text="2. Wpisz 6-cyfrowy kod, który pokazuje aplikacja" Foreground="#8791A5" FontSize="12" Margin="0,14,0,5"/>
+  <TextBox x:Name="enCode" MaxLength="6" Width="150" HorizontalAlignment="Left" FontSize="16"/>
+  <TextBlock Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,12,0,0"
+             Text="Klucz jest pokazywany tylko teraz. Program zapisuje go zaszyfrowanego (DPAPI) w pliku Mfa.json na tym komputerze - odczyta go tylko to konto Windows. Utrata telefonu: usunięcie pliku Mfa.json przywraca odblokowanie samym PIN-em."/>
+</StackPanel>
+'@
+
+$script:MfaEnrollEvents = @{
+    CopyKey = {
+        param($s, $e)
+        $win = [System.Windows.Window]::GetWindow($s)
+        Set-HTClipboard -Text (ConvertTo-HTBase32 $win.Tag.Secret) -Secret
+        Show-HTToast 'Skopiowano klucz - schowek wyczyści się po minucie.' 'ok'
+    }
+    CopyUri = {
+        param($s, $e)
+        $win = [System.Windows.Window]::GetWindow($s)
+        $n = $win.FindName('enName').Text.Trim()
+        Set-HTClipboard -Text (Get-HTMfaUri -Account $(if ($n) { $n } else { 'konto' }) -Base32 (ConvertTo-HTBase32 $win.Tag.Secret)) -Secret
+        Show-HTToast 'Skopiowano link - schowek wyczyści się po minucie.' 'ok'
+    }
+}
+
+function Show-HTMfaEnroll {
+    <#
+        Włączenie MFA: -Primary - konto podstawowe (PIN programu), bez parametrów - nowe konto dodatkowe (nazwa i własny
+        PIN), -Account - nowy klucz istniejącego konta (PIN bez zmian). Klucz generowany tutaj, zapis dopiero po
+        poprawnym kodzie z aplikacji. Zwraca $true po zapisaniu.
+    #>
+    param([switch]$Primary, [hashtable]$Account = $null)
+    $title = if ($Account) { "Nowy klucz MFA - $($Account.Name)" } elseif ($Primary) { 'MFA dla konta podstawowego' } else { 'Nowe konto z MFA' }
+    $w = New-HTDialog -Title $title -Subtitle 'Odblokowanie programu będzie wymagać PIN-u i kodu z aplikacji w telefonie.' -Body $script:MfaEnrollXaml -Icon 'E8D7' -OkText 'Zapisz' -Width 560 -Validate {
+        param($w)
+        $t = $w.Tag
+        $name = $w.FindName('enName').Text.Trim()
+        if (-not $name) { Show-HTWarning 'Podaj nazwę konta.'; return $false }
+        if ($name.Length -gt 40) { Show-HTWarning 'Nazwa konta może mieć najwyżej 40 znaków.'; return $false }
+        $pin = ''
+        if ($t.NeedPin) {
+            $pin = $w.FindName('enPin').Password
+            if (-not (Test-HTPinFormat $pin)) { Show-HTWarning 'PIN konta musi składać się z 4-8 cyfr.'; return $false }
+            if ($pin -ne $w.FindName('enPin2').Password) { Show-HTWarning 'Wpisane PIN-y się różnią.'; return $false }
+            if (-not (Test-HTPinStrength $pin)) { Show-HTWarning 'PIN jest zbyt prosty (powtórzona lub kolejne cyfry).'; return $false }
+            if (Test-HTPin -Pin $pin) { Show-HTWarning 'PIN konta dodatkowego musi różnić się od PIN-u programu.'; return $false }
+        }
+        $step = Test-HTTotpCode -Secret $t.Secret -Code $w.FindName('enCode').Text.Trim()
+        if ($step -lt 0) { Show-HTWarning 'Kod się nie zgadza. Sprawdź, czy klucz został wpisany bez błędów i czy zegar telefonu i komputera wskazuje ten sam czas.'; return $false }
+        try {
+            $b32 = ConvertTo-HTBase32 $t.Secret
+            if ($t.EditId) { Set-HTMfaAccountKey -Id $t.EditId -Base32 $b32 -Name $name -LastStep $step }
+            else { [void](Add-HTMfaAccount -Name $name -Base32 $b32 -Primary:([bool]$t.Primary) -Pin $pin -LastStep $step) }
+        }
+        catch { Show-HTError 'Nie zapisano konta MFA.' $_; return $false }
+        return $true
+    }
+    $secret = New-HTMfaSecret
+    $b32 = ConvertTo-HTBase32 $secret
+    $w.Tag.Secret = $secret
+    $w.Tag.Primary = [bool]$Primary
+    $w.Tag.EditId = $(if ($Account) { [string]$Account.Id } else { '' })
+    $w.Tag.NeedPin = (-not $Primary -and -not $Account)
+    $nameBox = $w.FindName('enName')
+    $nameBox.Text = $(if ($Account) { [string]$Account.Name } elseif ($Primary) { 'Konto podstawowe' } else { '' })
+    if (-not $w.Tag.NeedPin) { $w.FindName('enPinPanel').Visibility = 'Collapsed' }
+    $w.FindName('enKey').Text = Format-HTMfaKey $b32
+    $mfa = Get-HTMfaSettings
+    $w.FindName('enLabel').Text = 'Wystawca: {0} • konto: nazwa powyżej • {1} cyfr co {2} s (SHA1)' -f $mfa.Issuer, $mfa.Digits, $mfa.Period
+    $buttons = $w.FindName('enButtons')
+    $copyKey = New-HTButton -Text 'Kopiuj klucz' -Icon 'E8C8' -ToolTip 'Schowek wyczyści się sam po minucie'
+    $copyKey.Margin = '0,0,8,0'
+    $copyKey.add_Click($script:MfaEnrollEvents.CopyKey)
+    $copyUri = New-HTButton -Text 'Kopiuj link otpauth://' -Icon 'E71B' -ToolTip 'Link do aplikacji, które przyjmują go wklejony (np. menedżery haseł)'
+    $copyUri.add_Click($script:MfaEnrollEvents.CopyUri)
+    foreach ($b in $copyKey, $copyUri) { [void]$buttons.Children.Add($b) }
+    $w.add_ContentRendered({ param($s, $e) $b = $s.FindName('enName'); [void]$b.Focus(); $b.SelectAll() })
+    $ok = Invoke-HTDialog $w
+    if ($ok) { Write-Log -Message ('MFA: {0} konto «{1}».' -f $(if ($Account) { 'nowy klucz dla' } else { 'dodano' }), $nameBox.Text.Trim()) -Type 'Info&Notification' }
+    return $ok
+}
+
+$script:MfaManagerXaml = @'
+<StackPanel>
+  <TextBlock x:Name="mfInfo" TextWrapping="Wrap" Foreground="#C9D0DC"/>
+  <Border Style="{StaticResource Card}" Padding="4" Margin="0,12,0,0">
+    <ListBox x:Name="mfList" Height="170" Background="Transparent" BorderThickness="0"/>
+  </Border>
+  <WrapPanel x:Name="mfButtons" Margin="0,12,0,0"/>
+  <TextBlock x:Name="mfFile" Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"/>
+</StackPanel>
+'@
+
+$script:MfaManagerEvents = @{
+    Selection = { param($s, $e) Update-HTMfaManagerButtons -Window ([System.Windows.Window]::GetWindow($s)) }
+    Click     = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        try {
+            $accounts = @($w.Tag.Accounts)
+            $sel = $w.FindName('mfList').SelectedIndex
+            $acc = if ($sel -ge 0 -and $sel -lt $accounts.Count) { $accounts[$sel] } else { $null }
+            $op = [string]$s.Tag
+            $approver = Get-HTMfaApprover -Accounts $accounts -Account $acc
+            if ($op -eq 'Primary') { [void](Show-HTMfaEnroll -Primary) }
+            elseif ($op -eq 'Add') { if ($approver -and (Read-HTMfaConfirmation -Account $approver -Action 'dodanie nowego konta')) { [void](Show-HTMfaEnroll) } }
+            elseif ($op -eq 'Rekey' -and $acc) {
+                $action = if ($acc.Id -eq $approver.Id) { 'wygenerowanie nowego klucza' } else { "wygenerowanie nowego klucza dla konta «$($acc.Name)»" }
+                if (Read-HTMfaConfirmation -Account $approver -Action $action) { [void](Show-HTMfaEnroll -Account $acc) }
+            }
+            elseif ($op -eq 'Access' -and $acc -and -not $acc.Primary) {
+                if (Read-HTMfaConfirmation -Account $approver -Action "zmianę uprawnień konta «$($acc.Name)»") { [void](Show-HTMfaAccessEditor -Account $acc) }
+            }
+            elseif ($op -eq 'Remove' -and $acc) { Remove-HTMfaAccountInteractive -Account $acc -Approver $approver -Count $accounts.Count }
+        }
+        catch { Show-HTError 'Operacja MFA nie powiodła się.' $_ }
+        Update-HTMfaManager -Window $w
+    }
+}
+
+function Show-HTMfaManager {
+    # Konta MFA: włączenie dla konta podstawowego, konta dodatkowe, nowy klucz, uprawnienia, usunięcie
+    if (-not (Test-HTAppAllowed 'Settings')) { Show-HTAccessDenied 'Ustawienia programu'; return }
+    $w = New-HTDialog -Title 'MFA - kody z aplikacji' -Subtitle 'Drugi składnik odblokowania programu na tym komputerze.' -Body $script:MfaManagerXaml -Icon 'E8D7' -OkText 'Zamknij' -NoCancel -Width 640
+    $buttons = $w.FindName('mfButtons')
+    foreach ($def in @(
+            @{ Key = 'Primary'; Text = 'Włącz MFA dla konta podstawowego'; Icon = 'E8D7' },
+            @{ Key = 'Add'; Text = 'Dodaj konto…'; Icon = 'E8FA' },
+            @{ Key = 'Rekey'; Text = 'Nowy klucz…'; Icon = 'E72C' },
+            @{ Key = 'Access'; Text = 'Uprawnienia…'; Icon = 'E72E' },
+            @{ Key = 'Remove'; Text = 'Usuń…'; Icon = 'E74D' })) {
+        $b = New-HTButton -Text $def.Text -Icon $def.Icon -Danger:($def.Key -eq 'Remove')
+        $b.Tag = $def.Key
+        $b.Margin = '0,0,8,6'
+        $b.Name = 'mf' + $def.Key
+        try { $w.RegisterName($b.Name, $b) } catch { Write-Verbose $_ }
+        $b.add_Click($script:MfaManagerEvents.Click)
+        [void]$buttons.Children.Add($b)
+    }
+    $w.FindName('mfList').add_SelectionChanged($script:MfaManagerEvents.Selection)
+    $w.FindName('mfFile').Text = 'Plik: ' + (Get-HTMfaFile)
+    Update-HTMfaManager -Window $w
+    [void](Invoke-HTDialog $w)
+}
+
+function Update-HTMfaManager {
+    param([Parameter(Mandatory)]$Window)
+    $list = $Window.FindName('mfList')
+    $list.Items.Clear()
+    $store = $null
+    $readError = ''
+    try { $store = Read-HTMfaStore } catch { $store = @{ Accounts = @() }; $readError = 'Nie odczytano pliku MFA: ' + $_.Exception.Message }
+    $Window.Tag.Accounts = @($store.Accounts | Sort-Object -Property @{ Expression = { -not $_.Primary } }, @{ Expression = { $_.Name } })
+    foreach ($a in $Window.Tag.Accounts) {
+        $access = if ($a.Primary) { 'pełny dostęp' } else { Get-HTAccessSummary -Account $a }
+        $kind = if ($a.Primary) { 'konto podstawowe (PIN programu)' } else { 'konto dodatkowe (własny PIN)' }
+        [void]$list.Items.Add(('{0}  -  {1}  •  {2}  •  dodano {3}{4}' -f $a.Name, $kind, $access, $a.Created, $(if ($a.LastUsed) { "  •  ostatnio $($a.LastUsed)" } else { '' })))
+    }
+    $hasPrimary = @($Window.Tag.Accounts | Where-Object { $_.Primary }).Count -gt 0
+    $Window.FindName('mfInfo').Text = if ($readError) { $readError }
+    elseif (-not (Test-HTPinConfigured)) { 'Najpierw ustaw PIN programu - MFA nie działa bez PIN-u.' }
+    elseif ($hasPrimary) { 'MFA włączone: odblokowanie wymaga PIN-u konta i kodu z aplikacji. Konta dodatkowe mają własny PIN, własny klucz i uprawnienia - na ekranie blokady wybiera się konto. Dodanie konta, nowy klucz, uprawnienia i usunięcie zatwierdza się kodem z aplikacji konta podstawowego.' }
+    else { 'MFA wyłączone - program odblokowuje sam PIN. Najpierw włącz MFA dla konta podstawowego, potem możesz dodać kolejne konta (np. dla innych osób z zespołu, z ograniczonym dostępem).' }
+    Update-HTMfaManagerButtons -Window $Window
+}
+
+function Update-HTMfaManagerButtons {
+    param([Parameter(Mandatory)]$Window)
+    $accounts = @($Window.Tag.Accounts)
+    $hasPrimary = @($accounts | Where-Object { $_.Primary }).Count -gt 0
+    $sel = $Window.FindName('mfList').SelectedIndex
+    $Window.FindName('mfPrimary').Visibility = if ($hasPrimary) { 'Collapsed' } else { 'Visible' }
+    $Window.FindName('mfPrimary').IsEnabled = [bool](Test-HTPinConfigured)
+    $Window.FindName('mfAdd').IsEnabled = $hasPrimary
+    $Window.FindName('mfRekey').IsEnabled = ($sel -ge 0)
+    $Window.FindName('mfAccess').IsEnabled = ($sel -ge 0 -and $sel -lt $accounts.Count -and -not $accounts[$sel].Primary)
+    $Window.FindName('mfRemove').IsEnabled = ($sel -ge 0)
+}
+
+function Remove-HTMfaAccountInteractive {
+    # Usunięcie konta (podstawowego tylko jako ostatniego) po potwierdzeniu kodem konta podstawowego
+    param([Parameter(Mandatory)][hashtable]$Account, [Parameter(Mandatory)][hashtable]$Approver, [int]$Count)
+    if ($Account.Primary -and $Count -gt 1) { Show-HTWarning 'Najpierw usuń konta dodatkowe - działają tylko razem z MFA konta podstawowego.'; return }
+    $action = if ($Account.Primary) { 'wyłączenie MFA' } else { "usunięcie konta «$($Account.Name)»" }
+    if (-not (Read-HTMfaConfirmation -Account $Approver -Action $action)) { return }
+    $text = if ($Account.Primary) { 'Wyłączyć MFA? Program będzie odblokowywany samym PIN-em, a klucz zostanie usunięty z tego komputera (wpis w aplikacji możesz usunąć ręcznie).' }
+    else { "Usunąć konto «$($Account.Name)»? Nie odblokuje już programu (wpis w aplikacji możesz usunąć ręcznie)." }
+    if (-not (Show-HTConfirm -Title 'MFA' -Message $text -ConfirmText 'Usuń' -Danger)) { return }
+    Remove-HTMfaAccount -Id $Account.Id
+    Write-Log -Message ('MFA: usunięto konto «{0}».' -f $Account.Name) -Type 'Warn'
+}
+
+$script:AccessEditorXaml = @'
+<StackPanel>
+  <TextBlock TextWrapping="Wrap" Foreground="#C9D0DC"
+             Text="Odznacz przestrzenie robocze albo pojedyncze moduły, do których to konto nie ma mieć dostępu. Zablokowane pozycje znikają z nawigacji po odblokowaniu programu tym kontem."/>
+  <WrapPanel x:Name="acButtons" Margin="0,10,0,0"/>
+  <Border Style="{StaticResource Card}" Padding="6" Margin="0,10,0,0">
+    <TreeView x:Name="acTree" Height="340" BorderThickness="0" Background="Transparent"/>
+  </Border>
+  <TextBlock x:Name="acSummary" Foreground="#8791A5" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"/>
+  <TextBlock Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
+             Text="To ograniczenie w programie. Uprawnienia w Microsoft 365, Exchange i AD wynikają z kont, którymi program łączy się z usługami, i z konta Windows - do rozdzielenia uprawnień między osoby używaj osobnych kont."/>
+</StackPanel>
+'@
+
+$script:AccessEditorEvents = @{
+    Changed = { param($s, $e) Update-HTAccessEditor -Window ([System.Windows.Window]::GetWindow($s)) }
+    All     = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        foreach ($b in $w.Tag.Boxes) { $b.IsChecked = $true }
+        $w.Tag.Unknown = @()
+        Update-HTAccessEditor -Window $w
+    }
+}
+
+function Get-HTAccessEditorDeny {
+    # Blokady z drzewa edytora (+ blokady pozycji, których teraz nie ma)
+    param([Parameter(Mandatory)]$Window)
+    $t = $Window.Tag
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($b in $t.Boxes) { if ($b.IsChecked -ne $true) { $out.Add([string]$b.Tag) } }
+    foreach ($k in $t.Unknown) { if (-not $out.Contains($k)) { $out.Add($k) } }
+    return $out.ToArray()
+}
+
+function Update-HTAccessEditor {
+    param([Parameter(Mandatory)]$Window)
+    foreach ($p in $Window.Tag.Workspaces) {
+        foreach ($b in $p.Modules) { $b.IsEnabled = ($p.Box.IsChecked -eq $true) }
+    }
+    $Window.FindName('acSummary').Text = 'Po zapisaniu: ' + (Get-HTAccessText -Deny @(Get-HTAccessEditorDeny -Window $Window))
+}
+
+function New-HTAccessCheckBox {
+    param([string]$Key, [string]$Text, [string]$Icon = '', [bool]$Allowed, [switch]$Bold)
+    $cb = New-Object System.Windows.Controls.CheckBox
+    $cb.Content = New-HTIconContent -Text $Text -Icon $Icon
+    $cb.Tag = $Key
+    $cb.IsChecked = $Allowed
+    $cb.Margin = '0,2,0,2'
+    if ($Bold) { $cb.FontWeight = 'SemiBold' }
+    $cb.add_Click($script:AccessEditorEvents.Changed)
+    return $cb
+}
+
+function Show-HTMfaAccessEditor {
+    # Uprawnienia konta dodatkowego: drzewo przestrzeni i modułów + Ustawienia programu; $true po zapisaniu
+    param([Parameter(Mandatory)][hashtable]$Account)
+    $deny = @((Get-HTMfaAccountSecret -Account $Account).Deny)
+    $w = New-HTDialog -Title "Uprawnienia - $($Account.Name)" -Subtitle 'Do czego to konto ma dostęp po odblokowaniu programu.' -Body $script:AccessEditorXaml -Icon 'E72E' -OkText 'Zapisz' -Width 620 -Validate {
+        param($w)
+        $newDeny = @(Get-HTAccessEditorDeny -Window $w)
+        $any = $false
+        foreach ($p in $w.Tag.Workspaces) {
+            if ($p.Box.IsChecked -eq $true -and @($p.Modules | Where-Object { $_.IsChecked -eq $true }).Count) { $any = $true; break }
+        }
+        if (-not $any) { Show-HTWarning 'Konto musi mieć dostęp do co najmniej jednego modułu.'; return $false }
+        try { Set-HTMfaAccountDeny -Id $w.Tag.AccountId -Deny $newDeny; $w.Tag.Saved = $newDeny }
+        catch { Show-HTError 'Nie zapisano uprawnień.' $_; return $false }
+        return $true
+    }
+    $w.Tag.AccountId = [string]$Account.Id
+    $w.Tag.Boxes = New-Object System.Collections.ArrayList
+    $w.Tag.Workspaces = New-Object System.Collections.ArrayList
+    $known = New-Object 'System.Collections.Generic.HashSet[string]'
+    $tree = $w.FindName('acTree')
+    foreach ($ws in $script:UI.Workspaces.Values) {
+        $wsBox = New-HTAccessCheckBox -Key "ws:$($ws.Key)" -Text $ws.Title -Icon $ws.Icon -Allowed ($deny -notcontains "ws:$($ws.Key)") -Bold
+        [void]$known.Add([string]$wsBox.Tag)
+        [void]$w.Tag.Boxes.Add($wsBox)
+        $node = New-Object System.Windows.Controls.TreeViewItem
+        $node.Header = $wsBox
+        $mods = New-Object System.Collections.ArrayList
+        foreach ($d in @($script:UI.ModuleDefs | Where-Object { $_.Workspace -eq $ws.Key })) {
+            $mb = New-HTAccessCheckBox -Key "mod:$($d.Key)" -Text $d.Title -Allowed ($deny -notcontains "mod:$($d.Key)")
+            [void]$known.Add([string]$mb.Tag)
+            [void]$w.Tag.Boxes.Add($mb)
+            [void]$mods.Add($mb)
+            $child = New-Object System.Windows.Controls.TreeViewItem
+            $child.Header = $mb
+            [void]$node.Items.Add($child)
+            if ($deny -contains "mod:$($d.Key)") { $node.IsExpanded = $true }
+        }
+        [void]$w.Tag.Workspaces.Add(@{ Box = $wsBox; Modules = @($mods); Node = $node })
+        [void]$tree.Items.Add($node)
+    }
+    $appNode = New-Object System.Windows.Controls.TreeViewItem
+    $appHeader = New-Object System.Windows.Controls.TextBlock
+    $appHeader.Text = 'Program'
+    $appHeader.FontWeight = 'SemiBold'
+    $appHeader.Foreground = Get-HTBrush '#C9D0DC'
+    $appNode.Header = $appHeader
+    $appNode.IsExpanded = $true
+    $setBox = New-HTAccessCheckBox -Key 'app:Settings' -Text 'Ustawienia programu (w tym zarządzanie MFA)' -Icon 'E713' -Allowed ($deny -notcontains 'app:Settings')
+    [void]$known.Add('app:Settings')
+    [void]$w.Tag.Boxes.Add($setBox)
+    $setItem = New-Object System.Windows.Controls.TreeViewItem
+    $setItem.Header = $setBox
+    [void]$appNode.Items.Add($setItem)
+    $writeBox = New-HTAccessCheckBox -Key 'app:Write' -Text 'Wprowadzanie zmian (bez zaznaczenia - tylko podgląd i raporty)' -Icon 'E70F' -Allowed ($deny -notcontains 'app:Write')
+    [void]$known.Add('app:Write')
+    [void]$w.Tag.Boxes.Add($writeBox)
+    $writeItem = New-Object System.Windows.Controls.TreeViewItem
+    $writeItem.Header = $writeBox
+    [void]$appNode.Items.Add($writeItem)
+    [void]$tree.Items.Add($appNode)
+    $w.Tag.Unknown = @($deny | Where-Object { -not $known.Contains($_) })
+    $all = New-HTButton -Text 'Pełny dostęp' -Icon 'E73E' -ToolTip 'Zaznacza wszystkie przestrzenie, moduły i Ustawienia'
+    $all.add_Click($script:AccessEditorEvents.All)
+    [void]$w.FindName('acButtons').Children.Add($all)
+    Update-HTAccessEditor -Window $w
+    if (-not (Invoke-HTDialog $w)) { return $false }
+    $saved = @($w.Tag.Saved)
+    Write-Log -Message ('MFA: uprawnienia konta «{0}»: {1}.' -f $Account.Name, (Get-HTAccessText -Deny $saved)) -Type 'Info&Notification'
+    $access = Get-HTAccess
+    if ($access.AccountId -eq [string]$Account.Id) {
+        # Zmienione uprawnienia konta, które teraz pracuje - od razu
+        Set-HTAccessAccount -Name $access.Account -Id $access.AccountId -Deny $saved
+        Update-HTAccessView
+    }
+    return $true
+}
+
+function Get-HTMfaStatusText {
+    # Opis stanu MFA do okna Ustawień
+    $n = 0
+    try { $n = @((Read-HTMfaStore).Accounts).Count } catch { return 'Nie odczytano pliku MFA.' }
+    if (-not (Test-HTPinConfigured)) { return 'PIN programu nie jest ustawiony.' }
+    if ($n) { return "MFA włączone - kont: $n. Odblokowanie wymaga PIN-u i kodu z aplikacji w telefonie." }
+    return 'MFA wyłączone - program odblokowuje sam PIN. Można dodać kod z aplikacji (Microsoft / Google Authenticator).'
+}
+#endregion
+
+#region Tryb tylko do odczytu (konta MFA)
+function Assert-HTWriteAllowed {
+    # Konto MFA w trybie tylko do odczytu (Uprawnienia… > «Wprowadzanie zmian») nie wykona operacji zmieniającej
+    param([string]$Operation = 'zmiana')
+    if (Test-HTWriteAllowed) { return $true }
+    Show-HTAccessDenied ("$Operation (tryb tylko do odczytu)")
+    return $false
+}
+#endregion
+
+#region Operacje w tle (zapytania Microsoft Graph w osobnym wątku)
+<#
+    Zapytania oznaczone -Background (Invoke-HTQuery) wykonują się w puli wątków z modułami programu i modułem
+    Microsoft.Graph.Authentication - połączenie Graph jest wspólne dla procesu. Okno w tym czasie reaguje (przełączanie
+    modułów, przewijanie), wiersze pojawiają się na bieżąco, a przycisk «Przerwij» na pasku stanu kończy zapytanie.
+    Blok zapytania dostaje jeden parametr (-Arguments) i może korzystać tylko z funkcji modułów (nie z plików GUI).
+    Gdy połączenie nie jest dostępne w wątku (np. inna wersja modułu Graph), zapytania wracają do wątku okna.
+#>
+$script:Background = @{ Pool = $null; PoolModules = ''; Disabled = $false; Current = $null; Tasks = (New-Object System.Collections.ArrayList); Timer = $null }
+$script:BackgroundModuleNames = @('Utils', 'Security', 'Mfa', 'ModulesConnection', 'GraphAPIM365Users', 'GraphAPIIntune', 'GraphAPISharePoint',
+    'GraphAPISecurity', 'GraphAPITeams', 'SharePointAudit', 'Reports', 'Excel', 'Integrations', 'Automation', 'ColumnFilters')
+
+$script:BackgroundWorker = @'
+param($Code, $Arguments, $Globals, $LogQueue)
+foreach ($k in $Globals.Keys) { Set-Variable -Name $k -Value $Globals[$k] -Scope Global }
+# Dziennik w tle bez zapisu do pliku - wpisy przekazuje i zapisuje okno programu
+$Global:HTNoLogFile = $true
+Clear-HTLogSinks
+Clear-HTLogHistory
+Register-HTLogSink -ScriptBlock { param($entry) $LogQueue.Enqueue($entry) }.GetNewClosure()
+$block = [scriptblock]::Create($Code)
+& $block $Arguments
+'@
+
+function Get-HTBackgroundGlobals {
+    # Ustawienia programu potrzebne funkcjom modułów w wątku w tle
+    $g = @{}
+    foreach ($n in 'DefaultUsageLocation', 'InactiveDays', 'GraphScopes', 'PasswordDefaultLength', 'PasswordSpecialCharacters', 'PasswordUseWordBased', 'AppVersion', 'HTActiveAccount', 'ExportPath', 'HTConfig', 'ConfigDir', 'LogDir') {
+        $g[$n] = Get-Variable -Name $n -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    }
+    $g.ConnectedToGraphAPI = [bool]$Global:ConnectedToGraphAPI
+    $g.ConnectedToExchange = $false
+    $g.ConnectedToSharepointPnP = $false
+    $g.ShowNotifications = $false
+    return $g
+}
+
+function Get-HTBackgroundModulePaths {
+    param([string[]]$Names = $script:BackgroundModuleNames, [switch]$NoGraph)
+    $paths = New-Object System.Collections.Generic.List[string]
+    if (-not $NoGraph) {
+        $graph = @(Get-Module -Name Microsoft.Graph.Authentication)[0]
+        if ($graph) {
+            $manifest = Join-Path $graph.ModuleBase "$($graph.Name).psd1"
+            $paths.Add($(if (Test-Path -LiteralPath $manifest) { $manifest } else { $graph.Path }))
+        }
+    }
+    foreach ($name in $Names) {
+        $mod = @(Get-Module -Name $name)[0]
+        if ($mod -and $mod.Path) { $paths.Add($mod.Path) }
+    }
+    return $paths.ToArray()
+}
+
+function Get-HTBackgroundPool {
+    # Pula wątków z modułami programu (tworzona przy pierwszym użyciu, odtwarzana po zmianie załadowanych modułów).
+    # -Async: otwieranie bez czekania (przygotowanie zaraz po połączeniu z Microsoft 365).
+    param([switch]$Async)
+    $bg = $script:Background
+    $paths = @(Get-HTBackgroundModulePaths)
+    $signature = $paths -join '|'
+    if ($bg.Pool -and $bg.PoolModules -eq $signature) {
+        $state = "$($bg.Pool.RunspacePoolStateInfo.State)"
+        if ($state -eq 'Opened' -or ($Async -and $state -eq 'Opening')) { return $bg.Pool }
+        if ($state -eq 'Opening') {
+            $limit = [datetime]::Now.AddSeconds(90)
+            while ("$($bg.Pool.RunspacePoolStateInfo.State)" -eq 'Opening' -and [datetime]::Now -lt $limit) { Update-HTUi; Start-Sleep -Milliseconds 50 }
+            if ("$($bg.Pool.RunspacePoolStateInfo.State)" -eq 'Opened') { return $bg.Pool }
+        }
+    }
+    if ($bg.Pool) { try { $bg.Pool.Dispose() } catch { Write-Verbose $_ } }
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    $iss.ImportPSModule([string[]]$paths)
+    # Bez hosta okna: Write-Progress trafia do strumienia postępu (pasek stanu), Write-Host jest pomijany
+    $pool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool($iss)
+    [void]$pool.SetMaxRunspaces(2)
+    $bg.Pool = $pool
+    $bg.PoolModules = $signature
+    if ($Async) { [void]$pool.BeginOpen($null, $null); return $pool }
+    $opening = $pool.BeginOpen($null, $null)
+    while (-not $opening.IsCompleted) { Update-HTUi; Start-Sleep -Milliseconds 50 }
+    $pool.EndOpen($opening)
+    return $pool
+}
+
+function Start-HTBackgroundWarmup {
+    # Przygotowanie wątków w tle zaraz po połączeniu z Microsoft 365 (pierwsze zapytanie nie czeka na import modułów)
+    if (-not $Global:BackgroundQueries -or $script:Background.Disabled) { return }
+    try { [void](Get-HTBackgroundPool -Async) } catch { Write-Log -Message "Przygotowanie operacji w tle: $($_.Exception.Message)" -Type 'Warn' }
+}
+
+function Test-HTBackgroundAvailable {
+    param([string]$Service = '')
+    if (-not $Global:BackgroundQueries -or $script:Background.Disabled) { return $false }
+    if ($Service -eq 'Graph') { return ([bool]$Global:ConnectedToGraphAPI -and [bool](Get-Module -Name Microsoft.Graph.Authentication)) }
+    return (-not $Service)
+}
+
+function Test-HTBackgroundAuthError {
+    param($ErrorRecord)
+    $text = "$($ErrorRecord.Exception.Message) $($ErrorRecord.Exception.InnerException.Message)"
+    return ($text -match 'HTBackgroundUnavailable|Authentication needed|Connect-MgGraph|not connected|no.*context|InteractiveBrowserCredential|Nie zalogowano')
+}
+
+function Write-HTForwardedLog {
+    # Wpis dziennika z wątku w tle - zapis w pliku i panelu dziennika okna
+    param($Entry)
+    if (-not $Entry) { return }
+    $message = ([string]$Entry.Message -replace '^(ℹ️|⚠️|❌)\s*', '')
+    $type = [string]$Entry.Type
+    if ($type -notin 'Info', 'Warn', 'Error') { $type = 'Info' }
+    if ($Entry.Notify) { $type += '&Notification' }
+    Write-Log -Message $message -Type $type
+}
+
+function Set-HTCancelVisible([bool]$Visible) {
+    $b = $script:UI.Controls['btnCancelOps']
+    if ($b) { $b.Visibility = if ($Visible) { 'Visible' } else { 'Collapsed' } }
+}
+
+function Stop-HTBackground {
+    # «Przerwij» na pasku stanu: zatrzymanie bieżącego zapytania w tle
+    $ps = $script:Background.Current
+    if (-not $ps) { return }
+    Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
+    try { [void]$ps.BeginStop($null, $null) } catch { Write-Verbose $_ }
+}
+
+function Invoke-HTBackground {
+    <#
+        Wykonuje blok w wątku w tle i czeka na wynik, przetwarzając w tym czasie zdarzenia okna. -OnItem { param($item) }:
+        każdy zwrócony obiekt od razu (np. dopisanie wierszy); bez -OnItem - zwraca wszystkie obiekty. Write-Progress w bloku
+        aktualizuje pasek stanu. Przerwanie: OperationCanceledException; błąd bloku - wyjątek z jego komunikatem.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [hashtable]$Arguments = @{}, [scriptblock]$OnItem, [string]$Name = 'Operacja')
+    try { $pool = Get-HTBackgroundPool }
+    catch {
+        # Moduły nie wczytały się w wątku w tle - zapytania wracają do wątku okna
+        $script:Background.Disabled = $true
+        throw (New-Object System.InvalidOperationException("HTBackgroundUnavailable: $($_.Exception.Message)"))
+    }
+    $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.RunspacePool = $pool
+    [void]$ps.AddScript($script:BackgroundWorker).AddArgument($ScriptBlock.ToString()).AddArgument($Arguments).AddArgument((Get-HTBackgroundGlobals)).AddArgument($queue)
+    $inputData = New-Object 'System.Management.Automation.PSDataCollection[psobject]'
+    $inputData.Complete()
+    $output = New-Object 'System.Management.Automation.PSDataCollection[psobject]'
+    $handle = $ps.BeginInvoke($inputData, $output)
+    $bg = $script:Background
+    $previous = $bg.Current
+    $bg.Current = $ps
+    Set-HTCancelVisible $true
+    $results = New-Object System.Collections.Generic.List[object]
+    $read = 0
+    $progressRead = 0
+    $drain = {
+        while ($read -lt $output.Count) {
+            $item = $output[$read]
+            $read++
+            if ($OnItem) { & $OnItem $item } else { $results.Add($item) }
+        }
+        $entry = $null
+        while ($queue.TryDequeue([ref]$entry)) { Write-HTForwardedLog $entry }
+        $progress = $ps.Streams.Progress
+        if ($progress.Count -gt $progressRead) {
+            $record = $progress[$progress.Count - 1]
+            $progressRead = $progress.Count
+            $status = if ($record.StatusDescription -and $record.StatusDescription -ne 'Processing') { "$Name - $($record.StatusDescription)" } else { $Name }
+            if ($record.PercentComplete -ge 0) { Set-HTProgress -Value $record.PercentComplete -Maximum 100 -Text $status } else { Set-HTStatus -Text $status }
+        }
+    }
+    try {
+        while (-not $handle.IsCompleted) {
+            . $drain
+            Update-HTUi
+            Start-Sleep -Milliseconds 40
+        }
+        . $drain
+        try { [void]$ps.EndInvoke($handle) }
+        catch [System.Management.Automation.PipelineStoppedException] { throw (New-Object System.OperationCanceledException("Przerwano: $Name")) }
+        catch {
+            $inner = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $_.Exception }
+            throw $inner
+        }
+        . $drain
+        if ("$($ps.InvocationStateInfo.State)" -eq 'Stopped') { throw (New-Object System.OperationCanceledException("Przerwano: $Name")) }
+        foreach ($err in @($ps.Streams.Error)) { Write-Log -Message "$($Name): $($err.Exception.Message)" -Type 'Warn' }
+    }
+    finally {
+        $bg.Current = $previous
+        if (-not $previous) { Set-HTCancelVisible $false }
+        $ps.Dispose()
+    }
+    if (-not $OnItem) { return $results.ToArray() }
+}
+
+function Close-HTBackground {
+    # Zamknięcie programu: zatrzymanie zadań i zwolnienie puli wątków
+    $bg = $script:Background
+    if ($bg.Timer) { $bg.Timer.Stop() }
+    foreach ($task in @($bg.Tasks)) { try { $task.PS.Stop(); $task.PS.Dispose(); $task.Runspace.Dispose() } catch { Write-Verbose $_ } }
+    $bg.Tasks.Clear()
+    if ($bg.Pool) { try { $bg.Pool.Dispose() } catch { Write-Verbose $_ } }
+    $bg.Pool = $null
+    $bg.PoolModules = ''
+}
+
+function Start-HTBackgroundTask {
+    <#
+        Zadanie w tle bez czekania (np. sprawdzenie aktualizacji przy starcie): -OnComplete { param($Result, $ErrorMessage) }
+        wywoływane w wątku okna po zakończeniu. Osobny wątek z wybranymi modułami (-Modules).
+    #>
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [hashtable]$Arguments = @{}, [scriptblock]$OnComplete, [string[]]$Modules = @('Utils', 'Security', 'Integrations'))
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault2()
+    $iss.ImportPSModule([string[]](Get-HTBackgroundModulePaths -Names $Modules -NoGraph))
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+    $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    [void]$ps.AddScript($script:BackgroundWorker).AddArgument($ScriptBlock.ToString()).AddArgument($Arguments).AddArgument((Get-HTBackgroundGlobals)).AddArgument($queue)
+    $task = @{ PS = $ps; Runspace = $rs; Handle = $ps.BeginInvoke(); OnComplete = $OnComplete; Queue = $queue }
+    [void]$script:Background.Tasks.Add($task)
+    if (-not $script:Background.Timer) {
+        $t = New-Object System.Windows.Threading.DispatcherTimer
+        $t.Interval = [TimeSpan]::FromMilliseconds(400)
+        $t.add_Tick({
+                param($s, $e)
+                foreach ($task in @($script:Background.Tasks)) {
+                    $entry = $null
+                    while ($task.Queue.TryDequeue([ref]$entry)) { Write-HTForwardedLog $entry }
+                    if (-not $task.Handle.IsCompleted) { continue }
+                    [void]$script:Background.Tasks.Remove($task)
+                    $result = $null
+                    $message = ''
+                    try { $result = @($task.PS.EndInvoke($task.Handle)) } catch { $message = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message } }
+                    try { $task.PS.Dispose(); $task.Runspace.Dispose() } catch { Write-Verbose $_ }
+                    if ($task.OnComplete) { try { & $task.OnComplete $result $message } catch { Write-Log -Message "Zadanie w tle: $($_.Exception.Message)" -Type 'Warn' } }
+                }
+                if ($script:Background.Tasks.Count -eq 0) { $s.Stop() }
+            })
+        $script:Background.Timer = $t
+    }
+    $script:Background.Timer.Start()
+}
+#endregion
+
+#region Powiadomienie Windows po długiej operacji
+$script:Notify = @{ Icon = $null; Timer = $null }
+
+function Invoke-HTFlashWindow {
+    # Miganie przycisku programu na pasku zadań (do aktywacji okna)
+    param([Parameter(Mandatory)]$Window)
+    try {
+        if (-not ('HelpdeskTools.Flash' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace HelpdeskTools {
+    public static class Flash {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
+        [DllImport("user32.dll")]
+        private static extern bool FlashWindowEx(ref FLASHWINFO info);
+        public static void Start(IntPtr handle) {
+            FLASHWINFO f = new FLASHWINFO();
+            f.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+            f.hwnd = handle;
+            f.dwFlags = 3 | 12;
+            f.uCount = 5;
+            f.dwTimeout = 0;
+            FlashWindowEx(ref f);
+        }
+    }
+}
+'@ -ErrorAction Stop
+        }
+        $hwnd = (New-Object System.Windows.Interop.WindowInteropHelper $Window).Handle
+        if ($hwnd -ne [IntPtr]::Zero) { [HelpdeskTools.Flash]::Start($hwnd) }
+    }
+    catch { Write-Verbose "Miganie okna: $_" }
+}
+
+function Show-HTWindowsNotification {
+    # Dymek w obszarze powiadomień Windows (kliknięcie przywraca okno programu) i miganie paska zadań
+    param([Parameter(Mandatory)][string]$Text, [int]$Seconds = 0, [string]$Title = 'Helpdesk Tools')
+    $main = $script:UI.Window
+    if ($main) { Invoke-HTFlashWindow -Window $main }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms, System.Drawing -ErrorAction Stop
+        $n = $script:Notify
+        if (-not $n.Icon) {
+            $icon = New-Object System.Windows.Forms.NotifyIcon
+            $icon.Icon = if ($Global:AppIconPath -and (Test-Path -LiteralPath $Global:AppIconPath)) { New-Object System.Drawing.Icon($Global:AppIconPath) } else { [System.Drawing.SystemIcons]::Information }
+            $icon.Text = 'Helpdesk Tools'
+            $icon.add_BalloonTipClicked({ try { $w = $script:UI.Window; if ($w) { if ($w.WindowState -eq 'Minimized') { $w.WindowState = 'Normal' }; [void]$w.Activate() } } catch { Write-Verbose $_ } })
+            $icon.add_Click({ try { $w = $script:UI.Window; if ($w) { [void]$w.Activate() } } catch { Write-Verbose $_ } })
+            $n.Icon = $icon
+        }
+        $n.Icon.Visible = $true
+        $n.Icon.BalloonTipTitle = $Title
+        $n.Icon.BalloonTipText = $Text + $(if ($Seconds) { " ($Seconds s)" } else { '' })
+        $n.Icon.ShowBalloonTip(10000)
+        if (-not $n.Timer) {
+            $t = New-Object System.Windows.Threading.DispatcherTimer
+            $t.Interval = [TimeSpan]::FromSeconds(20)
+            $t.add_Tick({ param($s, $e) $s.Stop(); try { $script:Notify.Icon.Visible = $false } catch { Write-Verbose $_ } })
+            $n.Timer = $t
+        }
+        $n.Timer.Stop()
+        $n.Timer.Start()
+    }
+    catch { Write-Verbose "Powiadomienie Windows: $_" }
+}
+
+function Remove-HTWindowsNotification {
+    # Usunięcie ikony z obszaru powiadomień przy zamykaniu programu
+    try { if ($script:Notify.Icon) { $script:Notify.Icon.Visible = $false; $script:Notify.Icon.Dispose(); $script:Notify.Icon = $null } } catch { Write-Verbose $_ }
+}
+#endregion
+
+#region Eksport i wysyłka wyników, zapisane widoki filtrów
+function Get-HTResultExportData {
+    # Widoczne wiersze i kolumny modułu do eksportu: kolumny, wiersze (słowniki z __flag) i opis (moduł, filtry)
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $columns = @(Get-HTVisibleColumnNames -Module $Module)
+    $rows = @($Module.View | ForEach-Object { $_ })
+    $data = @(foreach ($r in $rows) {
+            $o = [ordered]@{}
+            foreach ($c in $columns) { $v = Get-HTExportValue -Module $Module -Row $r -Column $c; $o[$c] = if ($null -eq $v -or $v -is [System.DBNull]) { '' } else { $v } }
+            $o['__flag'] = [string](Get-HTObjectValue $r '__flag')
+            $o
+        })
+    $filter = if ($Module.FilterBox) { $Module.FilterBox.Text.Trim() } else { '' }
+    $meta = [ordered]@{
+        'Moduł'        = $Module.Title
+        'Przestrzeń'   = $Module.WorkspaceTitle
+        'Data'         = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+        'Użytkownik'   = "$env:USERDOMAIN\$env:USERNAME$(if ($Global:HTActiveAccount) { " ($($Global:HTActiveAccount))" })"
+        'Wiersze'      = $rows.Count
+        'Program'      = "Helpdesk Tools $($Global:AppVersion)"
+    }
+    if ($filter) { $meta['Filtr'] = $filter }
+    if ($Module.ColumnFilters.Count -gt 0) { $meta['Filtry kolumn'] = Get-HTColumnFiltersText -Module $Module }
+    $metaText = '{0}{1} • {2} • {3} • wierszy: {4}' -f $(if ($Module.WorkspaceTitle) { "$($Module.WorkspaceTitle) • " } else { '' }), $meta.Program, $meta.Data, $env:USERNAME, $rows.Count
+    if ($filter) { $metaText += " • filtr: $filter" }
+    if ($Module.ColumnFilters.Count -gt 0) { $metaText += ' • filtry kolumn: ' + $meta['Filtry kolumn'] }
+    return @{ Title = $Module.Title; Columns = $columns; Rows = $data; Meta = $meta; MetaText = $metaText; Secrets = ($Module.RevealSecrets -and $Module.SecretColumns.Count -gt 0) }
+}
+
+function Save-HTResultFile {
+    # Zapis danych eksportu w formacie wg rozszerzenia: .xlsx, .html, .json, .csv
+    param([Parameter(Mandatory)][hashtable]$Data, [Parameter(Mandatory)][string]$Path)
+    $plain = { @($Data.Rows | ForEach-Object { $o = [ordered]@{}; foreach ($c in $Data.Columns) { $o[$c] = [string]$_[$c] }; [PSCustomObject]$o }) }
+    switch -Regex ($Path) {
+        '\.xlsx$' { [void](Export-HTXlsx -Path $Path -Columns $Data.Columns -Rows $Data.Rows -SheetName $Data.Title -Meta $Data.Meta) }
+        '\.html?$' { [System.IO.File]::WriteAllText($Path, (ConvertTo-HTHtmlReport -Title $Data.Title -Columns $Data.Columns -Rows $Data.Rows -Meta $Data.MetaText), (New-Object System.Text.UTF8Encoding($true))) }
+        '\.json$' { [System.IO.File]::WriteAllText($Path, (ConvertTo-Json -InputObject @(& $plain) -Depth 4), (New-Object System.Text.UTF8Encoding($false))) }
+        default { @(& $plain) | Export-Csv -LiteralPath $Path -NoTypeInformation -Encoding utf8BOM -Delimiter ';' }
+    }
+}
+
+function Export-HTResultView {
+    # Eksport widocznych wierszy i kolumn: Excel, CSV (Excel), raport HTML (wyszukiwarka, sortowanie, filtry kolumn) albo JSON
+    param([hashtable]$Module)
+    $data = Get-HTResultExportData -Module $Module
+    if ($data.Columns.Count -eq 0 -or $data.Rows.Count -eq 0) { Show-HTMessage -Text 'Brak wyników do eksportu.' -Title 'Eksport'; return }
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.Title = 'Eksport wyników'
+    $dialog.Filter = 'Excel (*.xlsx)|*.xlsx|CSV - Excel (*.csv)|*.csv|Raport HTML (*.html)|*.html|JSON (*.json)|*.json'
+    $dialog.InitialDirectory = Get-HTExportDirectory
+    $dialog.FileName = '{0}_{1:yyyy-MM-dd_HH-mm}' -f ($Module.Title -replace '[^\w\-]+', '_'), (Get-Date)
+    $dialog.AddExtension = $true
+    $dialog.DefaultExt = '.xlsx'
+    $owner = $script:UI.Window
+    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+    if ($accepted -ne $true) { return }
+    try {
+        Save-HTResultFile -Data $data -Path $dialog.FileName
+        Write-Log -Message "Zapisano $($data.Rows.Count) wierszy ($($Module.Title)) do pliku: $($dialog.FileName)" -Type 'Info&Notification'
+    }
+    catch {
+        Write-Log -Message "Błąd zapisu eksportu: $($_.Exception.Message)" -Type 'Error'
+        Show-HTError 'Nie zapisano pliku eksportu.' $_
+    }
+}
+
+function Select-HTOpenFile {
+    # Okno wyboru pliku do odczytu; zwraca ścieżkę albo $null
+    param([string]$Title = 'Wybierz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*')
+    $dialog = New-Object Microsoft.Win32.OpenFileDialog
+    $dialog.Title = $Title
+    $dialog.Filter = $Filter
+    $owner = $script:UI.Window
+    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+    if ($accepted -eq $true) { return $dialog.FileName }
+    return $null
+}
+
+function Select-HTSaveFile {
+    # Okno zapisu pliku (domyślnie katalog eksportu); zwraca ścieżkę albo $null
+    param([string]$Title = 'Zapisz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*', [string]$FileName = '', [string]$DefaultExt = '')
+    $dialog = New-Object Microsoft.Win32.SaveFileDialog
+    $dialog.Title = $Title
+    $dialog.Filter = $Filter
+    $dialog.InitialDirectory = Get-HTExportDirectory
+    $dialog.FileName = $FileName
+    if ($DefaultExt) { $dialog.AddExtension = $true; $dialog.DefaultExt = $DefaultExt }
+    $owner = $script:UI.Window
+    $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+    if ($accepted -eq $true) { return $dialog.FileName }
+    return $null
+}
+
+function Send-HTResultMail {
+    # Widoczne wyniki e-mailem z konta zalogowanego w Microsoft 365 (uprawnienie Mail.Send)
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $data = Get-HTResultExportData -Module $Module
+    if ($data.Rows.Count -eq 0) { Show-HTMessage -Text 'Brak wyników do wysłania.' -Title 'Wyślij e-mailem'; return }
+    if ($data.Secrets -and -not (Show-HTConfirm -Warning -Title 'Dane poufne' -ConfirmText 'Wyślij mimo to' -Message 'Wyniki zawierają odkryte dane poufne (np. hasła). Wysłać je e-mailem? Bezpieczniej wyłączyć «Pokaż poufne» przed wysyłką.')) { return }
+    if (-not (Assert-HTGraphScopes -Scopes @('Mail.Send') -Feature 'Wysyłka wyników e-mailem')) { return }
+    $formats = @('Excel (.xlsx)', 'Raport HTML (.html)', 'CSV (.csv)', 'Tabela w treści wiadomości')
+    $form = Show-HTFormDialog -Title 'Wyślij wyniki e-mailem' -Description "$($Module.Title): $($data.Rows.Count) wierszy. Wiadomość zostanie wysłana z Twojej skrzynki." -Icon 'E715' -OkText 'Wyślij' -Fields @(
+        @{ Name = 'To'; Label = 'Odbiorcy (adresy e-mail - przecinek, średnik lub nowa linia)'; Type = 'Multiline'; Required = $true; Height = 60 }
+        @{ Name = 'Subject'; Label = 'Temat'; Required = $true; Default = "$($Module.Title) - $((Get-Date).ToString('yyyy-MM-dd HH:mm'))" }
+        @{ Name = 'Format'; Label = 'Wyniki'; Type = 'Combo'; Options = $formats }
+        @{ Name = 'Message'; Label = 'Wiadomość (opcjonalnie)'; Type = 'Multiline'; Height = 70 }
+    )
+    if (-not $form) { return }
+    $to = @(Split-HTInputList $form.To)
+    $intro = if ($form.Message) { '<p>' + ((ConvertTo-HTHtmlText $form.Message) -replace "`r?`n", '<br>') + '</p>' } else { '' }
+    $info = "<p style=`"color:#666`">$(ConvertTo-HTHtmlText $data.MetaText)</p>"
+    $attachments = @()
+    $safeName = ($Module.Title -replace '[^\w\-]+', '_')
+    Set-HTBusy -Busy $true -Text 'Wysyłanie wiadomości…'
+    try {
+        switch ($form.Format) {
+            'Raport HTML (.html)' {
+                $html = ConvertTo-HTHtmlReport -Title $data.Title -Columns $data.Columns -Rows $data.Rows -Meta $data.MetaText
+                $attachments += New-HTMailAttachment -Name "$safeName.html" -Bytes ([System.Text.Encoding]::UTF8.GetPreamble() + [System.Text.Encoding]::UTF8.GetBytes($html)) -ContentType 'text/html'
+            }
+            'CSV (.csv)' {
+                $csv = (@($data.Rows | ForEach-Object { $o = [ordered]@{}; foreach ($c in $data.Columns) { $o[$c] = [string]$_[$c] }; [PSCustomObject]$o }) | ConvertTo-Csv -NoTypeInformation -Delimiter ';') -join "`r`n"
+                $attachments += New-HTMailAttachment -Name "$safeName.csv" -Bytes ([System.Text.Encoding]::UTF8.GetPreamble() + [System.Text.Encoding]::UTF8.GetBytes($csv)) -ContentType 'text/csv'
+            }
+            'Tabela w treści wiadomości' {
+                $shown = @($data.Rows | Select-Object -First 300)
+                $table = New-Object System.Text.StringBuilder
+                [void]$table.Append('<table style="border-collapse:collapse;font:13px Segoe UI,sans-serif"><tr>')
+                foreach ($c in $data.Columns) { [void]$table.Append('<th style="background:#3E6FE0;color:#fff;padding:4px 8px;text-align:left">').Append((ConvertTo-HTHtmlText $c)).Append('</th>') }
+                [void]$table.Append('</tr>')
+                foreach ($r in $shown) {
+                    $bg = switch ([string]$r['__flag']) { 'crit' { '#FDE2E4' } 'warn' { '#FFF4D6' } default { '#FFFFFF' } }
+                    [void]$table.Append("<tr style=`"background:$bg`">")
+                    foreach ($c in $data.Columns) { [void]$table.Append('<td style="border:1px solid #D9DEE7;padding:3px 8px">').Append((ConvertTo-HTHtmlText $r[$c])).Append('</td>') }
+                    [void]$table.Append('</tr>')
+                }
+                [void]$table.Append('</table>')
+                if ($data.Rows.Count -gt $shown.Count) { [void]$table.Append("<p>Pokazano $($shown.Count) z $($data.Rows.Count) wierszy - pełne dane w eksporcie do Excela.</p>") }
+                $info += $table.ToString()
+            }
+            default {
+                $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("HelpdeskTools_" + [guid]::NewGuid().ToString('N') + '.xlsx')
+                try {
+                    [void](Export-HTXlsx -Path $tmp -Columns $data.Columns -Rows $data.Rows -SheetName $data.Title -Meta $data.Meta)
+                    $attachments += New-HTMailAttachment -Name "$safeName.xlsx" -Bytes ([System.IO.File]::ReadAllBytes($tmp)) -ContentType 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
+                finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        $body = "<div style=`"font:14px Segoe UI,sans-serif`">$intro<p><b>$(ConvertTo-HTHtmlText $data.Title)</b> - wierszy: $($data.Rows.Count)$(if ($attachments.Count) { ' (w załączniku)' }).</p>$info</div>"
+        Send-HTGraphMail -To $to -Subject $form.Subject -HtmlBody $body -Attachments $attachments
+        Add-HTOperationRecord -Operation 'Wysyłka wyników e-mailem' -Object ($to -join ', ') -Details $form.Subject -Module $Module.Title
+        Show-HTToast "Wysłano do: $($to -join ', ')" 'ok'
+    }
+    catch {
+        Write-Log -Message "Wysyłka wyników e-mailem: $($_.Exception.Message)" -Type 'Error'
+        Show-HTError 'Nie wysłano wiadomości.' $_
+    }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+}
+
+function Set-HTFilterPresetView {
+    # Zastosowanie zapisanego widoku: filtr tekstowy, filtry kolumn i ukryte kolumny
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)]$Preset)
+    $Module.ColumnFilters.Clear()
+    foreach ($f in @($Preset.Filters)) {
+        if (-not $f -or -not $f.Column) { continue }
+        $values = $null
+        if ($null -ne $f.Values) { $values = [string[]]@($f.Values) }
+        [void](Set-HTColumnFilterEntry -Module $Module -Column ([string]$f.Column) -Values $values -Op ([string]$f.Op) -Text ([string]$f.Text))
+    }
+    $Module.UserHidden.Clear()
+    foreach ($h in @($Preset.Hidden)) { if ($h) { [void]$Module.UserHidden.Add([string]$h) } }
+    foreach ($c in @($Module.Grid.Columns)) { $c.Visibility = if ($Module.UserHidden.Contains([string]$c.SortMemberPath)) { 'Collapsed' } else { 'Visible' } }
+    Update-HTColumnsButton -Module $Module
+    if ($Module.FilterBox) { $Module.FilterBox.Text = [string]$Preset.Text }
+    Update-HTColumnFilterState -Module $Module
+    Show-HTToast "Widok: $($Preset.Name)" 'info' 2
+}
+
+function Show-HTViewsMenu {
+    # Menu zapisanych widoków modułu (przycisk nad tabelą wyników)
+    param([Parameter(Mandatory)][hashtable]$Module, $Anchor)
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $presets = @(Get-HTFilterPresets $Module.Key)
+    foreach ($p in $presets) {
+        [void]$menu.Items.Add((New-HTMenuItem -Text ([string]$p.Name) -Icon 'E71D' -Module $Module -Data $p -Action { param($m, $s) Set-HTFilterPresetView -Module $m -Preset $s.Tag.Data }))
+    }
+    if ($presets.Count) { [void]$menu.Items.Add((New-HTMenuSeparator)) }
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Zapisz bieżący widok…' -Icon 'E74E' -Module $Module -Action {
+                param($m)
+                $name = Show-InputBox -Title 'Zapisz widok' -Prompt "Nazwa widoku dla modułu «$($m.Title)» (filtr, filtry kolumn i ukryte kolumny):" -Icon 'E71D'
+                if (-not $name) { return }
+                $preset = ConvertTo-HTFilterPreset -Name $name -Text $(if ($m.FilterBox) { $m.FilterBox.Text } else { '' }) -ColumnFilters $m.ColumnFilters -Hidden @($m.UserHidden)
+                Save-HTFilterPreset -Key $m.Key -Preset $preset
+                Show-HTToast "Zapisano widok «$name»." 'ok'
+            }))
+    if ($presets.Count) {
+        [void]$menu.Items.Add((New-HTMenuItem -Text 'Usuń widok…' -Icon 'E74D' -Module $Module -Action {
+                    param($m)
+                    $names = @(Get-HTFilterPresets $m.Key | ForEach-Object { [string]$_.Name })
+                    $chosen = @(Show-HTSelectionDialog -Title 'Usuń widoki' -Items $names -MultiSelect -OkText 'Usuń' -Icon 'E74D')
+                    foreach ($n in $chosen) { if ($n) { Remove-HTFilterPreset -Key $m.Key -Name $n } }
+                    if ($chosen.Count) { Show-HTToast "Usunięto widoki: $($chosen.Count)" 'ok' }
+                }))
+    }
+    [void]$menu.Items.Add((New-HTMenuItem -Text 'Wyczyść filtry i pokaż wszystkie kolumny' -Icon 'E894' -Module $Module -Action {
+                param($m)
+                Set-HTFilterPresetView -Module $m -Preset @{ Name = 'domyślny'; Text = ''; Filters = @(); Hidden = @() }
+            }))
+    if ($Anchor) {
+        $menu.PlacementTarget = $Anchor
+        $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+    }
+    $menu.IsOpen = $true
+}
+#endregion
+
+#region Paleta poleceń (Ctrl+K): moduły, ulubione, ostatnie, polecenia
+$script:PaletteActions = New-Object System.Collections.ArrayList
+
+function Register-HTPaletteAction {
+    <#
+        Polecenie palety. -NeedsQuery: polecenie z wpisanym tekstem (np. «Wizytówka użytkownika: <tekst>») - pokazywane,
+        gdy wpisano co najmniej 2 znaki; -Action { param($Query) }. Bez -NeedsQuery: polecenie pokazywane według nazwy.
+    #>
+    param([Parameter(Mandatory)][string]$Text, [string]$Icon = 'E76C', [string]$Description = '', [Parameter(Mandatory)][scriptblock]$Action, [switch]$NeedsQuery, [string]$Keywords = '')
+    [void]$script:PaletteActions.Add(@{ Text = $Text; Icon = $Icon; Description = $Description; Action = $Action; NeedsQuery = [bool]$NeedsQuery; Keywords = $Keywords })
+}
+
+function Get-HTPaletteItems {
+    # Pozycje palety dla wpisanego tekstu (bez tekstu: ulubione, ostatnie i polecenia)
+    param([AllowEmptyString()][string]$Query = '')
+    $q = $Query.Trim()
+    $items = New-Object System.Collections.Generic.List[object]
+    $defs = @($script:UI.ModuleDefs | Where-Object { $script:UI.Workspaces.Contains($_.Workspace) -and (Test-HTModuleAllowed $_.Key) -and (Test-HTWorkspaceAllowed $_.Workspace) })
+    $state = Get-HTUiState
+    $newItem = {
+        param($d, [string]$Prefix)
+        $ws = $script:UI.Workspaces[$d.Workspace]
+        @{ Kind = 'Module'; Key = $d.Key; Icon = $d.Icon; Title = $d.Title; Sub = "$Prefix$($ws.Title) • $($d.Category)"; Star = (Test-HTFavoriteModule $d.Key) }
+    }
+    if (-not $q) {
+        foreach ($key in @($state.Favorites)) { $d = @($defs | Where-Object { $_.Key -eq $key })[0]; if ($d) { $items.Add((& $newItem $d 'Ulubione • ')) } }
+        foreach ($key in @($state.Recent | Select-Object -First 8)) {
+            if (@($state.Favorites) -contains $key) { continue }
+            $d = @($defs | Where-Object { $_.Key -eq $key })[0]
+            if ($d) { $items.Add((& $newItem $d 'Ostatnio • ')) }
+        }
+        foreach ($a in $script:PaletteActions) { if (-not $a.NeedsQuery) { $items.Add(@{ Kind = 'Action'; Action = $a; Icon = $a.Icon; Title = $a.Text; Sub = $a.Description; Star = $false }) } }
+        return $items.ToArray()
+    }
+    $words = @($q.ToLowerInvariant() -split '\s+' | Where-Object { $_ })
+    $scored = foreach ($d in $defs) {
+        $ws = $script:UI.Workspaces[$d.Workspace]
+        $hay = "$($d.Title) $($ws.Title) $($d.Category) $($d.Description) $($d.Key)".ToLowerInvariant()
+        $all = $true
+        foreach ($w in $words) { if (-not $hay.Contains($w)) { $all = $false; break } }
+        if (-not $all) { continue }
+        $title = "$($d.Title)".ToLowerInvariant()
+        $score = if ($title.StartsWith($q.ToLowerInvariant())) { 0 } elseif ($title.Contains($words[0])) { 1 } else { 2 }
+        if (Test-HTFavoriteModule $d.Key) { $score -= 0.5 }
+        [PSCustomObject]@{ Score = $score; Def = $d }
+    }
+    foreach ($s in @($scored | Sort-Object Score, @{ Expression = { $_.Def.Title } } | Select-Object -First 25)) { $items.Add((& $newItem $s.Def '')) }
+    foreach ($a in $script:PaletteActions) {
+        if ($a.NeedsQuery) {
+            if ($q.Length -ge 2) { $items.Add(@{ Kind = 'Action'; Action = $a; Query = $q; Icon = $a.Icon; Title = "$($a.Text): «$q»"; Sub = $a.Description; Star = $false }) }
+            continue
+        }
+        $hay = "$($a.Text) $($a.Keywords) $($a.Description)".ToLowerInvariant()
+        $all = $true
+        foreach ($w in $words) { if (-not $hay.Contains($w)) { $all = $false; break } }
+        if ($all) { $items.Add(@{ Kind = 'Action'; Action = $a; Icon = $a.Icon; Title = $a.Text; Sub = $a.Description; Star = $false }) }
+    }
+    return $items.ToArray()
+}
+
+$script:PaletteXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="660" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" WindowStartupLocation="CenterOwner" Foreground="#E4E8EF" FontFamily="Segoe UI" FontSize="13"
+        UseLayoutRounding="True" SnapsToDevicePixels="True" TextOptions.TextFormattingMode="Display">
+  <Border Background="#161B22" BorderBrush="#2F3846" BorderThickness="1" CornerRadius="12" Margin="18" Padding="14,12,14,10">
+    <Border.Effect><DropShadowEffect BlurRadius="26" ShadowDepth="4" Opacity="0.55" Color="Black"/></Border.Effect>
+    <StackPanel>
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <TextBlock Style="{StaticResource Glyph}" Text="&#xE721;" FontSize="16" Foreground="#8CB0FF" VerticalAlignment="Center" Margin="4,0,12,0"/>
+        <TextBox x:Name="plQuery" Grid.Column="1" FontSize="15" Tag="Szukaj modułów i poleceń (np. licencje, skrzynka, MFA)…"/>
+      </Grid>
+      <ListBox x:Name="plList" Margin="0,10,0,0" MaxHeight="440" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+      <TextBlock x:Name="plHint" Foreground="#5E6779" FontSize="11.5" Margin="4,8,0,0" TextWrapping="Wrap"
+                 Text="↑ ↓ wybór • Enter otwórz • Esc zamknij • prawy przycisk na module w nawigacji - dodaj do ulubionych"/>
+    </StackPanel>
+  </Border>
+</Window>
+'@
+
+$script:PaletteEvents = @{
+    Query       = { param($s, $e) Update-HTPaletteList -Window ([System.Windows.Window]::GetWindow($s)) }
+    KeyDown     = {
+        param($s, $e)
+        $list = $s.FindName('plList')
+        switch ([string]$e.Key) {
+            'Down' { if ($list.Items.Count) { $list.SelectedIndex = [Math]::Min($list.Items.Count - 1, $list.SelectedIndex + 1); $list.ScrollIntoView($list.SelectedItem) }; $e.Handled = $true }
+            'Up' { if ($list.Items.Count) { $list.SelectedIndex = [Math]::Max(0, $list.SelectedIndex - 1); $list.ScrollIntoView($list.SelectedItem) }; $e.Handled = $true }
+            'Return' { Complete-HTPalette -Window $s; $e.Handled = $true }
+            'Escape' { $s.Tag.Closing = $true; Close-HTDialog -Window $s -Ok $false; $e.Handled = $true }
+        }
+    }
+    Click       = { param($s, $e) Complete-HTPalette -Window ([System.Windows.Window]::GetWindow($s)) }
+    Deactivated = { param($s, $e) if (-not $s.Tag.Closing) { $s.Tag.Closing = $true; try { Close-HTDialog -Window $s -Ok $false } catch { Write-Verbose $_ } } }
+}
+
+function Update-HTPaletteList {
+    param([Parameter(Mandatory)]$Window)
+    $list = $Window.FindName('plList')
+    $list.Items.Clear()
+    foreach ($item in @(Get-HTPaletteItems -Query $Window.FindName('plQuery').Text)) {
+        $li = New-Object System.Windows.Controls.ListBoxItem
+        $li.Tag = $item
+        $li.Padding = '8,6'
+        $grid = New-Object System.Windows.Controls.Grid
+        foreach ($width in 'Auto', '*', 'Auto') {
+            $cd = New-Object System.Windows.Controls.ColumnDefinition
+            $cd.Width = if ($width -eq '*') { New-Object System.Windows.GridLength(1, [System.Windows.GridUnitType]::Star) } else { [System.Windows.GridLength]::Auto }
+            [void]$grid.ColumnDefinitions.Add($cd)
+        }
+        $icon = New-HTGlyphBlock -Code $(if ($item.Icon) { $item.Icon } else { 'E76C' }) -Size 15 -Color $(if ($item.Kind -eq 'Action') { '#5EE3AE' } else { '#8CB0FF' })
+        $icon.Margin = '2,0,12,0'
+        $icon.Width = 20
+        $icon.VerticalAlignment = 'Center'
+        [void]$grid.Children.Add($icon)
+        $texts = New-Object System.Windows.Controls.StackPanel
+        $t1 = New-Object System.Windows.Controls.TextBlock
+        $t1.Text = [string]$item.Title
+        $t1.FontWeight = 'SemiBold'
+        $t1.TextTrimming = 'CharacterEllipsis'
+        [void]$texts.Children.Add($t1)
+        if ($item.Sub) {
+            $t2 = New-Object System.Windows.Controls.TextBlock
+            $t2.Text = [string]$item.Sub
+            $t2.Foreground = Get-HTBrush '#8791A5'
+            $t2.FontSize = 11.5
+            $t2.TextTrimming = 'CharacterEllipsis'
+            [void]$texts.Children.Add($t2)
+        }
+        [System.Windows.Controls.Grid]::SetColumn($texts, 1)
+        [void]$grid.Children.Add($texts)
+        if ($item.Star) {
+            $star = New-HTGlyphBlock -Code 'E735' -Size 11 -Color '#FFC46B'
+            $star.VerticalAlignment = 'Center'
+            [System.Windows.Controls.Grid]::SetColumn($star, 2)
+            [void]$grid.Children.Add($star)
+        }
+        $li.Content = $grid
+        $li.add_MouseDoubleClick($script:PaletteEvents.Click)
+        [void]$list.Items.Add($li)
+    }
+    if ($list.Items.Count) { $list.SelectedIndex = 0 }
+}
+
+function Complete-HTPalette {
+    param([Parameter(Mandatory)]$Window)
+    $selected = $Window.FindName('plList').SelectedItem
+    if (-not $selected) { return }
+    $Window.Tag.Choice = $selected.Tag
+    $Window.Tag.Closing = $true
+    Close-HTDialog -Window $Window -Ok $true
+}
+
+function Show-HTCommandPalette {
+    # Ctrl+K: szybkie przejście do modułu albo polecenia; wybrana pozycja wykonuje się po zamknięciu palety
+    $w = New-HTUiElement $script:PaletteXaml
+    $w.Tag = @{ Result = $false; Modal = $false; Choice = $null; Closing = $false }
+    $w.FindName('plQuery').add_TextChanged($script:PaletteEvents.Query)
+    $w.add_PreviewKeyDown($script:PaletteEvents.KeyDown)
+    $w.add_Deactivated($script:PaletteEvents.Deactivated)
+    $w.add_ContentRendered({ param($s, $e) [void]$s.FindName('plQuery').Focus() })
+    Update-HTPaletteList -Window $w
+    [void](Invoke-HTDialog $w)
+    $choice = $w.Tag.Choice
+    if (-not $choice) { return }
+    if ($choice.Kind -eq 'Module') { Invoke-HTUiAction -Module $null -Action { param($m, $key) Show-HTModule -Key $key } -Source $choice.Key; return }
+    $action = $choice.Action
+    Invoke-HTUiAction -Module $null -Action { param($m, $q) & $action.Action $q } -Source ([string]$choice.Query)
+}
+#endregion
+
+#region Podsumowanie operacji do zgłoszenia
+$script:OperationSummaryXaml = @'
+<StackPanel>
+  <Grid Margin="0,0,0,8">
+    <TextBox x:Name="osFilter" Width="320" HorizontalAlignment="Left" Tag="Obiekt lub operacja (np. jan.kowalski)…"/>
+    <Border Style="{StaticResource Chip}" HorizontalAlignment="Right">
+      <TextBlock x:Name="osCount" Foreground="#AEB6C4" FontSize="11.5"/>
+    </Border>
+  </Grid>
+  <TextBox x:Name="osText" Style="{StaticResource MultiText}" IsReadOnly="True" Height="360" TextWrapping="Wrap"/>
+  <TextBlock Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
+             Text="Operacje zmieniające wykonane w tej sesji programu (bez haseł i danych poufnych). Wklej tekst do zgłoszenia albo wyślij na kanał Teams."/>
+</StackPanel>
+'@
+
+$script:OperationSummaryEvents = @{
+    Filter = { param($s, $e) Update-HTOperationSummary -Window ([System.Windows.Window]::GetWindow($s)) }
+    Copy   = {
+        param($s, $e)
+        $t = [System.Windows.Window]::GetWindow($s).FindName('osText').Text
+        if ($t) { Set-HTClipboard $t; Show-HTToast 'Skopiowano podsumowanie.' 'ok' }
+    }
+    Teams  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        $records = @($w.Tag.Records)
+        if (-not $records.Count) { return }
+        $facts = [ordered]@{}
+        foreach ($g in @($records | Group-Object Operation | Select-Object -First 10)) { $facts[$g.Name] = (@($g.Group | ForEach-Object { "$($_.Object) ($($_.Status))" }) -join ', ') }
+        if (Send-HTTeamsMessage -Title 'Podsumowanie wykonanych czynności' -Text $w.FindName('osFilter').Text -Facts $facts -Tone 'ok' -Event 'Manual') { Show-HTToast 'Wysłano na kanał Teams.' 'ok' }
+        else { Show-HTWarning 'Nie wysłano - ustaw adres webhooka Teams w Ustawieniach (Integracje) i sprawdź dziennik.' }
+    }
+}
+
+function Update-HTOperationSummary {
+    param([Parameter(Mandatory)]$Window)
+    $q = $Window.FindName('osFilter').Text.Trim()
+    $records = @(Get-HTOperationRecords -Object $q)
+    $Window.Tag.Records = $records
+    $Window.FindName('osText').Text = Format-HTOperationSummary -Records $records -Title $(if ($q) { "Wykonane czynności - $q" } else { '' })
+    $Window.FindName('osCount').Text = "operacji: $($records.Count)"
+}
+
+function Show-HTOperationSummaryDialog {
+    # Tekst do zgłoszenia z operacji wykonanych w tej sesji (filtr po obiekcie)
+    param([string]$Object = '')
+    $w = New-HTDialog -Title 'Podsumowanie do zgłoszenia' -Subtitle 'Co zostało zrobione w tej sesji programu - gotowy tekst do zgłoszenia (ticketu).' -Body $script:OperationSummaryXaml -Icon 'E8A5' -OkText 'Zamknij' -NoCancel -Width 760
+    $copy = New-HTButton -Text 'Kopiuj' -Icon 'E8C8'
+    $copy.Margin = '0,0,8,0'
+    $copy.add_Click($script:OperationSummaryEvents.Copy)
+    [void]$w.FindName('dlgExtra').Children.Add($copy)
+    if (Get-HTTeamsWebhookUrl) {
+        $teams = New-HTButton -Text 'Wyślij do Teams' -Icon 'E8F2'
+        $teams.add_Click($script:OperationSummaryEvents.Teams)
+        [void]$w.FindName('dlgExtra').Children.Add($teams)
+    }
+    $filter = $w.FindName('osFilter')
+    $filter.Text = $Object
+    $filter.add_TextChanged($script:OperationSummaryEvents.Filter)
+    Update-HTOperationSummary -Window $w
+    [void](Invoke-HTDialog $w)
 }
 #endregion
 

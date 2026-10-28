@@ -747,3 +747,231 @@ function Get-HTExternalForwardingReport {
     }
 }
 #endregion
+
+#region Reguły transportu (przepływ poczty)
+function Get-HTTransportRules {
+    foreach ($r in @(Get-TransportRule -ResultSize Unlimited -ErrorAction Stop | Sort-Object Priority)) {
+        [PSCustomObject]@{
+            Priorytet   = $r.Priority
+            Reguła      = $r.Name
+            Stan        = "$($r.State)"
+            Tryb        = "$($r.Mode)"
+            Opis        = ([string]$r.Description).Trim()
+            Ważność     = "$($r.SetAuditSeverity)"
+            Zmieniono   = $r.WhenChanged
+            Komentarz   = $r.Comments
+            Id          = "$($r.Guid)"
+            __flag      = if ("$($r.State)" -ne 'Enabled') { 'muted' } elseif ("$($r.Mode)" -ne 'Enforce') { 'warn' } else { '' }
+        }
+    }
+}
+
+function Set-HTTransportRuleState {
+    param ([Parameter(Mandatory)][string]$Identity, [Parameter(Mandatory)][bool]$Enabled)
+    if ($Enabled) { Enable-TransportRule -Identity $Identity -Confirm:$false -ErrorAction Stop }
+    else { Disable-TransportRule -Identity $Identity -Confirm:$false -ErrorAction Stop }
+}
+#endregion
+
+#region Lista dozwolonych i zablokowanych (Tenant Allow/Block List)
+function Get-HTTenantAllowBlockList {
+    param ([ValidateSet('Sender', 'Url', 'FileHash', 'IP')][string[]]$ListType = @('Sender', 'Url', 'FileHash'))
+    $names = @{ Sender = 'Nadawca / domena'; Url = 'Adres URL'; FileHash = 'Plik (SHA256)'; IP = 'Adres IP' }
+    foreach ($type in $ListType) {
+        $items = @()
+        try { $items = @(Get-TenantAllowBlockListItems -ListType $type -ErrorAction Stop) }
+        catch { Write-Log -Message "Lista dozwolonych i zablokowanych ($type): $($_.Exception.Message)" -Type 'Warn'; continue }
+        foreach ($i in $items) {
+            $expires = if ($i.ExpirationDate) { $i.ExpirationDate } else { $null }
+            $left = if ($expires) { [int][Math]::Floor(([datetime]$expires - (Get-Date)).TotalDays) } else { $null }
+            [PSCustomObject]@{
+                Lista       = $names[$type]
+                Wartość     = $i.Value
+                Akcja       = $(if ($i.Action -eq 'Block') { 'Blokuj' } elseif ($i.Action -eq 'Allow') { 'Zezwalaj' } else { [string]$i.Action })
+                Wygasa      = $(if ($expires) { $expires } else { 'nigdy' })
+                'Dni do wygaśnięcia' = $left
+                Notatka     = $i.Notes
+                Zmieniono   = $i.LastModifiedDateTime
+                Zmienił     = $i.ModifiedBy
+                Id          = $i.Identity
+                __type      = $type
+                __flag      = if ($i.Action -eq 'Allow') { 'warn' } elseif ($null -ne $left -and $left -le 3) { 'muted' } else { '' }
+            }
+        }
+    }
+}
+
+function Add-HTTenantAllowBlockItem {
+    # Nowe wpisy listy (blokada albo zezwolenie); -Days 0 - bez wygaśnięcia (dla zezwoleń Microsoft wymaga daty wygaśnięcia)
+    param (
+        [Parameter(Mandatory)][ValidateSet('Sender', 'Url', 'FileHash', 'IP')][string]$ListType,
+        [Parameter(Mandatory)][string[]]$Entries,
+        [ValidateSet('Block', 'Allow')][string]$Action = 'Block',
+        [int]$Days = 30,
+        [string]$Notes = ''
+    )
+    $params = @{ ListType = $ListType; Entries = @($Entries); ErrorAction = 'Stop' }
+    if ($Action -eq 'Block') { $params.Block = $true } else { $params.Allow = $true }
+    if ($Days -gt 0) { $params.ExpirationDate = (Get-Date).AddDays($Days) } else { $params.NoExpiration = $true }
+    if ($Notes) { $params.Notes = $Notes }
+    New-TenantAllowBlockListItems @params | Out-Null
+}
+
+function Remove-HTTenantAllowBlockItem {
+    param ([Parameter(Mandatory)][string]$ListType, [Parameter(Mandatory)][string[]]$Ids)
+    Remove-TenantAllowBlockListItems -ListType $ListType -Ids $Ids -ErrorAction Stop | Out-Null
+}
+#endregion
+
+#region Sale i zasoby: ustawienia rezerwacji (Calendar Processing)
+$script:BookingFields = [ordered]@{
+    AutomateProcessing              = 'Przetwarzanie (AutoAccept / AutoUpdate / None)'
+    AllowConflicts                  = 'Zezwalaj na konflikty'
+    BookingWindowInDays             = 'Okno rezerwacji (dni)'
+    MaximumDurationInMinutes        = 'Maks. czas spotkania (min)'
+    AllowRecurringMeetings          = 'Spotkania cykliczne'
+    EnforceSchedulingHorizon        = 'Odrzucaj cykliczne poza oknem rezerwacji'
+    ScheduleOnlyDuringWorkHours     = 'Tylko w godzinach pracy'
+    AllBookInPolicy                 = 'Wszyscy mogą rezerwować'
+    AllRequestInPolicy              = 'Wszyscy mogą prosić o rezerwację'
+    ResourceDelegates               = 'Delegaci (zatwierdzanie)'
+    AddOrganizerToSubject           = 'Organizator w temacie'
+    DeleteSubject                   = 'Usuwaj temat'
+    DeleteComments                  = 'Usuwaj treść zaproszenia'
+    RemovePrivateProperty           = 'Usuwaj oznaczenie «prywatne»'
+    ProcessExternalMeetingMessages  = 'Przyjmuj zaproszenia z zewnątrz'
+    AddAdditionalResponse           = 'Dodatkowa odpowiedź'
+    AdditionalResponse              = 'Treść dodatkowej odpowiedzi'
+}
+
+function Get-HTRoomBookingSettings {
+    param ([Parameter(Mandatory)][string]$Identity)
+    $cp = Get-CalendarProcessing -Identity $Identity -ErrorAction Stop
+    $place = $null
+    try { $place = Get-Place -Identity $Identity -ErrorAction Stop } catch { $place = $null }
+    $o = [ordered]@{ Sala = $Identity }
+    if ($place) { $o['Pojemność'] = $place.Capacity; $o['Budynek'] = $place.Building; $o['Piętro'] = $place.Floor }
+    foreach ($k in $script:BookingFields.Keys) {
+        $v = $cp.$k
+        $o[$script:BookingFields[$k]] = if ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { (@($v | ForEach-Object { "$_" }) -join ', ') } else { $v }
+    }
+    $o['__settings'] = $cp
+    $o['__flag'] = if ("$($cp.AutomateProcessing)" -ne 'AutoAccept') { 'warn' } else { '' }
+    return [PSCustomObject]$o
+}
+
+function Set-HTRoomBookingSettings {
+    # -Settings: nazwy parametrów Set-CalendarProcessing -> wartości (puste listy delegatów czyści)
+    param ([Parameter(Mandatory)][string]$Identity, [Parameter(Mandatory)][hashtable]$Settings)
+    $params = @{ Identity = $Identity; Confirm = $false; ErrorAction = 'Stop' }
+    foreach ($k in $Settings.Keys) { $params[$k] = $Settings[$k] }
+    Set-CalendarProcessing @params
+}
+#endregion
+
+#region Pełny raport dostępu do skrzynki i automapowanie
+function Get-HTMailboxAccessReport {
+    <#
+        Kto ma dostęp do skrzynki: pełny dostęp, wyślij jako, wyślij w imieniu oraz uprawnienia do folderów.
+        -Folders: Standard (główny folder, Skrzynka odbiorcza, Kalendarz, Kontakty) albo All (wszystkie foldery - dłużej).
+    #>
+    param ([Parameter(Mandatory)][string]$Identity, [ValidateSet('None', 'Standard', 'All')][string]$Folders = 'Standard')
+    $names = @{ FullAccess = 'Pełny dostęp'; SendAs = 'Wyślij jako'; SendOnBehalf = 'Wyślij w imieniu' }
+    foreach ($p in @(Get-HTMailboxPermissions -Identity $Identity)) {
+        [PSCustomObject]@{ Rodzaj = $names[$p.Type]; Folder = '(cała skrzynka)'; Użytkownik = $p.User; Prawa = $p.AccessRights; __type = $p.Type; __folder = ''; __flag = $(if ($p.Type -eq 'FullAccess') { 'warn' } else { '' }) }
+    }
+    if ($Folders -eq 'None') { return }
+    $folderPaths = New-Object System.Collections.Generic.List[string]
+    $stats = @(Get-EXOMailboxFolderStatistics -Identity $Identity -ErrorAction Stop)
+    foreach ($f in $stats) {
+        $type = [string]$f.FolderType
+        if ($Folders -eq 'Standard' -and $type -notin @('Root', 'Inbox', 'Calendar', 'Contacts')) { continue }
+        if ($Folders -eq 'All' -and $type -in @('RecoverableItemsRoot', 'RecoverableItemsDeletions', 'RecoverableItemsPurges', 'RecoverableItemsVersions', 'Audits', 'CalendarLogging', 'SyncIssues', 'Conflicts', 'LocalFailures', 'ServerFailures', 'RecoverableItemsSubstrateHolds', 'RecoverableItemsDiscoveryHolds', 'RecoverableItemsMigratedMessages')) { continue }
+        $path = if ($type -eq 'Root') { '\' } else { ([string]$f.FolderPath).Replace('/', '\') }
+        if ($path -and -not $folderPaths.Contains($path)) { $folderPaths.Add($path) }
+    }
+    foreach ($path in $folderPaths) {
+        $id = if ($path -eq '\') { "$($Identity):\" } else { "$($Identity):$path" }
+        try {
+            foreach ($fp in @(Get-EXOMailboxFolderPermission -Identity $id -ErrorAction Stop)) {
+                $user = [string]$fp.User
+                $rights = @($fp.AccessRights) -join ', '
+                if ($user -in 'Default', 'Anonymous' -and $rights -in 'None', 'AvailabilityOnly') { continue }
+                [PSCustomObject]@{ Rodzaj = 'Folder'; Folder = $path; Użytkownik = $user; Prawa = $rights; __type = 'Folder'; __folder = $id; __flag = $(if ($user -in 'Default', 'Anonymous') { 'warn' } else { '' }) }
+            }
+        }
+        catch { Write-Log -Message "Uprawnienia folderu $($id): $($_.Exception.Message)" -Type 'Warn' }
+    }
+}
+
+function Remove-HTMailboxFolderPermissionEntry {
+    param ([Parameter(Mandatory)][string]$FolderIdentity, [Parameter(Mandatory)][string]$User)
+    Remove-MailboxFolderPermission -Identity $FolderIdentity -User $User -Confirm:$false -ErrorAction Stop
+}
+
+function Set-HTMailboxAutoMapping {
+    # Automapowanie (dodanie skrzynki w Outlooku) zapisuje się przy nadaniu pełnego dostępu - zmiana: odebranie i ponowne nadanie
+    param ([Parameter(Mandatory)][string]$Identity, [Parameter(Mandatory)][string]$User, [Parameter(Mandatory)][bool]$Enabled)
+    Remove-MailboxPermission -Identity $Identity -User $User -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction Stop
+    Add-MailboxPermission -Identity $Identity -User $User -AccessRights FullAccess -InheritanceType All -AutoMapping $Enabled -Confirm:$false -ErrorAction Stop | Out-Null
+}
+#endregion
+
+#region Skrzynki współdzielone a licencje
+function Get-HTSharedMailboxAdvice {
+    <#
+        Zalecenie licencyjne skrzynki współdzielonej: bez licencji do 50 GB; licencja wymagana powyżej 50 GB,
+        dla archiwum online i Litigation Hold (Exchange Online Plan 2 / dodatek archiwum).
+    #>
+    param ([AllowNull()][object]$SizeGB, [bool]$Licensed, [bool]$Archive = $false, [bool]$Hold = $false)
+    $size = if ($null -ne $SizeGB -and "$SizeGB" -ne '') { [double]$SizeGB } else { 0 }
+    $needs = @()
+    if ($size -gt 50) { $needs += 'rozmiar ponad 50 GB' }
+    if ($Archive) { $needs += 'archiwum online' }
+    if ($Hold) { $needs += 'Litigation Hold' }
+    if (-not $Licensed -and $needs.Count) { return @{ Advice = "Wymaga licencji: $($needs -join ', ')"; Flag = 'crit' } }
+    if ($Licensed -and -not $needs.Count) { return @{ Advice = 'Licencja prawdopodobnie zbędna (do 50 GB bez archiwum i blokady - bez licencji)'; Flag = 'warn' } }
+    if ($Licensed) { return @{ Advice = "Licencja potrzebna ($($needs -join ', '))"; Flag = '' } }
+    if ($size -gt 45) { return @{ Advice = 'Blisko limitu 50 GB - zaplanuj licencję lub archiwizację'; Flag = 'warn' } }
+    return @{ Advice = 'OK (bez licencji)'; Flag = '' }
+}
+
+function Get-HTSharedMailboxLicenseReport {
+    # Skrzynki współdzielone: rozmiar, archiwum, blokada i licencje (Microsoft Graph, gdy połączono) z zaleceniem
+    param ([scriptblock]$OnProgress)
+    $mailboxes = @(Get-EXOMailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited -Properties ArchiveStatus, LitigationHoldEnabled, ExternalDirectoryObjectId -ErrorAction Stop)
+    $licenses = @{}
+    if ($Global:ConnectedToGraphAPI -and $mailboxes.Count) {
+        try {
+            $skuNames = Get-HTSkuNameMap
+            $batch = Invoke-HTGraphBatch -Requests @($mailboxes | Where-Object { $_.ExternalDirectoryObjectId } | ForEach-Object { @{ Id = [string]$_.ExternalDirectoryObjectId; Url = "users/$($_.ExternalDirectoryObjectId)?`$select=assignedLicenses" } })
+            foreach ($k in $batch.Keys) {
+                if ($batch[$k].Status -lt 300) { $licenses[$k] = @($batch[$k].Body.assignedLicenses | ForEach-Object { Get-HTSkuFriendlyName ($skuNames["$($_.skuId)"] ?? "$($_.skuId)") }) }
+            }
+        }
+        catch { Write-Log -Message "Licencje skrzynek współdzielonych (Graph): $($_.Exception.Message)" -Type 'Warn' }
+    }
+    $i = 0
+    foreach ($mbx in $mailboxes) {
+        $i++
+        if ($OnProgress) { & $OnProgress $i $mailboxes.Count $mbx.DisplayName }
+        $size = $null
+        try { $size = ConvertFrom-HTExchangeSize (Get-EXOMailboxStatistics -Identity "$($mbx.PrimarySmtpAddress)" -ErrorAction Stop).TotalItemSize } catch { Write-Log -Message "Rozmiar $($mbx.PrimarySmtpAddress): $($_.Exception.Message)" -Type 'Warn' }
+        $sizeGB = if ($null -ne $size) { [Math]::Round($size / 1GB, 2) } else { $null }
+        $known = $licenses.ContainsKey([string]$mbx.ExternalDirectoryObjectId)
+        $lic = if ($known) { @($licenses[[string]$mbx.ExternalDirectoryObjectId]) } else { @() }
+        $advice = Get-HTSharedMailboxAdvice -SizeGB $sizeGB -Licensed ($lic.Count -gt 0) -Archive ("$($mbx.ArchiveStatus)" -eq 'Active') -Hold ([bool]$mbx.LitigationHoldEnabled)
+        [PSCustomObject]@{
+            Skrzynka          = $mbx.DisplayName
+            Adres             = "$($mbx.PrimarySmtpAddress)"
+            'Rozmiar (GB)'    = $sizeGB
+            Archiwum          = ("$($mbx.ArchiveStatus)" -eq 'Active')
+            'Litigation Hold' = [bool]$mbx.LitigationHoldEnabled
+            Licencje          = $(if ($known) { $lic -join ', ' } else { '(połącz z Microsoft 365)' })
+            Zalecenie         = $advice.Advice
+            Id                = [string]$mbx.ExternalDirectoryObjectId
+            __flag            = $advice.Flag
+        }
+    }
+}
+#endregion

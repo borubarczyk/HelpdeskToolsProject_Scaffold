@@ -798,3 +798,140 @@ function Get-HTSkuUsers {
         } | Sort-Object Nazwa)
 }
 #endregion
+
+#region Licencje grupowe i licencje do odzyskania
+$script:LicenseErrorNames = @{
+    CountViolation                       = 'Brak wolnych licencji'
+    MutuallyExclusiveViolation           = 'Konflikt z inną licencją (wykluczające się plany)'
+    DependencyViolation                  = 'Brak wymaganej licencji lub planu'
+    ProhibitedInUsageLocationViolation   = 'Licencja niedostępna w lokalizacji użycia'
+    UniquenessViolation                  = 'Konflikt unikalności (np. adres proxy już używany)'
+    Other                                = 'Inny błąd (np. konflikt adresu e-mail)'
+}
+
+function Get-HTGroupLicenseErrors {
+    # Grupy z błędami przypisania licencji i użytkownicy z błędem (licencjonowanie grupowe)
+    $skuNames = Get-HTSkuNameMap
+    $groups = @(Invoke-HTGraphRequest -Uri 'groups?$filter=hasMembersWithLicenseErrors eq true&$select=id,displayName,assignedLicenses&$top=999' -All)
+    foreach ($g in $groups) {
+        $members = @(Invoke-HTGraphRequest -Uri "groups/$($g.id)/membersWithLicenseErrors?`$select=id,displayName,userPrincipalName,usageLocation,licenseAssignmentStates&`$top=999" -All)
+        foreach ($u in $members) {
+            foreach ($st in @($u.licenseAssignmentStates | Where-Object { $_.assignedByGroup -eq $g.id -and $_.error -and $_.error -ne 'None' })) {
+                [PSCustomObject]@{
+                    Grupa              = $g.displayName
+                    Użytkownik         = $u.displayName
+                    UPN                = $u.userPrincipalName
+                    Licencja           = Get-HTSkuFriendlyName ($skuNames["$($st.skuId)"] ?? "$($st.skuId)")
+                    Błąd               = $st.error
+                    Opis               = $(if ($script:LicenseErrorNames.ContainsKey([string]$st.error)) { $script:LicenseErrorNames[[string]$st.error] } else { [string]$st.error })
+                    'Lokalizacja użycia' = $u.usageLocation
+                    Stan               = $st.state
+                    Id                 = $u.id
+                    GroupId            = $g.id
+                    __flag             = 'crit'
+                }
+            }
+        }
+    }
+}
+
+function Invoke-HTLicenseReprocess {
+    # Ponowne przetworzenie licencji grupowych użytkownika (po usunięciu przyczyny błędu)
+    param ([Parameter(Mandatory)][string]$UserId)
+    Invoke-HTGraphRequest -Uri "users/$UserId/reprocessLicenseAssignment" -Method POST -Body @{} | Out-Null
+}
+
+function Get-HTReclaimableLicenses {
+    <#
+        Licencje do odzyskania: konta zablokowane albo bez logowania od -Days dni z przypisanymi licencjami.
+        Kolumna «Przypisanie» rozróżnia licencje bezpośrednie (do usunięcia) i z grup (usuń z grupy).
+    #>
+    param ([int]$Days = 90, [switch]$IncludeGuests)
+    $skuNames = Get-HTSkuNameMap
+    $select = 'id,displayName,userPrincipalName,accountEnabled,userType,department,assignedLicenses,licenseAssignmentStates,signInActivity,createdDateTime'
+    foreach ($u in @(Invoke-HTGraphRequest -Uri "users?`$filter=assignedLicenses/`$count ne 0&`$count=true&`$select=$select&`$top=999" -All -ConsistencyLevelEventual)) {
+        if (-not $IncludeGuests -and $u.userType -eq 'Guest') { continue }
+        $last = Get-HTM365LastSignIn -SignInActivity $u.signInActivity
+        $idle = Get-HTDaysSince $last
+        $created = Get-HTDaysSince $u.createdDateTime
+        $inactive = if ($null -eq $idle) { $null -eq $created -or $created -ge $Days } else { $idle -ge $Days }
+        if ($u.accountEnabled -and -not $inactive) { continue }
+        $states = @($u.licenseAssignmentStates | Where-Object { $_ })
+        $direct = @($states | Where-Object { -not $_.assignedByGroup } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
+        $byGroup = @($states | Where-Object { $_.assignedByGroup } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
+        [PSCustomObject]@{
+            Nazwa                = $u.displayName
+            UPN                  = $u.userPrincipalName
+            Włączone             = [bool]$u.accountEnabled
+            Powód                = $(if (-not $u.accountEnabled) { 'konto zablokowane' } else { "brak logowania od $(if ($null -ne $idle) { "$idle dni" } else { 'utworzenia' })" })
+            'Ostatnie logowanie' = $last
+            Licencje             = (@($u.assignedLicenses | ForEach-Object { Get-HTSkuFriendlyName ($skuNames["$($_.skuId)"] ?? "$($_.skuId)") }) -join ', ')
+            Przypisanie          = $(if ($byGroup.Count -and $direct.Count) { 'bezpośrednie i z grup' } elseif ($byGroup.Count) { 'z grup' } else { 'bezpośrednie' })
+            Dział                = $u.department
+            Id                   = $u.id
+            __direct             = $direct
+            __flag               = if (-not $u.accountEnabled) { 'crit' } else { 'warn' }
+        }
+    }
+}
+#endregion
+
+#region Masowe tworzenie kont (CSV)
+$script:BulkUserColumns = @('Imie', 'Nazwisko', 'NazwaWyswietlana', 'Login', 'Domena', 'Stanowisko', 'Dzial', 'Firma', 'TelefonKomorkowy', 'Biuro', 'LokalizacjaUzycia', 'Licencje', 'Grupy', 'Przelozony', 'Haslo')
+
+function Get-HTBulkUserTemplate {
+    # Nagłówek i przykładowy wiersz szablonu CSV (separator ;)
+    $example = [ordered]@{ Imie = 'Jan'; Nazwisko = 'Kowalski'; NazwaWyswietlana = ''; Login = ''; Domena = ''; Stanowisko = 'Specjalista'; Dzial = 'Sprzedaż'; Firma = ''; TelefonKomorkowy = '+48 600 000 000'; Biuro = ''
+        LokalizacjaUzycia = 'PL'; Licencje = 'O365_BUSINESS_PREMIUM'; Grupy = 'Sprzedaż, Wszyscy'; Przelozony = 'anna.nowak@firma.pl'; Haslo = '' }
+    # Wiele wartości w polu (licencje, grupy) - po przecinku; pola w cudzysłowach
+    return ((@([PSCustomObject]$example | ConvertTo-Csv -Delimiter ';' -NoTypeInformation)) -join "`r`n")
+}
+
+function Import-HTBulkUserCsv {
+    # Wiersze pliku CSV (separator ; albo , wykrywany z nagłówka, kodowanie UTF-8)
+    param ([Parameter(Mandatory)][string]$Path)
+    $first = Get-Content -LiteralPath $Path -TotalCount 1 -Encoding utf8
+    $delimiter = if ($first -match ';') { ';' } else { ',' }
+    return @(Import-Csv -LiteralPath $Path -Delimiter $delimiter -Encoding utf8 | Where-Object { @($_.PSObject.Properties | Where-Object { "$($_.Value)".Trim() }).Count -gt 0 })
+}
+
+function Test-HTBulkUserRow {
+    <#
+        Sprawdzenie wiersza CSV przed utworzeniem konta: wymagane pola, domena, unikalność UPN (w tenancie i pliku),
+        nazwy licencji. Zwraca @{ Valid; Errors; Upn; DisplayName; Login; Domain }.
+    #>
+    param (
+        [Parameter(Mandatory)][object]$Row,
+        [AllowEmptyCollection()][string[]]$Domains = @(),
+        [AllowEmptyCollection()][string[]]$ExistingUpns = @(),
+        [AllowEmptyCollection()][string[]]$SeenUpns = @(),
+        [AllowEmptyCollection()][string[]]$KnownSkus = @()
+    )
+    $get = { param($n) ([string]$Row.$n).Trim() }
+    $errors = New-Object System.Collections.Generic.List[string]
+    $given = & $get 'Imie'
+    $surname = & $get 'Nazwisko'
+    if (-not $given -and -not (& $get 'NazwaWyswietlana')) { $errors.Add('brak imienia') }
+    if (-not $surname -and -not (& $get 'NazwaWyswietlana')) { $errors.Add('brak nazwiska') }
+    $display = & $get 'NazwaWyswietlana'
+    if (-not $display) { $display = ("$given $surname").Trim() }
+    $login = & $get 'Login'
+    if (-not $login -and $given -and $surname) { $login = (ConvertTo-HTAsciiName "$given.$surname").ToLowerInvariant() -replace '[^a-z0-9\.\-_]', '' }
+    $domain = & $get 'Domena'
+    if (-not $domain -and @($Domains).Count) { $domain = @($Domains)[0] }
+    if ($login -match '@') { $parts = $login -split '@', 2; $login = $parts[0]; if (-not (& $get 'Domena')) { $domain = $parts[1] } }
+    if (-not $login) { $errors.Add('brak loginu') }
+    if (-not $domain) { $errors.Add('brak domeny') }
+    elseif (@($Domains).Count -and @($Domains | Where-Object { $_ -ieq $domain }).Count -eq 0) { $errors.Add("domena $domain nie jest zweryfikowana w tenancie") }
+    $upn = if ($login -and $domain) { "$login@$domain".ToLowerInvariant() } else { '' }
+    if ($upn -and @($ExistingUpns | Where-Object { $_ -ieq $upn }).Count) { $errors.Add('konto o tym UPN już istnieje') }
+    if ($upn -and @($SeenUpns | Where-Object { $_ -ieq $upn }).Count) { $errors.Add('UPN powtarza się w pliku') }
+    $location = & $get 'LokalizacjaUzycia'
+    if ($location -and $location -notmatch '^[A-Za-z]{2}$') { $errors.Add('lokalizacja użycia musi mieć 2 litery (np. PL)') }
+    $licenses = @(Split-HTInputList (& $get 'Licencje'))
+    if (@($KnownSkus).Count) { foreach ($l in $licenses) { if (@($KnownSkus | Where-Object { $_ -ieq $l }).Count -eq 0) { $errors.Add("nieznana licencja $l") } } }
+    $manager = & $get 'Przelozony'
+    if ($manager -and $manager -notmatch '^[^@\s]+@[^@\s]+$') { $errors.Add('przełożony musi być podany jako UPN') }
+    return @{ Valid = ($errors.Count -eq 0); Errors = $errors.ToArray(); Upn = $upn; DisplayName = $display; Login = $login; Domain = $domain; Licenses = $licenses; Groups = @(Split-HTInputList (& $get 'Grupy')); Manager = $manager }
+}
+#endregion

@@ -31,15 +31,19 @@ function Write-Log {
     }
 
     # Notify: wpis ma być pokazany jako powiadomienie w oknie (o ile powiadomienia są włączone)
+    # Account: konto MFA, które odblokowało program (puste - konto podstawowe albo program bez MFA)
     $entry = [PSCustomObject]@{
         Time    = Get-Date
         Type    = $level
         Message = "$icon $Message"
         Notify  = ($Type -like "*&Notification" -and $Global:ShowNotifications -ne $false)
+        Account = [string]$Global:HTActiveAccount
     }
 
     $script:LogHistory.Add($entry)
-    Add-LogToFile -Message $entry.Message -Type $level
+    # W pliku dziennika konto MFA przy każdym wpisie (kto wykonał operację)
+    $fileMessage = if ($entry.Account) { "[konto: $($entry.Account)] $($entry.Message)" } else { $entry.Message }
+    Add-LogToFile -Message $fileMessage -Type $level
 
     foreach ($sink in @($script:LogSinks)) {
         try { & $sink $entry | Out-Null } catch { Write-Verbose "Błąd odbiorcy logów: $_" }
@@ -50,6 +54,11 @@ function Write-Log {
 function Register-HTLogSink {
     param ([Parameter(Mandatory)][scriptblock]$ScriptBlock)
     $script:LogSinks.Add($ScriptBlock)
+}
+
+# Usuwa wszystkich odbiorców logów (wątek w tle rejestruje własnego - przekazanie wpisów do okna)
+function Clear-HTLogSinks {
+    $script:LogSinks.Clear()
 }
 
 # Zwraca kopię historii logów
@@ -103,6 +112,8 @@ function Get-HTLogDirectory {
 
 # Bieżący plik dziennika: jeden plik na dzień (HelpdeskTools_RRRRMMDD.log)
 function Get-HTLogFile {
+    # Wątki w tle nie zapisują pliku - ich wpisy zapisuje okno programu
+    if ($Global:HTNoLogFile) { return $null }
     $dir = Get-HTLogDirectory
     if (-not $dir) { return $null }
     return (Join-Path $dir ("HelpdeskTools_{0:yyyyMMdd}.log" -f (Get-Date)))
@@ -117,6 +128,52 @@ function Remove-HTOldLogs {
     Get-ChildItem -Path $dir -Filter "HelpdeskTools_*.log" -File -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -lt $cutoff } |
         Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+# Pliki dziennika (najnowsze pierwsze): Date, Path, SizeKB
+function Get-HTLogFiles {
+    $dir = Get-HTLogDirectory
+    if (-not $dir -or -not (Test-Path $dir)) { return @() }
+    $files = foreach ($f in Get-ChildItem -Path $dir -Filter "HelpdeskTools_*.log" -File -ErrorAction SilentlyContinue) {
+        if ($f.BaseName -notmatch '^HelpdeskTools_(\d{8})') { continue }
+        $date = [datetime]::ParseExact($Matches[1], 'yyyyMMdd', [System.Globalization.CultureInfo]::InvariantCulture)
+        [PSCustomObject]@{ Date = $date; Path = $f.FullName; Name = $f.Name; SizeKB = [Math]::Round($f.Length / 1KB, 1) }
+    }
+    return @($files | Sort-Object -Property @{ Expression = { $_.Date }; Descending = $true }, @{ Expression = { $_.Name }; Descending = $true })
+}
+
+# Wpisy pliku dziennika jako wiersze tabeli (Czas, Poziom, Konto, Komunikat). Linie bez znacznika czasu (np. wielowierszowy
+# komunikat) są dołączane do poprzedniego wpisu. -Level: All | Problems (ostrzeżenia i błędy) | Error; -Text: fragment komunikatu.
+function Read-HTLogFile {
+    param (
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet("All", "Problems", "Error")][string]$Level = "All",
+        [string]$Text = ""
+    )
+    $pattern = '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] (?:\[konto: ([^\]]*)\] )?(.*)$'
+    $entries = New-Object System.Collections.Generic.List[object]
+    $current = $null
+    foreach ($line in [System.IO.File]::ReadLines($Path)) {
+        if ($line -match $pattern) {
+            $message = ($Matches[4] -replace '^(ℹ️|⚠️|❌)\s*', '')
+            $current = [ordered]@{ Czas = $Matches[1]; Poziom = $Matches[2]; Konto = [string]$Matches[3]; Komunikat = $message }
+            $entries.Add($current)
+        }
+        elseif ($current -and $line.Trim()) { $current.Komunikat += "`n" + $line }
+    }
+    $levelNames = @{ Info = 'Info'; Warn = 'Ostrzeżenie'; Error = 'Błąd' }
+    foreach ($e in $entries) {
+        if ($Level -eq 'Problems' -and $e.Poziom -notin 'Warn', 'Error') { continue }
+        if ($Level -eq 'Error' -and $e.Poziom -ne 'Error') { continue }
+        if ($Text -and $e.Komunikat.IndexOf($Text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and $e.Konto.IndexOf($Text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+        [PSCustomObject]@{
+            Czas      = $e.Czas
+            Poziom    = $(if ($levelNames.ContainsKey($e.Poziom)) { $levelNames[$e.Poziom] } else { $e.Poziom })
+            Konto     = $e.Konto
+            Komunikat = $e.Komunikat
+            __flag    = $(switch ($e.Poziom) { 'Error' { 'crit' } 'Warn' { 'warn' } default { '' } })
+        }
+    }
 }
 
 # Funkcja do zapisywania danych do pliku

@@ -65,3 +65,29 @@ function Set-HTPin {
     foreach ($key in $record.Keys) { Set-HTConfigValue -Name $key -Value $record[$key] }
     Write-Log -Message "Ustawiono nowy PIN programu." -Type "Info"
 }
+
+# Wartości poufne w konfiguracji (adres webhooka Teams, token aktualizacji): DPAPI bieżącego użytkownika - odczyta je
+# tylko to konto Windows na tym komputerze. Pusty tekst = brak wartości.
+function Protect-HTSecretText {
+    param ([AllowEmptyString()][AllowNull()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $ss = New-Object System.Security.SecureString
+    foreach ($ch in $Text.ToCharArray()) { $ss.AppendChar($ch) }
+    $ss.MakeReadOnly()
+    try { return (ConvertFrom-SecureString -SecureString $ss) } finally { $ss.Dispose() }
+}
+
+function Unprotect-HTSecretText {
+    param ([AllowEmptyString()][AllowNull()][string]$Blob)
+    if ([string]::IsNullOrEmpty($Blob)) { return "" }
+    try {
+        $ss = ConvertTo-SecureString -String $Blob -ErrorAction Stop
+        $ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss)
+        try { return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+        finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr); $ss.Dispose() }
+    }
+    catch {
+        Write-Log -Message "Nie można odczytać zaszyfrowanej wartości z konfiguracji (inny komputer lub konto Windows): $($_.Exception.Message)" -Type "Warn"
+        return ""
+    }
+}

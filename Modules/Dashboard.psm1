@@ -80,8 +80,8 @@ function Get-HTDashboardStats {
         $stats.SharePoint = New-HTTileValue -Note "połącz z SharePoint" -State "Off"
     }
 
-    # Lokalne AD
-    if ($Global:IsModuleActiveDirectoryLoaded) {
+    # Lokalne AD (tylko przy włączonych funkcjach lokalnych)
+    if ($Global:ShowOnPremises -and $Global:IsModuleActiveDirectoryLoaded) {
         try {
             $locked = @(Get-HTADLockedAccounts)
             if ($locked.Count -gt 0) { $alerts.Add("Zablokowane konta AD: $($locked.Count)") }
@@ -90,13 +90,15 @@ function Get-HTDashboardStats {
         }
         catch { $stats.AD = New-HTTileValue -Note "błąd: $($_.Exception.Message)" -State "Error" }
     }
-    else {
+    elseif ($Global:ShowOnPremises) {
         $stats.AD = New-HTTileValue -Note "moduł ActiveDirectory niedostępny" -State "Off"
     }
 
     # Połączenia
-    $connected = @($Global:ConnectedToExchange, $Global:ConnectedToGraphAPI, $Global:ConnectedToSharepointPnP, $Global:IsModuleActiveDirectoryLoaded) | Where-Object { $_ }
-    $stats.Connections = New-HTTileValue -Value "$(@($connected).Count) / 4" -Note "aktywnych usług" -State $(if (@($connected).Count -gt 0) { "Ok" } else { "Off" })
+    $services = @($Global:ConnectedToExchange, $Global:ConnectedToGraphAPI, $Global:ConnectedToSharepointPnP)
+    if ($Global:ShowOnPremises) { $services += $Global:IsModuleActiveDirectoryLoaded }
+    $connected = @($services | Where-Object { $_ })
+    $stats.Connections = New-HTTileValue -Value "$($connected.Count) / $($services.Count)" -Note "aktywnych usług" -State $(if ($connected.Count -gt 0) { "Ok" } else { "Off" })
 
     # Alerty
     $stats.Alerts = New-HTTileValue -Value "$($alerts.Count)" -Note $(if ($alerts.Count -gt 0) { "kliknij, aby zobaczyć" } else { "brak aktywnych problemów" }) -State $(if ($alerts.Count -gt 0) { "Warn" } else { "Ok" })

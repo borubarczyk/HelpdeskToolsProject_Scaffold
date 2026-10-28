@@ -147,6 +147,67 @@ function Invoke-HTGraphRequest {
     return $results.ToArray()
 }
 
+# Wiele zapytań GET w jednym żądaniu $batch (po 20). -Requests: @{ Id; Url } (adres względny, np. "groups/<id>/owners").
+# Zwraca słownik Id -> @{ Status; Body }; odpowiedzi 429 (ograniczenie) są ponawiane, -All dopisuje kolejne strony wyników.
+function Invoke-HTGraphBatch {
+    param (
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Requests,
+        [switch]$Beta,
+        [switch]$All,
+        [int]$MaxRetries = 4
+    )
+    $results = @{}
+    $pending = New-Object System.Collections.Generic.List[object]
+    foreach ($r in $Requests) { if ($r) { $pending.Add($r) } }
+    $attempt = 0
+    while ($pending.Count -gt 0) {
+        $retry = New-Object System.Collections.Generic.List[object]
+        $delay = 0
+        for ($i = 0; $i -lt $pending.Count; $i += 20) {
+            $chunk = @($pending.GetRange($i, [Math]::Min(20, $pending.Count - $i)))
+            $body = @{ requests = @($chunk | ForEach-Object { @{ id = [string]$_.Id; method = 'GET'; url = '/' + ([string]$_.Url).TrimStart('/') } }) }
+            $response = Invoke-HTGraphRequest -Uri '$batch' -Method POST -Body $body -Beta:$Beta
+            foreach ($item in @($response.responses)) {
+                $status = [int]$item.status
+                $request = @($chunk | Where-Object { [string]$_.Id -eq [string]$item.id })[0]
+                if ($status -eq 429 -and $attempt -lt $MaxRetries) {
+                    $retry.Add($request)
+                    $after = 0
+                    if ($item.headers -and [int]::TryParse("$($item.headers.'Retry-After')", [ref]$after)) { $delay = [Math]::Max($delay, $after) }
+                    continue
+                }
+                $itemBody = $item.body
+                if ($All -and $status -lt 300 -and $itemBody.'@odata.nextLink') {
+                    $values = New-Object System.Collections.Generic.List[object]
+                    foreach ($v in @($itemBody.value)) { if ($null -ne $v) { $values.Add($v) } }
+                    foreach ($v in @(Invoke-HTGraphRequest -Uri $itemBody.'@odata.nextLink' -All)) { $values.Add($v) }
+                    $itemBody = [PSCustomObject]@{ value = $values.ToArray() }
+                }
+                $results[[string]$item.id] = @{ Status = $status; Body = $itemBody }
+            }
+        }
+        $pending = $retry
+        if ($pending.Count -gt 0) {
+            $attempt++
+            Start-Sleep -Seconds ([Math]::Min(30, [Math]::Max(2, $delay)))
+        }
+    }
+    return $results
+}
+
+# Raport użycia Microsoft 365 (CSV), np. "getTeamsTeamActivityDetail(period='D90')" - wiersze z nagłówków CSV.
+# Wymaga Reports.Read.All; przy ukrywaniu nazw w raportach (centrum administracyjne) nazwy są zastąpione skrótami.
+function Get-HTGraphReportCsv {
+    param ([Parameter(Mandatory)][string]$Report, [switch]$Beta)
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("HelpdeskTools_report_" + [guid]::NewGuid().ToString('N') + '.csv')
+    try {
+        Invoke-MgGraphRequest -Uri (Resolve-HTGraphUri -Uri "reports/$Report" -Beta:$Beta) -Method GET -OutputFilePath $tmp -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $tmp)) { return @() }
+        return @(Import-Csv -LiteralPath $tmp -Encoding utf8)
+    }
+    finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
+
 # Nazwa organizacji (tenant) z Microsoft Graph
 function Get-HTGraphTenantName {
     try {
@@ -200,7 +261,14 @@ function Connect-Module {
         [string[]]$ExtraScopes = @(),
 
         # Pominięcie weryfikacji zgodności modułu (użytkownik wybrał «Spróbuj mimo to»)
-        [switch]$SkipCompatibilityCheck
+        [switch]$SkipCompatibilityCheck,
+
+        # Graph: tenant (ID lub domena) bez pytania - zapamiętany profil tenantu, ponowne połączenie z dodatkowymi uprawnieniami
+        [string]$TenantId = '',
+
+        # Exchange GDAP: organizacja klienta i konto partnera bez formularza (zapamiętany profil tenantu)
+        [string]$Organization = '',
+        [string]$PartnerAccount = ''
     )
 
     if (-not (Install-ModuleIfMissing -Name $Name)) { return $false }
@@ -214,8 +282,8 @@ function Connect-Module {
 
         switch ($Name) {
             { $_ -in 'Microsoft.Graph', 'Microsoft.GraphGDAP' } {
-                $tenantId = $null
-                if ($Name -eq 'Microsoft.GraphGDAP') {
+                $tenantId = if ($TenantId) { $TenantId } else { $null }
+                if ($Name -eq 'Microsoft.GraphGDAP' -and -not $tenantId) {
                     Set-HTBusy -Busy $false
                     $tenantId = Show-InputBox -Prompt "Podaj ID lub domenę tenantu klienta (GDAP):" -Title "Tenant GDAP" -ValidationType "Text" -Icon "E716"
                     Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
@@ -232,7 +300,9 @@ function Connect-Module {
                 $tenant = Get-HTGraphTenantName
                 $Global:ConnectedToGraphAPI = $true
                 Update-ConnectionButtonText -Service "Graph" -TenantName $tenant
-                Write-Log "Połączono z Microsoft Graph ($tenant)$(if ($tenantId) { ' korzystając z GDAP' })." "Info&Notification"
+                Write-Log "Połączono z Microsoft Graph ($tenant)$(if ($Name -eq 'Microsoft.GraphGDAP') { ' korzystając z GDAP' })." "Info&Notification"
+                # Operacje w tle: przygotowanie wątku z modułem Graph (bez czekania)
+                if (Get-Command -Name Start-HTBackgroundWarmup -ErrorAction SilentlyContinue) { Start-HTBackgroundWarmup }
             }
             'ExchangeOnlineManagement' {
                 $params = Get-HTExchangeConnectParams
@@ -243,12 +313,16 @@ function Connect-Module {
                 Write-Log "Połączono z Exchange Online ($tenant)" "Info&Notification"
             }
             'ExchangeOnlineManagementGDAP' {
-                Set-HTBusy -Busy $false
-                $gdap = Show-HTFormDialog -Title "Exchange Online (GDAP)" -Description "Zarządzanie tenantem klienta w ramach GDAP." -OkText "Połącz" -Icon "E716" -Fields @(
-                    @{ Name = "Account"; Label = "Konto administratora partnera"; Required = $true; Validation = "Email"; Placeholder = "admin@partner.com" }
-                    @{ Name = "Organization"; Label = "Domena organizacji klienta"; Required = $true; Placeholder = "klient.onmicrosoft.com" }
-                )
-                Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
+                $gdap = $null
+                if ($Organization -and $PartnerAccount) { $gdap = @{ Account = $PartnerAccount; Organization = $Organization } }
+                else {
+                    Set-HTBusy -Busy $false
+                    $gdap = Show-HTFormDialog -Title "Exchange Online (GDAP)" -Description "Zarządzanie tenantem klienta w ramach GDAP." -OkText "Połącz" -Icon "E716" -Fields @(
+                        @{ Name = "Account"; Label = "Konto administratora partnera"; Required = $true; Validation = "Email"; Placeholder = "admin@partner.com"; Default = $PartnerAccount }
+                        @{ Name = "Organization"; Label = "Domena organizacji klienta"; Required = $true; Placeholder = "klient.onmicrosoft.com"; Default = $Organization }
+                    )
+                    Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
+                }
                 if (-not $gdap) {
                     Write-Log "Anulowano połączenie z GDAP - nie podano wszystkich wymaganych informacji." "Warn"
                     return $false
@@ -314,11 +388,11 @@ function Connect-Module {
             Set-HTBusy -Busy $true
             if ($action -eq "Retry") {
                 Set-HTBusy -Busy $false
-                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes)
+                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount)
             }
             if ($action -eq "Force") {
                 Set-HTBusy -Busy $false
-                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -SkipCompatibilityCheck)
+                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount -SkipCompatibilityCheck)
             }
             return $false
         }
@@ -379,6 +453,37 @@ function Show-HTModuleProblemDialog {
         "Force" { return "Force" }
     }
     return $null
+}
+
+<#
+    Funkcja wymaga dodatkowych uprawnień Microsoft Graph (np. Policy.Read.All dla dostępu warunkowego): gdy połączenie ich
+    nie ma, pytanie o ponowne połączenie z nimi (ten sam tenant). Uprawnienia są dopisywane na stałe do GraphScopes, więc
+    kolejne logowania już je obejmują. Połączenie aplikacji (certyfikat) ma uprawnienia aplikacji - bez sprawdzania.
+    Zwraca $true, gdy można kontynuować.
+#>
+function Assert-HTGraphScopes {
+    param ([Parameter(Mandatory)][string[]]$Scopes, [string]$Feature = 'Ta funkcja')
+    if (-not $Global:ConnectedToGraphAPI) { return (Assert-HTConnection -Service 'Graph') }
+    $context = Get-MgContext
+    if (-not $context) { return (Assert-HTConnection -Service 'Graph') }
+    if ("$($context.AuthType)" -eq 'AppOnly') { return $true }
+    $granted = @($context.Scopes)
+    $missing = @($Scopes | Where-Object { $granted -notcontains $_ })
+    if ($missing.Count -eq 0) { return $true }
+    $ok = Show-HTConfirm -Title 'Dodatkowe uprawnienia Microsoft Graph' -ConfirmText 'Połącz ponownie' -Message "$Feature wymaga uprawnień: $($missing -join ', ').`n`nPołączyć ponownie z Microsoft 365 z tymi uprawnieniami? Otworzy się logowanie w przeglądarce; część uprawnień wymaga zgody administratora. Uprawnienia zostaną zapamiętane w ustawieniach."
+    if (-not $ok) { return $false }
+    $all = @(@($Global:GraphScopes) + $missing | Where-Object { $_ } | Select-Object -Unique)
+    try {
+        Set-HTConfigValue -Name "GraphScopes" -Value $all
+        $Global:GraphScopes = $all
+    }
+    catch { Write-Log "Nie zapisano uprawnień Graph w konfiguracji: $($_.Exception.Message)" "Warn" }
+    if (-not (Connect-Module -Name "Microsoft.Graph" -TenantId "$($context.TenantId)" -ExtraScopes $missing)) { return $false }
+    if (-not (Test-HTGraphScopes -Scopes $Scopes)) {
+        Show-HTWarning -Title 'Uprawnienia Microsoft Graph' -Text "Połączenie nadal nie ma uprawnień: $(@($Scopes | Where-Object { @((Get-MgContext).Scopes) -notcontains $_ }) -join ', '). Sprawdź role konta i zgodę administratora (Entra ID > Aplikacje dla przedsiębiorstw > Microsoft Graph Command Line Tools)."
+        return $false
+    }
+    return $true
 }
 
 # Okno połączenia z SharePoint: adres witryny (z listą witryn) i Client ID (z możliwością utworzenia aplikacji)

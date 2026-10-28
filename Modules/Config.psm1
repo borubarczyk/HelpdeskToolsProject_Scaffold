@@ -49,6 +49,29 @@ function Get-HTDefaultConfig {
         PinSalt                   = ""
         PinLength                 = 0
         ConfirmBeforeClose        = $true
+        # Funkcje lokalnego Active Directory (on-premises) - domyślnie ukryte, zmiana po ponownym uruchomieniu
+        ShowOnPremises            = $false
+        # Zapytania Microsoft Graph w tle (okno nie zamarza) i powiadomienie Windows po długiej operacji (sekundy, 0 = bez)
+        BackgroundQueries         = $true
+        NotifyLongOperationsSeconds = 20
+        # Powiadomienia na kanał Teams (adres webhooka zaszyfrowany DPAPI) i zdarzenia, o których powiadamiać
+        TeamsWebhookProtected     = ""
+        TeamsNotify               = @("Offboarding", "Jobs", "Checklists")
+        # Zapamiętane tenanty (np. klienci GDAP): @{ Name; Tenant; PartnerAccount }
+        TenantProfiles            = @()
+        # Aktualizacje programu z repozytorium GitHub (token dla repozytorium prywatnego zaszyfrowany DPAPI)
+        UpdateRepository          = "borubarczyk/HelpdeskToolsProject_Scaffold"
+        UpdateBranch              = "main"
+        UpdateTokenProtected      = ""
+        CheckUpdatesOnStart       = $true
+        # Zadania automatyczne bez okna (aplikacja z certyfikatem, uprawnienia aplikacji)
+        AutomationClientId        = ""
+        AutomationTenantId        = ""
+        AutomationCertificateThumbprint = ""
+        AutomationOrganization    = ""
+        ReportSender              = ""
+        # Microsoft Defender for Endpoint (izolacja urządzeń) - rejestracja aplikacji z uprawnieniami WindowsDefenderATP
+        DefenderClientId          = ""
         ConfigVersion             = $script:ConfigVersion
     }
 }
@@ -231,12 +254,16 @@ function Apply-HTConfig {
     $Global:LoginTimeoutMinutes = [int]$Config.LoginTimeoutMinutes
     $Global:AutoLockMinutes = [int]$Config.AutoLockMinutes
     $Global:ConfirmBeforeClose = [bool]$Config.ConfirmBeforeClose
+    $Global:ShowOnPremises = [bool]$Config.ShowOnPremises
+    $Global:BackgroundQueries = [bool]$Config.BackgroundQueries
+    $Global:NotifyLongOperationsSeconds = [int]$Config.NotifyLongOperationsSeconds
 
     if ($Global:PasswordDefaultLength -lt 8 -or $Global:PasswordDefaultLength -gt 64) { $Global:PasswordDefaultLength = 12 }
     if ($Global:GraphScopes.Count -eq 0) { $Global:GraphScopes = $script:DefaultGraphScopes }
     if ($Global:InactiveDays -lt 1 -or $Global:InactiveDays -gt 3650) { $Global:InactiveDays = 90 }
     if ($Global:LoginTimeoutMinutes -lt 1 -or $Global:LoginTimeoutMinutes -gt 60) { $Global:LoginTimeoutMinutes = 5 }
     if ($Global:AutoLockMinutes -lt 0 -or $Global:AutoLockMinutes -gt 480) { $Global:AutoLockMinutes = 15 }
+    if ($Global:NotifyLongOperationsSeconds -lt 0 -or $Global:NotifyLongOperationsSeconds -gt 3600) { $Global:NotifyLongOperationsSeconds = 20 }
 
     Write-Log -Message "Zastosowano konfigurację (e-mail: '$($Global:PasswordEmailAdress)', hasła słowne: $($Global:PasswordUseWordBased), domyślna witryna SharePoint: $($Global:DefaultSharepointSite))." -Type "Info"
 

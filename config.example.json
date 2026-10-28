@@ -34,6 +34,34 @@
   "InactiveDays": 90,
   "AadSyncServer": "",
   "ConfirmBeforeClose": true,
+  "ShowOnPremises": false,
+  "BackgroundQueries": true,
+  "NotifyLongOperationsSeconds": 20,
+  "TeamsWebhookProtected": "",
+  "TeamsNotify": [
+    "Offboarding",
+    "Jobs",
+    "Checklists"
+  ],
+  "TenantProfiles": [
+    {
+      "Name": "Klient ABC (przykład)",
+      "TenantId": "abc.onmicrosoft.com",
+      "Organization": "abc.onmicrosoft.com",
+      "PartnerAccount": "admin@partner.pl",
+      "Gdap": true
+    }
+  ],
+  "UpdateRepository": "borubarczyk/HelpdeskToolsProject_Scaffold",
+  "UpdateBranch": "main",
+  "UpdateTokenProtected": "",
+  "CheckUpdatesOnStart": true,
+  "AutomationClientId": "",
+  "AutomationTenantId": "",
+  "AutomationCertificateThumbprint": "",
+  "AutomationOrganization": "",
+  "ReportSender": "",
+  "DefenderClientId": "",
   "ConfigVersion": 2,
   "LoginTimeoutMinutes": 5,
   "AutoLockMinutes": 15,

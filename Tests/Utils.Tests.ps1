@@ -183,3 +183,48 @@ Describe "Get-HTDaysSince" {
         Get-HTDaysSince ([datetime]::MinValue) | Should -BeNullOrEmpty
     }
 }
+
+Describe "Dziennik z kontem MFA i odczyt pliku dziennika" {
+    BeforeEach {
+        $Global:LogDir = Join-Path $TestDrive ([guid]::NewGuid().ToString("N"))
+        Clear-HTLogHistory
+    }
+    AfterEach {
+        $Global:HTActiveAccount = $null
+        $Global:LogDir = $null
+    }
+
+    It "dopisuje konto MFA do wpisu w pliku" {
+        $Global:HTActiveAccount = "Anna"
+        Write-Log -Message "operacja konta" -Type "Warn"
+        (@(Get-HTLogHistory)[-1]).Account | Should -Be "Anna"
+        Get-Content (Get-HTLogFile) -Raw | Should -Match "\[Warn\] \[konto: Anna\] .*operacja konta"
+    }
+
+    It "czyta wpisy z poziomem, kontem i wieloliniowym komunikatem" {
+        Write-Log -Message "start" -Type "Info"
+        $Global:HTActiveAccount = "Anna"
+        Write-Log -Message "błąd`ndruga linia" -Type "Error"
+        Write-Log -Message "uwaga" -Type "Warn"
+        $rows = @(Read-HTLogFile -Path (Get-HTLogFile))
+        $rows.Count | Should -Be 3
+        $rows[0].Poziom | Should -Be "Info"
+        $rows[0].Komunikat | Should -Be "start"
+        $rows[1].Konto | Should -Be "Anna"
+        $rows[1].Komunikat | Should -Be "błąd`ndruga linia"
+        $rows[1].__flag | Should -Be "crit"
+        @(Read-HTLogFile -Path (Get-HTLogFile) -Level Problems).Count | Should -Be 2
+        @(Read-HTLogFile -Path (Get-HTLogFile) -Level Error).Count | Should -Be 1
+        @(Read-HTLogFile -Path (Get-HTLogFile) -Text "UWAGA").Count | Should -Be 1
+        @(Read-HTLogFile -Path (Get-HTLogFile) -Text "anna").Count | Should -Be 2
+    }
+
+    It "listuje pliki dziennika od najnowszego" {
+        New-Item -ItemType Directory -Path $Global:LogDir -Force | Out-Null
+        foreach ($name in "HelpdeskTools_20260101.log", "HelpdeskTools_20260315.log", "inny.log") { Set-Content -Path (Join-Path $Global:LogDir $name) -Value "x" }
+        $files = @(Get-HTLogFiles)
+        $files.Count | Should -Be 2
+        $files[0].Name | Should -Be "HelpdeskTools_20260315.log"
+        $files[0].Date | Should -Be ([datetime]"2026-03-15")
+    }
+}

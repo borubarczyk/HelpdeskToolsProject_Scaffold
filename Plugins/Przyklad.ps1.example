@@ -1,0 +1,31 @@
+# Przykładowa wtyczka Helpdesk Tools: raport kont z wybranego działu (Microsoft Graph) i polecenie palety.
+# Aby włączyć - zmień nazwę pliku na Przyklad.ps1 i uruchom program ponownie.
+
+Register-HTModule -Workspace 'M365' -Category 'Raporty' -Key 'plugin.department' -Title 'Konta działu (wtyczka)' -Icon 'E716' -Service 'Graph' `
+    -Description 'Przykład wtyczki: konta z działu o podanej nazwie z licencjami i ostatnim logowaniem.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    $m.C.Department = Add-HTTextBox -Parent $row -Width 220 -Placeholder 'Nazwa działu (np. Sprzedaż)'
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż' -Icon 'E721' -Primary -OnClick {
+        param($m)
+        $department = $m.C.Department.Text.Trim()
+        if (-not $department) { Show-HTWarning 'Wpisz nazwę działu.'; return }
+        # Zapytanie w tle: blok dostaje -Arguments i korzysta tylko z funkcji modułów programu
+        Invoke-HTQuery -Module $m -Name "Dział: $department" -Background -Arguments @{ Department = $department } -ScriptBlock {
+            param($a)
+            $filter = [uri]::EscapeDataString("department eq '$($a.Department.Replace("'", "''"))'")
+            foreach ($u in @(Invoke-HTGraphRequest -Uri "users?`$filter=$filter&`$select=displayName,userPrincipalName,jobTitle,accountEnabled,signInActivity&`$top=999" -All -ConsistencyLevelEventual)) {
+                [PSCustomObject]@{
+                    Nazwa                = $u.displayName
+                    UPN                  = $u.userPrincipalName
+                    Stanowisko           = $u.jobTitle
+                    Włączone             = [bool]$u.accountEnabled
+                    'Ostatnie logowanie' = $u.signInActivity.lastSignInDateTime
+                    __flag               = if (-not $u.accountEnabled) { 'muted' } else { '' }
+                }
+            }
+        }
+    } | Out-Null
+}
+
+Register-HTPaletteAction -Text 'Konta działu (wtyczka)' -Icon 'E716' -Description 'Przykład polecenia palety z wtyczki' -Keywords 'dział wtyczka' -Action { param($q) Show-HTModule -Key 'plugin.department' }

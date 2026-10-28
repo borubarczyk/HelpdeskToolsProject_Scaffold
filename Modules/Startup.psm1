@@ -21,7 +21,8 @@ function Initialize-HTActiveDirectory {
 }
 
 function Initialize-HelpdeskTools {
-    Initialize-HTActiveDirectory
+    # Funkcje lokalne (Active Directory) - tylko po włączeniu w Ustawieniach
+    if ($Global:ShowOnPremises) { Initialize-HTActiveDirectory }
 
     # Połączenia pozostałe z poprzedniej sesji w tym samym procesie PowerShell
     try { Set-Connections -Action "Check" } catch { Write-Log -Message "Sprawdzanie połączeń: $($_.Exception.Message)" -Type "Warn" }

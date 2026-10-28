@@ -8,8 +8,10 @@ $script:DashboardTiles = @(
     @{ Key = 'Intune'; Label = 'Urządzenia Intune'; Icon = 'E7F8' }
     @{ Key = 'Mailboxes'; Label = 'Skrzynki'; Icon = 'E715' }
     @{ Key = 'SharePoint'; Label = 'SharePoint'; Icon = 'E8F1' }
-    @{ Key = 'AD'; Label = 'Zablokowane konta AD'; Icon = 'E72E' }
+    @{ Key = 'AD'; Label = 'Zablokowane konta AD'; Icon = 'E72E'; OnPremises = $true }
 )
+# Kafelek Active Directory tylko przy włączonych funkcjach lokalnych (Ustawienia > Funkcje lokalne)
+$script:DashboardTiles = @($script:DashboardTiles | Where-Object { -not $_.OnPremises -or $Global:ShowOnPremises })
 
 function Update-HTDashboard {
     param([Parameter(Mandatory)][hashtable]$Module)
@@ -122,4 +124,45 @@ Register-HTModule -Workspace 'Dashboard' -Category 'Program' -Key 'dash.env' -Ti
         Invoke-HTRowAction -Module $m -Name 'Instalacja modułu' -Service '' -Rows @($rows | Where-Object { $_.Moduł }) -Confirm "Zainstalować najnowsze wersje z PowerShell Gallery ($scope)? Najnowsza wersja może wymagać nowszego PowerShell - program wtedy użyje starszej zgodnej." `
             -Label { param($r) $r.Moduł } -Action { param($r) Install-Module -Name $r.Moduł -Scope $scope -Repository PSGallery -Force -AllowClobber -AcceptLicense -ErrorAction Stop } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
+}
+
+function Update-HTLogFileList {
+    # Dni z plikami dziennika w liście wyboru (najnowsze pierwsze); wybór zostaje, jeśli plik nadal jest
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $combo = $Module.C.Day
+    $previous = [string]$combo.SelectedItem
+    $Module.Data.LogFiles = @(Get-HTLogFiles)
+    $combo.Items.Clear()
+    foreach ($f in $Module.Data.LogFiles) { [void]$combo.Items.Add(('{0:yyyy-MM-dd}  •  {1}  ({2} KB)' -f $f.Date, $f.Name, $f.SizeKB)) }
+    if ($combo.Items.Count -eq 0) { return }
+    $index = [Math]::Max(0, $combo.Items.IndexOf($previous))
+    $combo.SelectedIndex = $index
+}
+
+Register-HTModule -Workspace 'Dashboard' -Category 'Program' -Key 'dash.log' -Title 'Dziennik programu' -Icon 'E81C' -Service '' `
+    -Description 'Wpisy dziennika z wybranego dnia (pliki z 30 dni): poziom, konto MFA, komunikat. Filtry kolumn (lejki w nagłówkach), eksport do CSV lub raportu HTML.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m -Title 'Plik'
+    $m.C.Day = Add-HTComboBox -Parent $row -Width 360
+    Add-HTButton -Parent $row -Module $m -Text 'Odśwież listę' -Icon 'E72C' -OnClick { param($m) Update-HTLogFileList -Module $m } | Out-Null
+    $row = Add-HTToolbarRow -Module $m -Title 'Wpisy'
+    $m.C.Level = Add-HTComboBox -Parent $row -Items @('Wszystkie', 'Ostrzeżenia i błędy', 'Tylko błędy') -Width 180
+    $m.C.Text = Add-HTTextBox -Parent $row -Width 240 -Placeholder 'Fragment komunikatu lub konto…'
+    Add-HTButton -Parent $row -Module $m -Text 'Wczytaj' -Icon 'E8E5' -Primary -OnClick {
+        param($m)
+        $i = $m.C.Day.SelectedIndex
+        if ($i -lt 0 -or $i -ge @($m.Data.LogFiles).Count) { Show-HTWarning 'Brak plików dziennika.'; return }
+        $file = $m.Data.LogFiles[$i]
+        $level = @('All', 'Problems', 'Error')[[Math]::Max(0, $m.C.Level.SelectedIndex)]
+        $text = $m.C.Text.Text.Trim()
+        Invoke-HTQuery -Module $m -Name "Dziennik $('{0:yyyy-MM-dd}' -f $file.Date)" -ScriptBlock { Read-HTLogFile -Path $file.Path -Level $level -Text $text }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Otwórz plik' -Icon 'E8A7' -OnClick {
+        param($m)
+        $i = $m.C.Day.SelectedIndex
+        if ($i -ge 0 -and $i -lt @($m.Data.LogFiles).Count) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $m.Data.LogFiles[$i].Path) }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Folder dziennika' -Icon 'E838' -OnClick { param($m) $d = Get-HTLogDirectory; if ($d -and (Test-Path $d)) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $d) } } | Out-Null
+    $m.EmptyText = 'Wybierz dzień i kliknij «Wczytaj»'
+    $m.OnShow = { param($m) Update-HTLogFileList -Module $m }
 }
