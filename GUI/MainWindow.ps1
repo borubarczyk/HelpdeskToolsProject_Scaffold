@@ -503,7 +503,7 @@ function Update-HTHeaderLayout {
 
 #region Profile tenantów (szybkie połączenie z zapamiętanym tenantem, przełączanie klientów GDAP)
 function Get-HTTenantProfiles {
-    # Ustawienia > «Tenanty»: Name, TenantId (Graph), Organization (domena Exchange), PartnerAccount (GDAP), Gdap
+    # Ustawienia > Microsoft 365 i Exchange > «Profile tenantów»: Name, TenantId (Graph), Organization (domena Exchange), PartnerAccount (GDAP), Gdap
     return @($Global:HTConfig.TenantProfiles | Where-Object { $_ -and $_.Name -and ($_.TenantId -or $_.Organization) })
 }
 
@@ -575,7 +575,7 @@ function Show-HTTenantSwitch {
     # Przełączenie Microsoft 365 i Exchange na inny zapamiętany tenant
     $choices = @(Get-HTTenantProfileChoices -Service 'Graph')
     if (-not $choices.Count) {
-        Show-HTMessage -Title 'Profile tenantów' -Text "Brak zapisanych profili tenantów.`n`nProfil zapisuje się po połączeniu z tenantem klienta (GDAP) albo w Ustawieniach > Tenanty."
+        Show-HTMessage -Title 'Profile tenantów' -Text "Brak zapisanych profili tenantów.`n`nProfil zapisuje się po połączeniu z tenantem klienta (GDAP) albo w Ustawieniach > Microsoft 365 i Exchange > «Profile tenantów»."
         return
     }
     $choice = Show-HTChoiceDialog -Title 'Przełącz tenant' -Prompt 'Bieżące połączenia z Microsoft 365 i Exchange zostaną zakończone.' -Icon 'E8AB' -Choices $choices

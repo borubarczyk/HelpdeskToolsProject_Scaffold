@@ -15,7 +15,7 @@ function Start-HTUpdateCheck {
             if ($ErrorMessage -or -not $check) { Write-Log -Message "Sprawdzanie aktualizacji: $ErrorMessage" -Type 'Warn'; return }
             if ($check.Error) { Write-Log -Message "Sprawdzanie aktualizacji: $($check.Error)" -Type 'Warn'; return }
             if ($check.Available) {
-                Write-Log -Message "Dostępna nowa wersja programu: $($check.Latest) (obecna $($check.Current)) - Ustawienia > Narzędzia > Aktualizuj program." -Type 'Info&Notification'
+                Write-Log -Message "Dostępna nowa wersja programu: $($check.Latest) (obecna $($check.Current)) - Ustawienia > Aktualizacje albo Ctrl+K > «Aktualizuj program»." -Type 'Info&Notification'
                 Show-HTToast "Dostępna wersja $($check.Latest) - Ctrl+K > «Aktualizuj program»." 'info' 8
             }
         }
@@ -146,7 +146,7 @@ function Edit-HTTenantProfile {
 }
 
 function Test-HTTeamsWebhookInteractive {
-    if (-not (Get-HTTeamsWebhookUrl)) { Show-HTWarning 'Najpierw ustaw adres webhooka w Ustawieniach (Integracje) i zapisz ustawienia.'; return }
+    if (-not (Get-HTTeamsWebhookUrl)) { Show-HTWarning 'Najpierw ustaw adres webhooka w Ustawieniach (sekcja «Teams i e-mail») i zapisz ustawienia.'; return }
     if (Send-HTTeamsMessage -Title 'Helpdesk Tools - test powiadomień' -Text 'Powiadomienia z programu będą publikowane na tym kanale.' -Tone 'ok' -Event 'Manual') { Show-HTToast 'Wysłano wiadomość testową na kanał Teams.' 'ok' }
     else { Show-HTWarning 'Nie wysłano wiadomości - szczegóły w dzienniku.' }
 }

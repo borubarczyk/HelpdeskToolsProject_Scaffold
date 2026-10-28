@@ -45,7 +45,8 @@ Register-HTLogSink -ScriptBlock { param($entry) if ($entry.Type -eq 'Error') { $
 $closer = [System.Windows.RoutedEventHandler] {
     param($s, $e)
     if ($HT_UI -and [object]::ReferenceEquals($s, $HT_UI.Window)) { return }
-    $Global:SmokeDialogs.Add("$($s.Title): $((@($s.FindName('dlgSubtitle'), $s.FindName('msgText')) | Where-Object { $_ } | ForEach-Object { $_.Text }) -join ' ')")
+    $sections = $s.FindName('fmNav')
+    $Global:SmokeDialogs.Add("$($s.Title): $((@($s.FindName('dlgSubtitle'), $s.FindName('msgText')) | Where-Object { $_ } | ForEach-Object { $_.Text }) -join ' ')$(if ($sections) { " [sekcje: $($sections.Children.Count)]" })")
     $window = $s
     [void]$window.Dispatcher.BeginInvoke([action] { try { $window.DialogResult = $false } catch { $window.Close() } }.GetNewClosure())
 }
@@ -76,6 +77,19 @@ foreach ($ws in @($HT_UI.Workspaces.Keys)) {
         for ($i = $errorsBefore; $i -lt $Global:SmokeErrors.Count; $i++) { $failures.Add("Moduł $($d.Key) - dziennik: $($Global:SmokeErrors[$i])") }
         for ($i = $dialogsBefore; $i -lt $Global:SmokeDialogs.Count; $i++) { $failures.Add("Moduł $($d.Key) - okno: $($Global:SmokeDialogs[$i])") }
     }
+}
+
+# Okna otwierane na żądanie: Ustawienia (formularz z sekcjami) i paleta poleceń - mają się zbudować bez błędów
+foreach ($dialog in @(
+        @{ Name = 'Ustawienia'; Open = { [void](Show-HTSettingsDialog) }; Expect = '[sekcje: 9]' }
+        @{ Name = 'Paleta poleceń'; Open = { Show-HTCommandPalette }; Expect = '' }
+    )) {
+    $errorsBefore = $Global:SmokeErrors.Count
+    $dialogsBefore = $Global:SmokeDialogs.Count
+    try { & $dialog.Open } catch { $failures.Add("$($dialog.Name): $($_.Exception.Message)") }
+    if ($Global:SmokeDialogs.Count -ne $dialogsBefore + 1) { $failures.Add("$($dialog.Name): okno nie zostało otwarte") }
+    elseif ($dialog.Expect -and $Global:SmokeDialogs[$dialogsBefore] -notlike "*$($dialog.Expect)*") { $failures.Add("$($dialog.Name): oczekiwano $($dialog.Expect), jest: $($Global:SmokeDialogs[$dialogsBefore])") }
+    for ($i = $errorsBefore; $i -lt $Global:SmokeErrors.Count; $i++) { $failures.Add("$($dialog.Name) - dziennik: $($Global:SmokeErrors[$i])") }
 }
 
 $palette = @(Get-HTPaletteItems -Query 'licencje')

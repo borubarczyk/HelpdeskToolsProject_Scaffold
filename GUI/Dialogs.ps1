@@ -173,67 +173,85 @@ function Show-HTSettingsDialog {
     $webhookSet = [bool]$cfg.TeamsWebhookProtected
     $tokenSet = [bool]$cfg.UpdateTokenProtected
     $fields = @(
-        @{ Type = 'Header'; Label = 'Hasła' }
-        @{ Name = 'PasswordDefaultLength'; Label = 'Domyślna długość hasła'; Type = 'Number'; Default = [int]$cfg.PasswordDefaultLength; Min = 8; Max = 64 }
-        @{ Name = 'PasswordSpecialCharacters'; Label = 'Znaki specjalne'; Default = $cfg.PasswordSpecialCharacters }
-        @{ Name = 'PasswordUseWordBased'; Label = 'Domyślnie hasła ze słów (np. SzybkiKot42!)'; Type = 'Check'; Default = [bool]$cfg.PasswordUseWordBased }
-        @{ Name = 'LogPasswordGeneration'; Label = 'Zapisuj wygenerowane hasła w dzienniku (niezalecane)'; Type = 'Check'; Default = [bool]$cfg.LogPasswordGeneration }
-        @{ Name = 'PasswordEmailAdress'; Label = 'Adres e-mail do wysyłki haseł'; Default = $cfg.PasswordEmailAdress; Validation = 'Email'; Hint = 'Np. adres bramki SMS lub skrzynki zespołu.' }
-        @{ Name = 'PasswordEmailTitle'; Label = 'Temat wiadomości z hasłem'; Default = $cfg.PasswordEmailTitle }
-        @{ Type = 'Header'; Label = 'Microsoft 365 i Exchange' }
-        @{ Name = 'DefaultUsageLocation'; Label = 'Domyślna lokalizacja użycia (licencje)'; Default = $cfg.DefaultUsageLocation; Hint = 'Dwuliterowy kod kraju, np. PL.' }
-        @{ Name = 'InactiveDays'; Label = 'Próg nieaktywności kont (dni)'; Type = 'Number'; Default = [int]$cfg.InactiveDays; Min = 1; Max = 3650; Hint = 'Domyślna wartość w raportach nieaktywnych kont i urządzeń.' }
-        @{ Name = 'LoginTimeoutMinutes'; Label = 'Limit czasu logowania w przeglądarce (minuty)'; Type = 'Number'; Default = [int]$cfg.LoginTimeoutMinutes; Min = 1; Max = 60; Hint = 'Po tym czasie oczekiwanie na logowanie jest anulowane (np. gdy karta przeglądarki została zamknięta).' }
-        @{ Name = 'GraphScopes'; Label = 'Uprawnienia Microsoft Graph (jedno w linii)'; Type = 'Multiline'; Default = (@($cfg.GraphScopes) -join "`r`n"); Height = 120 }
-        @{ Type = 'Header'; Label = 'SharePoint' }
-        @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url' }
-        @{ Name = 'LastUsedClientID'; Label = 'Client ID aplikacji PnP'; Default = "$($cfg.LastUsedClientID)"; Validation = 'Guid' }
-        @{ Name = 'LogClientIDForPnP'; Label = 'Zapamiętuj ostatnio użyty Client ID'; Type = 'Check'; Default = [bool]$cfg.LogClientIDForPnP }
-        @{ Type = 'Header'; Label = 'Integracje: Teams i e-mail' }
-        @{ Name = 'TeamsWebhook'; Label = 'Adres webhooka kanału Teams'; Type = 'Password'; Hint = $(if ($webhookSet) { 'Zapisany (zaszyfrowany). Pozostaw puste - bez zmian.' } else { 'Teams > kanał > Przepływy pracy > «Publikuj w kanale po odebraniu żądania elementu webhook» (albo łącznik Incoming Webhook).' }) }
-        if ($webhookSet) { @{ Name = 'TeamsWebhookClear'; Label = 'Usuń zapisany adres webhooka'; Type = 'Check'; Default = $false } }
-        @{ Name = 'TeamsNotifyOffboarding'; Label = 'Powiadamiaj kanał o offboardingu'; Type = 'Check'; Default = ($notify -contains 'Offboarding') }
-        @{ Name = 'TeamsNotifyJobs'; Label = 'Powiadamiaj o zadaniach zaplanowanych (uprawnienia tymczasowe, zaplanowany offboarding)'; Type = 'Check'; Default = ($notify -contains 'Jobs') }
-        @{ Name = 'TeamsNotifyChecklists'; Label = 'Powiadamiaj o ukończonych checklistach on/offboardingu'; Type = 'Check'; Default = ($notify -contains 'Checklists') }
-        @{ Name = 'ReportSender'; Label = 'Skrzynka nadawcy raportów zaplanowanych'; Default = $cfg.ReportSender; Validation = 'Email'; Hint = 'Raporty bez zalogowanego użytkownika (HelpdeskToolsRunner.ps1) są wysyłane z tej skrzynki. Wyniki z okna programu - z Twojej skrzynki.' }
-        @{ Type = 'Header'; Label = 'Automatyzacja (zadania bez użytkownika) i Defender' }
-        @{ Name = 'AutomationClientId'; Label = 'Aplikacja automatyzacji: Client ID'; Default = $cfg.AutomationClientId; Validation = 'Guid'; Hint = 'Utworzysz ją w przestrzeni «Zadania» > Raporty zaplanowane > «Utwórz aplikację automatyzacji».' }
-        @{ Name = 'AutomationTenantId'; Label = 'Aplikacja automatyzacji: Tenant ID'; Default = $cfg.AutomationTenantId }
-        @{ Name = 'AutomationCertificateThumbprint'; Label = 'Odcisk certyfikatu aplikacji (magazyn CurrentUser\My)'; Default = $cfg.AutomationCertificateThumbprint }
-        @{ Name = 'AutomationOrganization'; Label = 'Domena organizacji Exchange (np. firma.onmicrosoft.com)'; Default = $cfg.AutomationOrganization }
-        @{ Name = 'DefenderClientId'; Label = 'Client ID aplikacji Microsoft Defender for Endpoint'; Default = $cfg.DefenderClientId; Validation = 'Guid'; Hint = 'Izolacja urządzeń: aplikacja z uprawnieniem delegowanym Machine.Isolate (WindowsDefenderATP) i adresem przekierowania http://localhost.' }
-        @{ Type = 'Header'; Label = 'Aktualizacje' }
-        @{ Name = 'CheckUpdatesOnStart'; Label = 'Sprawdzaj aktualizacje przy uruchomieniu'; Type = 'Check'; Default = [bool]$cfg.CheckUpdatesOnStart }
-        @{ Name = 'UpdateRepository'; Label = 'Repozytorium GitHub (właściciel/nazwa)'; Default = $cfg.UpdateRepository }
-        @{ Name = 'UpdateBranch'; Label = 'Gałąź'; Default = $cfg.UpdateBranch }
-        @{ Name = 'UpdateToken'; Label = 'Token GitHub (tylko repozytorium prywatne, uprawnienie Contents: read)'; Type = 'Password'; Hint = $(if ($tokenSet) { 'Zapisany (zaszyfrowany). Pozostaw puste - bez zmian.' } else { 'Puste dla repozytorium publicznego.' }) }
-        if ($tokenSet) { @{ Name = 'UpdateTokenClear'; Label = 'Usuń zapisany token'; Type = 'Check'; Default = $false } }
-        @{ Type = 'Header'; Label = 'Funkcje lokalne' }
-        @{ Name = 'ShowOnPremises'; Label = 'Pokazuj funkcje lokalne: Active Directory (po ponownym uruchomieniu)'; Type = 'Check'; Default = [bool]$cfg.ShowOnPremises }
-        if ($cfg.ShowOnPremises) { @{ Name = 'AadSyncServer'; Label = 'Serwer Microsoft Entra Connect'; Default = $cfg.AadSyncServer; Hint = 'Do uruchamiania synchronizacji delta (wymaga WinRM).' } }
-        @{ Type = 'Header'; Label = 'Bezpieczeństwo' }
-        @{ Name = 'AutoLockMinutes'; Label = 'Automatyczna blokada po bezczynności (minuty, 0 = wyłączona)'; Type = 'Number'; Default = [int]$cfg.AutoLockMinutes; Min = 0; Max = 480; Hint = 'Odblokowanie PIN-em (z MFA także kodem z aplikacji). Ręcznie: kłódka w nagłówku lub Ctrl+Shift+L. PIN zmienisz przyciskiem «Zmień PIN».' }
-        @{ Type = 'Info'; Label = ((Get-HTMfaStatusText) + ' Konta, klucze i uprawnienia: przycisk «MFA».') }
-        @{ Type = 'Header'; Label = 'Aplikacja' }
+        @{ Type = 'Header'; Label = 'Aplikacja'; Icon = 'E713'; Hint = "Działanie okna, powiadomienia, eksport i dziennik. Plik konfiguracji: $Global:ConfigPath" }
         @{ Name = 'ShowNotifications'; Label = 'Pokazuj powiadomienia w oknie'; Type = 'Check'; Default = [bool]$cfg.ShowNotifications }
         @{ Name = 'ConfirmBeforeClose'; Label = 'Pytaj przed zamknięciem, gdy są aktywne połączenia'; Type = 'Check'; Default = [bool]$cfg.ConfirmBeforeClose }
         @{ Name = 'BackgroundQueries'; Label = 'Zapytania Microsoft 365 w tle (okno reaguje, przycisk «Przerwij»)'; Type = 'Check'; Default = [bool]$cfg.BackgroundQueries }
         @{ Name = 'NotifyLongOperationsSeconds'; Label = 'Powiadomienie Windows po operacji dłuższej niż (sekundy, 0 = wyłączone)'; Type = 'Number'; Default = [int]$cfg.NotifyLongOperationsSeconds; Min = 0; Max = 3600; Hint = 'Gdy okno programu nie jest aktywne: dymek w obszarze powiadomień i miganie przycisku na pasku zadań.' }
         @{ Name = 'ExportPath'; Label = 'Katalog eksportu'; Default = $cfg.ExportPath; Hint = 'Puste = Dokumenty\HelpdeskTools\Eksport' }
         @{ Name = 'LogFileMaxSizeMB'; Label = 'Maks. rozmiar pliku dziennika (MB)'; Type = 'Number'; Default = [int]$cfg.LogFileMaxSizeMB; Min = 1; Max = 100 }
+        @{ Type = 'Buttons'; Label = 'Pliki i skróty'; Buttons = @(
+                @{ Text = 'Otwórz plik konfiguracji'; Icon = 'E8E5'; OnClick = { param($w) if (Test-Path $Global:ConfigPath) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $Global:ConfigPath) } } }
+                @{ Text = 'Folder konfiguracji'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }
+                @{ Text = 'Skrót na pulpicie'; Icon = 'E8E5'; ToolTip = 'Uruchamianie jako administrator, bez widocznego okna konsoli'; OnClick = { param($w) New-HTShortcutInteractive } }
+                @{ Text = 'Podpisz skrypty'; Icon = 'EB95'; ToolTip = 'Certyfikat podpisywania kodu (zasada wykonywania AllSigned)'; OnClick = { param($w) Invoke-HTSigningInteractive } }
+            )
+        }
+        @{ Type = 'Header'; Label = 'Bezpieczeństwo'; Icon = 'E72E'; Hint = 'PIN, automatyczna blokada i konta MFA.' }
+        @{ Name = 'AutoLockMinutes'; Label = 'Automatyczna blokada po bezczynności (minuty, 0 = wyłączona)'; Type = 'Number'; Default = [int]$cfg.AutoLockMinutes; Min = 0; Max = 480; Hint = 'Odblokowanie PIN-em (z MFA także kodem z aplikacji). Ręcznie: kłódka w nagłówku lub Ctrl+Shift+L.' }
+        @{ Type = 'Info'; Label = (Get-HTMfaStatusText) }
+        @{ Type = 'Buttons'; Buttons = @(
+                @{ Text = 'Zmień PIN'; Icon = 'E72E'; OnClick = { param($w) Update-HTPinInteractive } }
+                @{ Text = 'MFA - konta i klucze'; Icon = 'E8D7'; ToolTip = 'Włączenie MFA, konta dodatkowe, klucze i uprawnienia kont'; OnClick = { param($w) Show-HTMfaManager } }
+            )
+        }
+        @{ Type = 'Header'; Label = 'Hasła'; Icon = 'E8D7'; Hint = 'Generator haseł, reset haseł i nowe konta.' }
+        @{ Name = 'PasswordDefaultLength'; Label = 'Domyślna długość hasła'; Type = 'Number'; Default = [int]$cfg.PasswordDefaultLength; Min = 8; Max = 64 }
+        @{ Name = 'PasswordSpecialCharacters'; Label = 'Znaki specjalne'; Default = $cfg.PasswordSpecialCharacters }
+        @{ Name = 'PasswordUseWordBased'; Label = 'Domyślnie hasła ze słów (np. SzybkiKot42!)'; Type = 'Check'; Default = [bool]$cfg.PasswordUseWordBased }
+        @{ Name = 'LogPasswordGeneration'; Label = 'Zapisuj wygenerowane hasła w dzienniku (niezalecane)'; Type = 'Check'; Default = [bool]$cfg.LogPasswordGeneration }
+        @{ Name = 'PasswordEmailAdress'; Label = 'Adres e-mail do wysyłki haseł'; Default = $cfg.PasswordEmailAdress; Validation = 'Email'; Hint = 'Np. adres bramki SMS lub skrzynki zespołu.' }
+        @{ Name = 'PasswordEmailTitle'; Label = 'Temat wiadomości z hasłem'; Default = $cfg.PasswordEmailTitle }
+        @{ Type = 'Header'; Label = 'Microsoft 365 i Exchange'; Icon = 'E753'; Hint = 'Licencje, raporty, logowanie i uprawnienia Microsoft Graph.' }
+        @{ Name = 'DefaultUsageLocation'; Label = 'Domyślna lokalizacja użycia (licencje)'; Default = $cfg.DefaultUsageLocation; Hint = 'Dwuliterowy kod kraju, np. PL.' }
+        @{ Name = 'InactiveDays'; Label = 'Próg nieaktywności kont (dni)'; Type = 'Number'; Default = [int]$cfg.InactiveDays; Min = 1; Max = 3650; Hint = 'Domyślna wartość w raportach nieaktywnych kont i urządzeń.' }
+        @{ Name = 'LoginTimeoutMinutes'; Label = 'Limit czasu logowania w przeglądarce (minuty)'; Type = 'Number'; Default = [int]$cfg.LoginTimeoutMinutes; Min = 1; Max = 60; Hint = 'Po tym czasie oczekiwanie na logowanie jest anulowane (np. gdy karta przeglądarki została zamknięta).' }
+        @{ Name = 'GraphScopes'; Label = 'Uprawnienia Microsoft Graph (jedno w linii)'; Type = 'Multiline'; Default = (@($cfg.GraphScopes) -join "`r`n"); Height = 120 }
+        @{ Type = 'Buttons'; Label = 'Tenanty klientów (GDAP)'; Buttons = @(
+                @{ Text = 'Profile tenantów…'; Icon = 'E716'; ToolTip = 'Zapisane tenanty do szybkiego łączenia i przełączania'; OnClick = { param($w) Show-HTTenantProfilesEditor } }
+            )
+        }
+        @{ Type = 'Header'; Label = 'SharePoint'; Icon = 'E8F1'; Hint = 'Połączenie PnP PowerShell.' }
+        @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url' }
+        @{ Name = 'LastUsedClientID'; Label = 'Client ID aplikacji PnP'; Default = "$($cfg.LastUsedClientID)"; Validation = 'Guid' }
+        @{ Name = 'LogClientIDForPnP'; Label = 'Zapamiętuj ostatnio użyty Client ID'; Type = 'Check'; Default = [bool]$cfg.LogClientIDForPnP }
+        @{ Type = 'Header'; Label = 'Teams i e-mail'; Icon = 'E8F2'; Hint = 'Powiadomienia na kanale Teams i skrzynka nadawcy raportów.' }
+        @{ Name = 'TeamsWebhook'; Label = 'Adres webhooka kanału Teams'; Type = 'Password'; Hint = $(if ($webhookSet) { 'Zapisany (zaszyfrowany). Pozostaw puste - bez zmian.' } else { 'Teams > kanał > Przepływy pracy > «Publikuj w kanale po odebraniu żądania elementu webhook» (albo łącznik Incoming Webhook).' }) }
+        if ($webhookSet) { @{ Name = 'TeamsWebhookClear'; Label = 'Usuń zapisany adres webhooka'; Type = 'Check'; Default = $false } }
+        @{ Name = 'TeamsNotifyOffboarding'; Label = 'Powiadamiaj kanał o offboardingu'; Type = 'Check'; Default = ($notify -contains 'Offboarding') }
+        @{ Name = 'TeamsNotifyJobs'; Label = 'Powiadamiaj o zadaniach zaplanowanych (uprawnienia tymczasowe, zaplanowany offboarding)'; Type = 'Check'; Default = ($notify -contains 'Jobs') }
+        @{ Name = 'TeamsNotifyChecklists'; Label = 'Powiadamiaj o ukończonych checklistach on/offboardingu'; Type = 'Check'; Default = ($notify -contains 'Checklists') }
+        @{ Type = 'Buttons'; Buttons = @(
+                @{ Text = 'Wyślij wiadomość testową'; Icon = 'E8F2'; ToolTip = 'Na zapisany adres webhooka - nowy adres najpierw zapisz'; OnClick = { param($w) Test-HTTeamsWebhookInteractive } }
+            )
+        }
+        @{ Name = 'ReportSender'; Label = 'Skrzynka nadawcy raportów zaplanowanych'; Default = $cfg.ReportSender; Validation = 'Email'; Hint = 'Raporty bez zalogowanego użytkownika (HelpdeskToolsRunner.ps1) są wysyłane z tej skrzynki. Wyniki z okna programu - z Twojej skrzynki.' }
+        @{ Type = 'Header'; Label = 'Automatyzacja i Defender'; Icon = 'E823'; Hint = 'Aplikacja do pracy bez użytkownika (raporty zaplanowane, zadania) i izolacja urządzeń.' }
+        @{ Name = 'AutomationClientId'; Label = 'Aplikacja automatyzacji: Client ID'; Default = $cfg.AutomationClientId; Validation = 'Guid'; Hint = 'Utworzysz ją w przestrzeni «Zadania» > Raporty zaplanowane > «Utwórz aplikację automatyzacji».' }
+        @{ Name = 'AutomationTenantId'; Label = 'Aplikacja automatyzacji: Tenant ID'; Default = $cfg.AutomationTenantId }
+        @{ Name = 'AutomationCertificateThumbprint'; Label = 'Odcisk certyfikatu aplikacji (magazyn CurrentUser\My)'; Default = $cfg.AutomationCertificateThumbprint }
+        @{ Name = 'AutomationOrganization'; Label = 'Domena organizacji Exchange (np. firma.onmicrosoft.com)'; Default = $cfg.AutomationOrganization }
+        @{ Name = 'DefenderClientId'; Label = 'Client ID aplikacji Microsoft Defender for Endpoint'; Default = $cfg.DefenderClientId; Validation = 'Guid'; Hint = 'Izolacja urządzeń: aplikacja z uprawnieniem delegowanym Machine.Isolate (WindowsDefenderATP) i adresem przekierowania http://localhost.' }
+        @{ Type = 'Header'; Label = 'Aktualizacje'; Icon = 'E895'; Hint = 'Nowa wersja programu z repozytorium GitHub.' }
+        @{ Name = 'CheckUpdatesOnStart'; Label = 'Sprawdzaj aktualizacje przy uruchomieniu'; Type = 'Check'; Default = [bool]$cfg.CheckUpdatesOnStart }
+        @{ Name = 'UpdateRepository'; Label = 'Repozytorium GitHub (właściciel/nazwa)'; Default = $cfg.UpdateRepository }
+        @{ Name = 'UpdateBranch'; Label = 'Gałąź'; Default = $cfg.UpdateBranch }
+        @{ Name = 'UpdateToken'; Label = 'Token GitHub (tylko repozytorium prywatne, uprawnienie Contents: read)'; Type = 'Password'; Hint = $(if ($tokenSet) { 'Zapisany (zaszyfrowany). Pozostaw puste - bez zmian.' } else { 'Puste dla repozytorium publicznego.' }) }
+        if ($tokenSet) { @{ Name = 'UpdateTokenClear'; Label = 'Usuń zapisany token'; Type = 'Check'; Default = $false } }
+        @{ Type = 'Buttons'; Buttons = @(
+                @{ Text = 'Sprawdź i zainstaluj aktualizację'; Icon = 'E895'; ToolTip = 'Według zapisanych ustawień repozytorium'; OnClick = { param($w) Invoke-HTUpdateInteractive } }
+            )
+        }
+        @{ Type = 'Header'; Label = 'Funkcje lokalne'; Icon = 'E968'; Hint = 'Active Directory i inne funkcje sieci lokalnej - domyślnie ukryte.' }
+        @{ Name = 'ShowOnPremises'; Label = 'Pokazuj funkcje lokalne: Active Directory (po ponownym uruchomieniu)'; Type = 'Check'; Default = [bool]$cfg.ShowOnPremises }
+        if ($cfg.ShowOnPremises) { @{ Name = 'AadSyncServer'; Label = 'Serwer Microsoft Entra Connect'; Default = $cfg.AadSyncServer; Hint = 'Do uruchamiania synchronizacji delta (wymaga WinRM).' } }
     )
-    $result = Show-HTFormDialog -Title 'Ustawienia' -Description "Plik konfiguracji: $Global:ConfigPath" -Fields $fields -Icon 'E713' -Width 640 -MaxHeight 600 -ExtraButtons @(
-        @{ Text = 'Otwórz plik'; Icon = 'E8E5'; OnClick = { param($w) if (Test-Path $Global:ConfigPath) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $Global:ConfigPath) } } }
-        @{ Text = 'Folder'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }
-        @{ Text = 'Zmień PIN'; Icon = 'E72E'; OnClick = { param($w) Update-HTPinInteractive } }
-        @{ Text = 'MFA'; Icon = 'E8D7'; OnClick = { param($w) Show-HTMfaManager } }
-        @{ Text = 'Narzędzia'; Icon = 'E90F'; OnClick = { param($w) Show-HTToolsMenu } }
-    )
+    $result = Show-HTFormDialog -Title 'Ustawienia' -Fields $fields -Icon 'E713' -Width 900 -MaxHeight 520 -Sections
     if (-not $result) { return $false }
     $onPremBefore = [bool]$cfg.ShowOnPremises
     # PIN mógł zostać zmieniony w trakcie (przycisk «Zmień PIN») - zachowaj aktualny zapis
     foreach ($key in 'PinHash', 'PinSalt', 'PinLength') { $cfg.$key = $Global:HTConfig.$key }
-    # Profile tenantów mogły zostać zmienione w trakcie (Narzędzia > Profile tenantów)
+    # Profile tenantów mogły zostać zmienione w trakcie (przycisk «Profile tenantów…» w sekcji Microsoft 365 i Exchange)
     $cfg.TenantProfiles = @($Global:HTConfig.TenantProfiles)
     # Pola pomocnicze: dane poufne zapisywane w postaci zaszyfrowanej (DPAPI), zdarzenia Teams jako lista
     if ($result['TeamsWebhookClear']) { $cfg.TeamsWebhookProtected = '' }

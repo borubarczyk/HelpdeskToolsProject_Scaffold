@@ -10,7 +10,7 @@
 .PARAMETER Connect
     Usługa, z którą program połączy się zaraz po uruchomieniu (używane przy ponownym uruchomieniu po konflikcie bibliotek).
 .PARAMETER HideConsole
-    Ukrywa okno konsoli po uruchomieniu (skrót na pulpicie z Ustawienia > Narzędzia > Skrót na pulpicie).
+    Ukrywa okno konsoli po uruchomieniu (skrót na pulpicie z Ustawienia > Aplikacja > «Skrót na pulpicie»).
 .NOTES
     Pliki programu: konfiguracja %APPDATA%\HelpdeskTools\config.json, dziennik %LOCALAPPDATA%\HelpdeskTools\Logs,
     eksport Dokumenty\HelpdeskTools\Eksport (zmiana w Ustawieniach).
@@ -57,7 +57,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.2.0"
+$Global:AppVersion = "3.2.1"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
