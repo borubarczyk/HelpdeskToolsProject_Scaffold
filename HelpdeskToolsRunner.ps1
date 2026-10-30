@@ -17,6 +17,9 @@
     pwsh -File .\HelpdeskToolsRunner.ps1 -Report nieaktywni,administratorzy -To helpdesk@firma.pl
 .EXAMPLE
     pwsh -File .\HelpdeskToolsRunner.ps1 -RunJobs -Snapshot AdminRoles,ConditionalAccess -To bezpieczenstwo@firma.pl
+.NOTES
+    Copyright (c) 2025-2026 Borys Kaleta. Wszelkie prawa zastrzeżone.
+    Korzystanie z programu wymaga zgody autora - zob. plik LICENSE.
 #>
 
 #Requires -Version 7

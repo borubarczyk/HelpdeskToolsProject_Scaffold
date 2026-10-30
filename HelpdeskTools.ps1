@@ -14,6 +14,9 @@
 .NOTES
     Pliki programu: konfiguracja %APPDATA%\HelpdeskTools\config.json, dziennik %LOCALAPPDATA%\HelpdeskTools\Logs,
     eksport Dokumenty\HelpdeskTools\Eksport (zmiana w Ustawieniach).
+
+    Copyright (c) 2025-2026 Borys Kaleta. Wszelkie prawa zastrzeżone.
+    Korzystanie z programu wymaga zgody autora - zob. plik LICENSE.
 #>
 
 #Requires -RunAsAdministrator
