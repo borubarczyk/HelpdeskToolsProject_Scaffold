@@ -297,9 +297,9 @@ function Get-HTSPFolderFiles {
 #endregion
 
 #region Raport unikalnych uprawnień
-# Biblioteki i foldery (do wskazanej głębokości) z przerwanym dziedziczeniem uprawnień.
+# Biblioteki i foldery (do wskazanej głębokości) z przerwanym dziedziczeniem: @{ Node; Permissions } albo @{ Node; Error }.
 # OnProgress: { param($Text) }
-function Get-HTSPUniquePermissionsReport {
+function Get-HTSPUniqueNodes {
     param (
         [ValidateRange(0, 10)][int]$Depth = 2,
         [object[]]$Nodes,
@@ -313,23 +313,9 @@ function Get-HTSPUniquePermissionsReport {
         $node = $entry.Node
         if ($OnProgress) { & $OnProgress $node.ServerRelativeUrl }
         try {
-            if (Test-HTSPUniquePermissions -Node $node) {
-                foreach ($p in @(Get-HTSPPermissions -Node $node)) {
-                    [PSCustomObject]@{
-                        Ścieżka       = $node.ServerRelativeUrl
-                        Rodzaj        = if ($node.IsLibrary) { "Biblioteka" } else { "Folder" }
-                        Podmiot       = $p.Principal
-                        "Typ podmiotu" = $p.PrincipalType
-                        Uprawnienia   = $p.Roles
-                        Login         = $p.LoginName
-                        __flag        = if ("$($p.LoginName)" -match 'spo-grid-all-users|Everyone|Wszyscy') { "warn" } else { "" }
-                    }
-                }
-            }
+            if (Test-HTSPUniquePermissions -Node $node) { @{ Node = $node; Permissions = @(Get-HTSPPermissions -Node $node) } }
         }
-        catch {
-            [PSCustomObject]@{ Ścieżka = $node.ServerRelativeUrl; Rodzaj = "Błąd"; Podmiot = ""; "Typ podmiotu" = ""; Uprawnienia = $_.Exception.Message; Login = ""; __flag = "crit" }
-        }
+        catch { @{ Node = $node; Error = $_.Exception.Message } }
         if ($entry.Level -lt $Depth) {
             try {
                 foreach ($child in @(Get-HTSPSubFolders -ServerRelativeUrl $node.ServerRelativeUrl -ListTitle $node.ListTitle)) {
@@ -337,6 +323,32 @@ function Get-HTSPUniquePermissionsReport {
                 }
             }
             catch { Write-Log -Message "Podfoldery $($node.ServerRelativeUrl): $($_.Exception.Message)" -Type "Warn" }
+        }
+    }
+}
+
+function Get-HTSPUniquePermissionsReport {
+    param (
+        [ValidateRange(0, 10)][int]$Depth = 2,
+        [object[]]$Nodes,
+        [scriptblock]$OnProgress
+    )
+    foreach ($entry in @(Get-HTSPUniqueNodes -Depth $Depth -Nodes $Nodes -OnProgress $OnProgress)) {
+        $node = $entry.Node
+        if ($entry.Error) {
+            [PSCustomObject]@{ Ścieżka = $node.ServerRelativeUrl; Rodzaj = "Błąd"; Podmiot = ""; "Typ podmiotu" = ""; Uprawnienia = $entry.Error; Login = ""; __flag = "crit" }
+            continue
+        }
+        foreach ($p in @($entry.Permissions)) {
+            [PSCustomObject]@{
+                Ścieżka       = $node.ServerRelativeUrl
+                Rodzaj        = if ($node.IsLibrary) { "Biblioteka" } else { "Folder" }
+                Podmiot       = $p.Principal
+                "Typ podmiotu" = $p.PrincipalType
+                Uprawnienia   = $p.Roles
+                Login         = $p.LoginName
+                __flag        = if ("$($p.LoginName)" -match 'spo-grid-all-users|Everyone|Wszyscy') { "warn" } else { "" }
+            }
         }
     }
 }

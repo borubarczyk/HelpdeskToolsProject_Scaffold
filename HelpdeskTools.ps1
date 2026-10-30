@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.2.1"
+$Global:AppVersion = "3.3.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -109,9 +109,12 @@ $moduleNames = @(
     "GraphAPISecurity",
     "GraphAPITeams",
     "MailboxesExchangeOnline",
+    "ExchangeSettings",
+    "ExchangeRecipients",
     "GraphAPIIntune",
     "GraphAPISharePoint",
     "SharePointAudit",
+    "SharePointStructure",
     "Dashboard",
     "Startup"
 )

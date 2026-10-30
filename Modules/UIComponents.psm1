@@ -1465,6 +1465,8 @@ function Show-HTFormDialog {
                 $ctl.TextWrapping = 'Wrap'
                 $ctl.Height = $(if ($f.Height) { [double]$f.Height } else { 110 })
                 $ctl.Text = [string]$f.Default
+                # Tekst z wcięciami (np. struktura folderów): czcionka o stałej szerokości, Tab wstawia wcięcie, bez zawijania
+                if ($f.Monospace) { $ctl.FontFamily = 'Consolas'; $ctl.AcceptsTab = $true; $ctl.TextWrapping = 'NoWrap'; $ctl.HorizontalScrollBarVisibility = 'Auto' }
             }
             'Password' {
                 $ctl = New-Object System.Windows.Controls.PasswordBox
@@ -6305,6 +6307,25 @@ function Select-HTOpenFile {
     $owner = $script:UI.Window
     $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
     if ($accepted -eq $true) { return $dialog.FileName }
+    return $null
+}
+
+function Select-HTFolder {
+    # Okno wyboru folderu na dysku (WPF w .NET 8, wcześniej Windows Forms); zwraca ścieżkę albo $null
+    param([string]$Title = 'Wybierz folder')
+    if ('Microsoft.Win32.OpenFolderDialog' -as [type]) {
+        $dialog = New-Object -TypeName 'Microsoft.Win32.OpenFolderDialog'
+        $dialog.Title = $Title
+        $owner = $script:UI.Window
+        $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+        if ($accepted -eq $true) { return $dialog.FolderName }
+        return $null
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    $browser = New-Object System.Windows.Forms.FolderBrowserDialog
+    $browser.Description = $Title
+    $browser.ShowNewFolderButton = $false
+    if ($browser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $browser.SelectedPath }
     return $null
 }
 
