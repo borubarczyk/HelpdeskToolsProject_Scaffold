@@ -984,7 +984,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.newsite' 
                 @{ Name = 'Type'; Label = 'Rodzaj'; Type = 'Combo'; Options = @($types.Keys); Default = (& $get 'Type' @($types.Keys)[0]) }
                 @{ Name = 'Title'; Label = 'Nazwa'; Required = $true; Default = (& $get 'Title' '') }
                 @{ Name = 'Alias'; Label = 'Adres (…/sites/<adres>; puste - z nazwy)'; Default = (& $get 'Alias' '') }
-                @{ Name = 'Description'; Label = 'Opis'; Default = (& $get 'Description' '') }
+                @{ Name = 'Description'; Label = 'Opis (tylko witryna zespołu z grupą Microsoft 365)'; Default = (& $get 'Description' '') }
                 @{ Name = 'Owners'; Label = 'Właściciele (adresy, jeden w linii; komunikacyjna - pierwszy)'; Type = 'Multiline'; Height = 50; Default = (& $get 'Owners' '') }
                 @{ Name = 'Public'; Label = 'Publiczna (każdy w organizacji może dołączyć) - tylko z grupą Microsoft 365'; Type = 'Check'; Default = (& $get 'Public' $false) }
                 @{ Name = 'Language'; Label = 'Język witryny (nie można go później zmienić)'; Type = 'Combo'; Options = @($languages.Keys); Default = (& $get 'Language' 'Polski') }

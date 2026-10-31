@@ -935,11 +935,12 @@ function New-HTSPSite {
     $url = "https://$hostName/sites/$Alias"
     $owners = @($Owners | Where-Object { $_ })
     $params = @{ Title = $Title; Lcid = $Lcid; ErrorAction = 'Stop' }
-    if ($Description) { $params.Description = $Description }
     switch ($Type) {
         'Team' {
             $params.Type = 'TeamSite'
             $params.Alias = $Alias
+            # Opis przyjmuje tylko witryna zespołu z grupą (opis grupy Microsoft 365)
+            if ($Description) { $params.Description = $Description }
             if ($IsPublic) { $params.IsPublic = $true }
             if ($owners.Count) { $params.Owners = $owners }
         }

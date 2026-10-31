@@ -10,7 +10,7 @@ $script:TriStateOptions = @('Ustawienie organizacji', 'Wyłączone', 'Włączone
 $script:MailboxSettingSections = [ordered]@{
     General   = @{ Title = 'Ogólne'; Icon = 'E77B'; Hint = 'Nazwa, alias, biuro, porada pocztowa (MailTip) i widoczność w książce adresowej. Skrzynek synchronizowanych z lokalnym AD nie da się tu zmienić (nazwa, alias, biuro) - zmiana w AD.' }
     Custom    = @{ Title = 'Atrybuty niestandardowe'; Icon = 'E8EC'; Hint = 'CustomAttribute1-15 - np. numer kadrowy, lokalizacja, centrum kosztów; używane w filtrach grup dynamicznych, regułach transportu i listach adresowych.' }
-    Quota     = @{ Title = 'Limity i rozmiary'; Icon = 'EDA2'; Hint = 'Rozmiary z jednostką (np. 49 GB, 150 MB) albo Unlimited. Limity skrzynki nie mogą przekroczyć limitu licencji (np. 50 GB albo 100 GB); maks. rozmiar wiadomości - 150 MB.' }
+    Quota     = @{ Title = 'Limity i rozmiary'; Icon = 'EDA2'; Hint = 'Rozmiary z jednostką (np. 49 GB, 150 MB) albo Unlimited. Limity skrzynki nie mogą przekroczyć limitu licencji (np. 50 GB albo 100 GB); maks. rozmiar wiadomości - 150 MB. Limitu archiwum nie ustawia się w Exchange Online - wynika z licencji (archiwum automatycznie rozszerzane).' }
     Delivery  = @{ Title = 'Dostarczanie'; Icon = 'E724'; Hint = 'Kto może pisać do skrzynki i gdzie trafiają kopie wiadomości wysłanych z niej przez delegatów.' }
     Protocols = @{ Title = 'Protokoły i aplikacje'; Icon = 'E8EA'; Hint = 'Dostęp do poczty z aplikacji i protokołów. Wyłączenie IMAP, POP i SMTP AUTH ogranicza ataki na hasła (starsze protokoły nie obsługują MFA).' }
     Regional  = @{ Title = 'Język i region'; Icon = 'E774'; Hint = 'Język skrzynki, strefa czasowa i formaty. Zmiana języka bez formatu daty i godziny ustawia formaty domyślne dla języka.' }
@@ -107,8 +107,6 @@ $script:MailboxSettingDefs = @(
     New-HTMailboxSettingDef -Key 'IssueWarningQuota' -Section 'Quota' -Label 'Ostrzeżenie o rozmiarze' -Type 'Size' -Example '48 GB'
     New-HTMailboxSettingDef -Key 'ProhibitSendQuota' -Section 'Quota' -Label 'Zakaz wysyłania od' -Type 'Size' -Example '49 GB'
     New-HTMailboxSettingDef -Key 'ProhibitSendReceiveQuota' -Section 'Quota' -Label 'Zakaz wysyłania i odbierania od' -Type 'Size' -Example '50 GB'
-    New-HTMailboxSettingDef -Key 'ArchiveWarningQuota' -Section 'Quota' -Label 'Archiwum - ostrzeżenie' -Type 'Size' -Example '90 GB'
-    New-HTMailboxSettingDef -Key 'ArchiveQuota' -Section 'Quota' -Label 'Archiwum - limit' -Type 'Size' -Example '100 GB'
     New-HTMailboxSettingDef -Key 'MaxSendSize' -Section 'Quota' -Label 'Maks. rozmiar wysyłanej wiadomości' -Type 'Size' -Example '35 MB'
     New-HTMailboxSettingDef -Key 'MaxReceiveSize' -Section 'Quota' -Label 'Maks. rozmiar odbieranej wiadomości' -Type 'Size' -Example '36 MB'
     New-HTMailboxSettingDef -Key 'RecipientLimits' -Section 'Quota' -Label 'Maks. liczba odbiorców wiadomości' -Type 'Count' -Max 1000 -Example '500'
