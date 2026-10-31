@@ -928,8 +928,13 @@ $script:DialogXaml = @'
 <!--BODY-->
     </Grid>
     <Grid Grid.Row="2" Margin="0,18,0,0">
-      <StackPanel x:Name="dlgExtra" Orientation="Horizontal" HorizontalAlignment="Left"/>
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <!-- Przyciski dodatkowe w osobnej kolumnie: przy wąskim oknie zawijają się, zamiast nachodzić na OK / Anuluj -->
+      <WrapPanel x:Name="dlgExtra" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,12,0"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom">
         <Button x:Name="btnCancel" Content="Anuluj" MinWidth="96" IsCancel="True"/>
         <Button x:Name="btnOk" Content="OK" MinWidth="96" Margin="8,0,0,0" Style="{StaticResource PrimaryButton}" IsDefault="True"/>
       </StackPanel>
@@ -1227,13 +1232,73 @@ $script:FormEvents = @{
         param($s, $e)
         if ($e.Text -notmatch '^\d+$') { $e.Handled = $true }
     }
+    # Formularz z sekcjami: kliknięcie sekcji po lewej pokazuje jej stronę
+    Section      = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        if (-not $w) { return }
+        foreach ($page in $w.Tag.Pages) { $page.Visibility = if ([object]::ReferenceEquals($page, $s.Tag)) { 'Visible' } else { 'Collapsed' } }
+        $scroll = $w.FindName('fmScroll')
+        if ($scroll) { $scroll.ScrollToTop() }
+    }
+    # Przyciski w formularzu i pod nim: -OnClick { param($w) }
+    Button       = {
+        param($s, $e)
+        try { $null = & $s.Tag ([System.Windows.Window]::GetWindow($s)) }
+        catch { Show-HTError 'Operacja nie powiodła się.' $_ }
+    }
+}
+
+function Get-HTFormFieldError {
+    # Komunikat o błędzie pola formularza albo pusty tekst (pole poprawne)
+    param([Parameter(Mandatory)][hashtable]$Entry)
+    $f = $Entry.Field
+    $value = Get-HTFormControlValue -Entry $Entry
+    $label = [string]$f.Label
+    switch ($Entry.Type) {
+        { $_ -in 'Text', 'Password', 'Multiline', 'Combo' } {
+            if ($f.Required -and -not "$value") { return "Pole '$label' jest wymagane." }
+            if ("$value" -and $f.Validation -and -not (Test-HTInputValue -Value "$value" -ValidationType $f.Validation)) { return "Pole '$label' ma nieprawidłowy format." }
+        }
+        'Number' {
+            $n = 0
+            if (-not [int]::TryParse($Entry.Control.Text.Trim(), [ref]$n)) { return "Pole '$label' musi być liczbą." }
+            if ($null -ne $f.Min -and $n -lt $f.Min) { return "Pole '$label': minimalna wartość to $($f.Min)." }
+            if ($null -ne $f.Max -and $n -gt $f.Max) { return "Pole '$label': maksymalna wartość to $($f.Max)." }
+        }
+        'Date' {
+            $text = $Entry.Control.Text.Trim()
+            if (-not $text) { if ($f.Optional) { return '' }; return "Pole '$label' jest wymagane." }
+            $d = [datetime]::MinValue
+            $formats = [string[]]@('yyyy-MM-dd HH:mm', 'yyyy-MM-dd', 'yyyy-MM-dd H:mm')
+            if (-not [datetime]::TryParseExact($text, $formats, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) { return "Pole '$label': podaj datę w formacie RRRR-MM-DD GG:MM." }
+        }
+    }
+    return ''
+}
+
+function New-HTFormButtons {
+    # Rząd przycisków: @(@{ Text; Icon; OnClick = { param($w) }; ToolTip; Danger })
+    param([object[]]$Buttons = @())
+    $panel = New-Object System.Windows.Controls.WrapPanel
+    foreach ($def in @($Buttons | Where-Object { $_ })) {
+        $b = New-HTButton -Text ([string]$def.Text) -Icon ([string]$def.Icon) -ToolTip ([string]$def.ToolTip) -Danger:([bool]$def.Danger)
+        $b.Margin = '0,3,8,3'
+        $b.Tag = $def.OnClick
+        $b.add_Click($script:FormEvents.Button)
+        [void]$panel.Children.Add($b)
+    }
+    return $panel
 }
 
 function Show-HTFormDialog {
     <#
         Formularz w oknie. -Fields: tablica hashtabel:
-          @{ Name; Label; Type = Text|Password|Multiline|Combo|Check|Date|Number|Info|Header; Default; Options;
+          @{ Name; Label; Type = Text|Password|Multiline|Combo|Check|Date|Number|Info|Header|Buttons; Default; Options;
              Required; Validation; Editable; Optional; DateOnly; Min; Max; Placeholder; Hint }
+        Buttons: @{ Type = 'Buttons'; Buttons = @(@{ Text; Icon; OnClick = { param($w) } }) } - przyciski w treści formularza.
+        -Sections: każdy Header zaczyna sekcję (lista sekcji po lewej, Icon - ikona sekcji, Hint - opis sekcji);
+        okno ma stałą wysokość (-MaxHeight), a błąd walidacji przełącza na sekcję z błędnym polem.
         Zwraca słownik Name -> wartość albo $null (anulowano).
     #>
     param(
@@ -1245,50 +1310,96 @@ function Show-HTFormDialog {
         [double]$Width = 560,
         [double]$MaxHeight = 560,
         [switch]$Danger,
+        [switch]$Sections,
         # Dodatkowe przyciski po lewej stronie: @{ Text; Icon; OnClick = { param($w) } }
         [object[]]$ExtraButtons = @()
     )
-    $w = New-HTDialog -Title $Title -Subtitle $Description -Body ('<ScrollViewer MaxHeight="{0}" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="fmHost" Margin="0,0,6,0"/></ScrollViewer>' -f [int]$MaxHeight) `
-        -Icon $Icon -OkText $OkText -Width $Width -Danger:$Danger -Validate {
+    $body = if ($Sections) {
+        @'
+<Grid Height="{0}">
+  <Grid.ColumnDefinitions>
+    <ColumnDefinition Width="210"/>
+    <ColumnDefinition Width="*"/>
+  </Grid.ColumnDefinitions>
+  <Border BorderBrush="#242B36" BorderThickness="0,0,1,0" Padding="0,0,10,0" Margin="0,0,20,0">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="fmNav"/></ScrollViewer>
+  </Border>
+  <ScrollViewer x:Name="fmScroll" Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><Grid x:Name="fmPages" Margin="0,0,8,0"/></ScrollViewer>
+</Grid>
+'@ -f [int]$MaxHeight
+    }
+    else { '<ScrollViewer MaxHeight="{0}" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="fmHost" Margin="0,0,6,0"/></ScrollViewer>' -f [int]$MaxHeight }
+    $w = New-HTDialog -Title $Title -Subtitle $Description -Body $body -Icon $Icon -OkText $OkText -Width $Width -Danger:$Danger -Validate {
         param($w)
         foreach ($entry in $w.Tag.Controls.Values) {
-            $f = $entry.Field
-            $value = Get-HTFormControlValue -Entry $entry
-            $label = [string]$f.Label
-            switch ($entry.Type) {
-                { $_ -in 'Text', 'Password', 'Multiline', 'Combo' } {
-                    if ($f.Required -and -not "$value") { Show-HTWarning "Pole '$label' jest wymagane."; return $false }
-                    if ("$value" -and $f.Validation -and -not (Test-HTInputValue -Value "$value" -ValidationType $f.Validation)) {
-                        Show-HTWarning "Pole '$label' ma nieprawidłowy format."; return $false
-                    }
-                }
-                'Number' {
-                    $n = 0
-                    if (-not [int]::TryParse($entry.Control.Text.Trim(), [ref]$n)) { Show-HTWarning "Pole '$label' musi być liczbą."; return $false }
-                    if ($null -ne $f.Min -and $n -lt $f.Min) { Show-HTWarning "Pole '$label': minimalna wartość to $($f.Min)."; return $false }
-                    if ($null -ne $f.Max -and $n -gt $f.Max) { Show-HTWarning "Pole '$label': maksymalna wartość to $($f.Max)."; return $false }
-                }
-                'Date' {
-                    $text = $entry.Control.Text.Trim()
-                    if (-not $text) {
-                        if ($f.Optional) { continue }
-                        Show-HTWarning "Pole '$label' jest wymagane."; return $false
-                    }
-                    $d = [datetime]::MinValue
-                    $formats = [string[]]@('yyyy-MM-dd HH:mm', 'yyyy-MM-dd', 'yyyy-MM-dd H:mm')
-                    if (-not [datetime]::TryParseExact($text, $formats, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$d)) {
-                        Show-HTWarning "Pole '$label': podaj datę w formacie RRRR-MM-DD GG:MM."; return $false
-                    }
-                }
-            }
+            $message = Get-HTFormFieldError -Entry $entry
+            if (-not $message) { continue }
+            # Pole w innej sekcji - przejście do niej przed komunikatem
+            if ($entry.Nav) { $entry.Nav.IsChecked = $true }
+            try { [void]$entry.Control.Focus() } catch { Write-Verbose $_ }
+            Show-HTWarning $message
+            return $false
         }
         return $true
     }
-    $stack = $w.FindName('fmHost')
+    $pages = New-Object System.Collections.Generic.List[object]
+    $w.Tag.Pages = $pages
+    $navGroup = 'fm_' + [guid]::NewGuid().ToString('N')
+    $nav = $null
+    $stack = $null
+    $newPage = {
+        param([string]$PageTitle, [string]$PageIcon, [string]$PageHint)
+        $page = New-Object System.Windows.Controls.StackPanel
+        $page.Visibility = if ($pages.Count -eq 0) { 'Visible' } else { 'Collapsed' }
+        [void]$w.FindName('fmPages').Children.Add($page)
+        $pages.Add($page)
+        $rb = New-Object System.Windows.Controls.RadioButton
+        $rb.Style = Get-HTThemeResource 'NavItem'
+        $rb.GroupName = $navGroup
+        $rb.Tag = $page
+        $rb.IsChecked = ($pages.Count -eq 1)
+        $row = New-Object System.Windows.Controls.StackPanel
+        $row.Orientation = 'Horizontal'
+        $glyph = New-HTGlyphBlock -Code $(if ($PageIcon) { $PageIcon } else { 'E713' }) -Size 14
+        $glyph.Margin = '2,0,11,0'
+        $glyph.Width = 18
+        [void]$row.Children.Add($glyph)
+        $text = New-Object System.Windows.Controls.TextBlock
+        $text.Text = $PageTitle
+        $text.TextTrimming = 'CharacterEllipsis'
+        $text.VerticalAlignment = 'Center'
+        [void]$row.Children.Add($text)
+        $rb.Content = $row
+        $rb.add_Checked($script:FormEvents.Section)
+        [void]$w.FindName('fmNav').Children.Add($rb)
+        $heading = New-HTDialogText -Text $PageTitle -Color '#FFFFFF' -Size 15
+        $heading.FontWeight = 'SemiBold'
+        [void]$page.Children.Add($heading)
+        if ($PageHint) {
+            $desc = New-HTDialogText -Text $PageHint -Color '#7B8496' -Size 12
+            $desc.Margin = '0,3,0,0'
+            [void]$page.Children.Add($desc)
+        }
+        $line = New-Object System.Windows.Controls.Border
+        $line.Height = 1
+        $line.Background = Get-HTBrush '#242B36'
+        $line.Margin = '0,8,0,6'
+        [void]$page.Children.Add($line)
+        return @{ Page = $page; Nav = $rb }
+    }
+    if (-not $Sections) { $stack = $w.FindName('fmHost') }
     $controls = [ordered]@{}
     $first = $true
     foreach ($f in $Fields) {
+        if (-not $f) { continue }
         $type = if ($f.Type) { [string]$f.Type } else { 'Text' }
+        if ($Sections -and ($type -eq 'Header' -or -not $stack)) {
+            $created = if ($type -eq 'Header') { & $newPage ([string]$f.Label) ([string]$f.Icon) ([string]$f.Hint) } else { & $newPage 'Ogólne' 'E713' '' }
+            $stack = $created.Page
+            $nav = $created.Nav
+            $first = $true
+            if ($type -eq 'Header') { continue }
+        }
         if ($type -eq 'Header') {
             $hd = New-HTDialogText -Text ([string]$f.Label) -Color '#8CB0FF' -Size 13.5
             $hd.FontWeight = 'SemiBold'
@@ -1306,6 +1417,18 @@ function Show-HTFormDialog {
             $info = New-HTDialogText -Text ([string]$f.Label) -Color '#7B8496' -Size 12
             $info.Margin = $(if ($first) { '0,0,0,4' } else { '0,12,0,4' })
             [void]$stack.Children.Add($info)
+            $first = $false
+            continue
+        }
+        if ($type -eq 'Buttons') {
+            if ($f.Label) {
+                $bl = New-HTDialogText -Text ([string]$f.Label) -Color '#8791A5' -Size 12
+                $bl.Margin = $(if ($first) { '0,0,0,4' } else { '0,14,0,4' })
+                [void]$stack.Children.Add($bl)
+            }
+            $buttons = New-HTFormButtons -Buttons @($f.Buttons)
+            $buttons.Margin = $(if ($first -or $f.Label) { '0,0,0,0' } else { '0,12,0,0' })
+            [void]$stack.Children.Add($buttons)
             $first = $false
             continue
         }
@@ -1342,6 +1465,8 @@ function Show-HTFormDialog {
                 $ctl.TextWrapping = 'Wrap'
                 $ctl.Height = $(if ($f.Height) { [double]$f.Height } else { 110 })
                 $ctl.Text = [string]$f.Default
+                # Tekst z wcięciami (np. struktura folderów): czcionka o stałej szerokości, Tab wstawia wcięcie, bez zawijania
+                if ($f.Monospace) { $ctl.FontFamily = 'Consolas'; $ctl.AcceptsTab = $true; $ctl.TextWrapping = 'NoWrap'; $ctl.HorizontalScrollBarVisibility = 'Auto' }
             }
             'Password' {
                 $ctl = New-Object System.Windows.Controls.PasswordBox
@@ -1362,6 +1487,7 @@ function Show-HTFormDialog {
                 $format = if ($f.DateOnly) { 'yyyy-MM-dd' } else { 'yyyy-MM-dd HH:mm' }
                 $ctl.Tag = $(if ($f.DateOnly) { 'RRRR-MM-DD' } else { 'RRRR-MM-DD GG:MM' })
                 if ($f.Default -is [datetime]) { $ctl.Text = $f.Default.ToString($format) }
+                elseif ($f.Default) { $ctl.Text = [string]$f.Default }
             }
             default {
                 $ctl = New-Object System.Windows.Controls.TextBox
@@ -1376,25 +1502,18 @@ function Show-HTFormDialog {
             $hint.Margin = '1,5,0,0'
             [void]$stack.Children.Add($hint)
         }
-        $controls[[string]$f.Name] = @{ Type = $type; Control = $ctl; Field = $f }
+        $controls[[string]$f.Name] = @{ Type = $type; Control = $ctl; Field = $f; Nav = $nav }
         $first = $false
     }
     $w.Tag.Controls = $controls
-    foreach ($extra in $ExtraButtons) {
-        $eb = New-HTButton -Text ([string]$extra.Text) -Icon ([string]$extra.Icon)
-        $eb.Margin = '0,0,8,0'
-        $eb.Tag = $extra.OnClick
-        $eb.add_Click({
-                param($s, $e)
-                try { $null = & $s.Tag ([System.Windows.Window]::GetWindow($s)) }
-                catch { Show-HTError 'Operacja nie powiodła się.' $_ }
-            })
-        [void]$w.FindName('dlgExtra').Children.Add($eb)
+    foreach ($b in @((New-HTFormButtons -Buttons $ExtraButtons).Children)) {
+        [void]$b.Parent.Children.Remove($b)
+        [void]$w.FindName('dlgExtra').Children.Add($b)
     }
     $w.add_ContentRendered({
             param($s, $e)
             foreach ($c in $s.Tag.Controls.Values) {
-                if ($c.Control -is [System.Windows.Controls.TextBox]) { [void]$c.Control.Focus(); $c.Control.SelectAll(); break }
+                if ($c.Control -is [System.Windows.Controls.TextBox] -and $c.Control.IsVisible) { [void]$c.Control.Focus(); $c.Control.SelectAll(); break }
             }
         })
     if (@($Fields | Where-Object { $_.Type -eq 'Multiline' }).Count -gt 0) { $w.FindName('btnOk').IsDefault = $false }
@@ -5399,7 +5518,7 @@ function Update-HTAccessView {
 }
 #endregion
 
-#region Okna MFA: włączenie, konta, uprawnienia (Ustawienia > «MFA - konta i klucze»)
+#region Okna MFA: włączenie, konta, uprawnienia (Ustawienia > Bezpieczeństwo > «MFA - konta i klucze»)
 function Read-HTMfaConfirmation {
     # Potwierdzenie zmiany kodem z aplikacji danego konta; $true = poprawny
     param([Parameter(Mandatory)][hashtable]$Account, [string]$Action = 'zmianę')
@@ -6191,6 +6310,25 @@ function Select-HTOpenFile {
     return $null
 }
 
+function Select-HTFolder {
+    # Okno wyboru folderu na dysku (WPF w .NET 8, wcześniej Windows Forms); zwraca ścieżkę albo $null
+    param([string]$Title = 'Wybierz folder')
+    if ('Microsoft.Win32.OpenFolderDialog' -as [type]) {
+        $dialog = New-Object -TypeName 'Microsoft.Win32.OpenFolderDialog'
+        $dialog.Title = $Title
+        $owner = $script:UI.Window
+        $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
+        if ($accepted -eq $true) { return $dialog.FolderName }
+        return $null
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    $browser = New-Object System.Windows.Forms.FolderBrowserDialog
+    $browser.Description = $Title
+    $browser.ShowNewFolderButton = $false
+    if ($browser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $browser.SelectedPath }
+    return $null
+}
+
 function Select-HTSaveFile {
     # Okno zapisu pliku (domyślnie katalog eksportu); zwraca ścieżkę albo $null
     param([string]$Title = 'Zapisz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*', [string]$FileName = '', [string]$DefaultExt = '')
@@ -6534,7 +6672,7 @@ $script:OperationSummaryEvents = @{
         $facts = [ordered]@{}
         foreach ($g in @($records | Group-Object Operation | Select-Object -First 10)) { $facts[$g.Name] = (@($g.Group | ForEach-Object { "$($_.Object) ($($_.Status))" }) -join ', ') }
         if (Send-HTTeamsMessage -Title 'Podsumowanie wykonanych czynności' -Text $w.FindName('osFilter').Text -Facts $facts -Tone 'ok' -Event 'Manual') { Show-HTToast 'Wysłano na kanał Teams.' 'ok' }
-        else { Show-HTWarning 'Nie wysłano - ustaw adres webhooka Teams w Ustawieniach (Integracje) i sprawdź dziennik.' }
+        else { Show-HTWarning 'Nie wysłano - ustaw adres webhooka Teams w Ustawieniach (sekcja «Teams i e-mail») i sprawdź dziennik.' }
     }
 }
 

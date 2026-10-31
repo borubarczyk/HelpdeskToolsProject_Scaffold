@@ -551,7 +551,7 @@ function Get-HTAutomationStatusRows {
         [PSCustomObject]@{ Ustawienie = 'Tenant ID'; Wartość = [string]$cfg.AutomationTenantId; __flag = '' }
         [PSCustomObject]@{ Ustawienie = 'Certyfikat'; Wartość = $(if ($cert) { "$thumb (ważny do $($cert.NotAfter.ToString('yyyy-MM-dd')))" } elseif ($thumb) { "$thumb - brak w magazynie CurrentUser\My" } else { '(brak)' }); __flag = $(if (-not $cert) { 'warn' } elseif ($cert.NotAfter -lt (Get-Date).AddDays(30)) { 'warn' } else { '' }) }
         [PSCustomObject]@{ Ustawienie = 'Organizacja Exchange'; Wartość = [string]$cfg.AutomationOrganization; __flag = '' }
-        [PSCustomObject]@{ Ustawienie = 'Nadawca raportów'; Wartość = $(if ($cfg.ReportSender) { $cfg.ReportSender } else { '(brak - Ustawienia > Integracje)' }); __flag = $(if (-not $cfg.ReportSender) { 'warn' } else { '' }) }
+        [PSCustomObject]@{ Ustawienie = 'Nadawca raportów'; Wartość = $(if ($cfg.ReportSender) { $cfg.ReportSender } else { '(brak - Ustawienia > Teams i e-mail)' }); __flag = $(if (-not $cfg.ReportSender) { 'warn' } else { '' }) }
         foreach ($t in $task) { [PSCustomObject]@{ Ustawienie = "Zadanie Harmonogramu: $($t.TaskName)"; Wartość = "$($t.State) • $(($t.Actions | Select-Object -First 1).Arguments)"; __flag = '' } }
     )
 }

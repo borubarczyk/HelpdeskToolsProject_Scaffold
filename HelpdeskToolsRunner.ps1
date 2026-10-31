@@ -17,6 +17,9 @@
     pwsh -File .\HelpdeskToolsRunner.ps1 -Report nieaktywni,administratorzy -To helpdesk@firma.pl
 .EXAMPLE
     pwsh -File .\HelpdeskToolsRunner.ps1 -RunJobs -Snapshot AdminRoles,ConditionalAccess -To bezpieczenstwo@firma.pl
+.NOTES
+    Copyright (c) 2025-2026 Borys Kaleta. Wszelkie prawa zastrzeżone.
+    Korzystanie z programu wymaga zgody autora - zob. plik LICENSE.
 #>
 
 #Requires -Version 7
@@ -170,7 +173,7 @@ try {
 
     foreach ($line in $summary) { Write-Log -Message $line -Type 'Info' }
     if ($recipients.Count -and ($attachments.Count -or $summary.Count)) {
-        if (-not $From) { throw 'Brak skrzynki nadawcy raportów (Ustawienia > Integracje: skrzynka nadawcy raportów zaplanowanych).' }
+        if (-not $From) { throw 'Brak skrzynki nadawcy raportów (Ustawienia > Teams i e-mail: skrzynka nadawcy raportów zaplanowanych).' }
         $list = (@($summary | ForEach-Object { '<li>' + (ConvertTo-HTHtmlText $_) + '</li>' }) -join '')
         $body = "<div style=`"font:14px Segoe UI,sans-serif`"><p><b>Helpdesk Tools - raport automatyczny</b> ($((Get-Date).ToString('yyyy-MM-dd HH:mm')))</p><ul>$list</ul><p style=`"color:#666`">Szczegóły w załącznikach. Wiadomość wygenerowana automatycznie.</p></div>"
         # Duże raporty - osobne wiadomości (limit ok. 3 MB na wiadomość)

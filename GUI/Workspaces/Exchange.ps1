@@ -331,13 +331,21 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
         Invoke-HTRowAction -Module $m -Name 'Usunięcie adresu' -Rows @($rows | Where-Object { $_.Wartość }) -Confirm 'Usunąć zaznaczone adresy?' -Label { param($r) "$($r.Obiekt): $($r.Adres)" } `
             -Action { param($r) Remove-HTMailboxAddress -Identity $r.__target.PrimarySmtpAddress -Value $r.Wartość } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
+    Add-HTRowAction -Module $m -Text 'Ustaw jako adres główny' -Icon 'E8FB' -Action {
+        param($m, $rows)
+        $r = @($rows | Where-Object { $_.Typ -eq 'SMTP' -and -not $_.Główny })[0]
+        if (-not $r) { Show-HTWarning 'Zaznacz dodatkowy adres SMTP (alias), który ma zostać adresem głównym.'; return }
+        Invoke-HTRowAction -Module $m -Name 'Zmiana adresu głównego' -Rows @($r) -Confirm "Ustawić $($r.Adres) jako adres główny? Dotychczasowy adres zostanie aliasem (poczta nadal dotrze), a wiadomości będą wysyłane z nowego adresu." `
+            -Label { param($x) "$($x.__target.PrimarySmtpAddress) -> $($x.Adres)" } -Action { param($x) Set-HTMailboxPrimaryAddress -Identity $x.__target.PrimarySmtpAddress -Address $x.Adres; 'Adres główny zmieniony' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
 }
 
 Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl' -Title 'Grupy dystrybucyjne' -Icon 'E902' `
-    -Description 'Listy dystrybucyjne: członkowie, przynależność skrzynek oraz dodawanie / usuwanie zaznaczonych skrzynek.' -Build {
+    -Description 'Listy dystrybucyjne: tworzenie, ustawienia (właściciele, dołączanie, kto może pisać, moderowanie), członkowie, przynależność skrzynek, dodawanie i usuwanie członków oraz usuwanie grup (prawy przycisk).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Wszystkie grupy' -Icon 'E902' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dystrybucyjne' -ScriptBlock { Get-HTDistributionGroups } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Icon 'E710' -OnClick { param($m) New-HTDistributionGroupInteractive -Module $m } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Grupy zaznaczonych skrzynek' -Icon 'E716' -OnClick {
         param($m)
         Invoke-HTTargetQuery -Module $m -Name 'Przynależność do grup' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action {
@@ -369,6 +377,44 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
             Invoke-HTRowAction -Module $m -Name "Usunięcie z $($g.Nazwa)" -Rows $mailboxes -Danger -Confirm "Usunąć $($mailboxes.Count) skrzynek z grupy $($g.Nazwa)?" -Label { param($r) Get-HTMailboxLabel $r } `
                 -Action { param($r) Remove-HTDistributionGroupMember -Group $g.Identity -Member $r.PrimarySmtpAddress }
         }
+    }
+    Add-HTRowAction -Module $m -Text 'Ustawienia grupy…' -Icon 'E713' -Action {
+        param($m, $rows)
+        $groups = @($rows | Where-Object { $_.Identity })
+        if ($groups.Count -eq 0) { return }
+        $defs = @(Get-HTMailboxSettingDefinitions -Group)
+        $current = $null
+        if ($groups.Count -eq 1) {
+            Set-HTBusy -Busy $true -Text "Odczyt ustawień grupy $($groups[0].Nazwa)…"
+            try { $current = Get-HTMailboxSettings -Identity $groups[0].Identity -Definitions $defs }
+            catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie odczytano ustawień grupy.' $_; return }
+            finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        }
+        $desc = if ($groups.Count -eq 1) { "$($groups[0].Nazwa) <$($groups[0].Identity)>" } else { "Grup: $($groups.Count) - zmienione zostaną tylko wypełnione pola" }
+        $changes = Show-HTSettingsEditor -Title 'Ustawienia grupy' -Description $desc -Definitions $defs -Current $current -Objects @($groups | ForEach-Object { $_.Nazwa }) -Icon 'E902'
+        if (-not $changes) { return }
+        $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
+        Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy' -Rows $groups -Label { param($r) $r.Nazwa } -Action { param($r) Invoke-HTMailboxSettingPlan -Identity $r.Identity -Plan $plan } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Action {
+        param($m, $rows)
+        $g = @($rows | Where-Object { $_.Identity })[0]
+        if (-not $g) { return }
+        $members = @(Split-HTInputList (Show-InputBox -Title "Dodaj do: $($g.Nazwa)" -Prompt 'Adresy e-mail członków (jeden w linii, przecinek albo średnik):' -Multiline -Icon 'E8FA'))
+        if ($members.Count -eq 0) { return }
+        Invoke-HTRowAction -Module $m -Name "Dodanie członków do $($g.Nazwa)" -Rows @($g) -Label { param($r) $r.Nazwa } -Action {
+            param($r)
+            $res = Add-HTDistributionGroupMembers -Group $r.Identity -Members $members
+            if (@($res.Errors).Count) { throw "dodano: $($res.Added); błędy: $(@($res.Errors) -join '; ')" }
+            "Dodano: $($res.Added) (pozostali już byli członkami)"
+        }
+    }
+    Add-HTRowAction -Module $m -Text 'Usuń grupę' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $groups = @($rows | Where-Object { $_.Identity -and $_.Typ -ne 'GroupMailbox' })
+        if ($groups.Count -eq 0) { Show-HTWarning 'Zaznacz grupy dystrybucyjne (grupy Microsoft 365 - przestrzeń Microsoft 365 > Grupy).'; return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie grupy' -Rows $groups -Danger -TypeToConfirm 'USUŃ' -Confirm 'Usunąć zaznaczone grupy? Wiadomości na ich adresy przestaną być dostarczane. Grup dystrybucyjnych nie można przywrócić.' `
+            -Label { param($r) "$($r.Nazwa) <$($r.Identity)>" } -Action { param($r) Remove-HTMailDistributionGroup -Identity $r.Identity; 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
 }
 #endregion
@@ -673,5 +719,579 @@ Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.shared
                 Sort-Object @{ Expression = { switch ($_.__flag) { 'crit' { 0 } 'warn' { 1 } default { 2 } } } }, Skrzynka
         }
     } | Out-Null
+}
+#endregion
+
+#region Edytor ustawień (wspólny dla skrzynek i grup)
+function Show-HTSettingsEditor {
+    <#
+        Okno z sekcjami do zmiany ustawień: bieżące wartości (-Current, jedna pozycja) albo «bez zmian» (wiele pozycji).
+        Błędne wpisy - komunikat i ponowne otwarcie z wpisanymi wartościami; na końcu potwierdzenie listy zmian.
+        Zwraca zmiany (Get-HTMailboxSettingChanges) albo $null.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Title,
+        [string]$Description = '',
+        [Parameter(Mandatory)][object[]]$Definitions,
+        [System.Collections.IDictionary]$Current = $null,
+        [hashtable]$Options = @{},
+        [string[]]$Objects = @(),
+        [string]$Icon = 'E713'
+    )
+    $values = $null
+    while ($true) {
+        $fields = @(New-HTMailboxSettingsFormFields -Current $Current -Options $Options -Values $values -Definitions $Definitions)
+        $form = Show-HTFormDialog -Title $Title -Description $Description -Fields $fields -Icon $Icon -Width 960 -MaxHeight 520 -Sections -OkText 'Dalej'
+        if (-not $form) { return $null }
+        $values = $form
+        $r = Get-HTMailboxSettingChanges -Form $form -Current $Current -Definitions $Definitions
+        if (@($r.Errors).Count) { Show-HTWarning -Title $Title -Text ("Popraw wartości:`n`n" + (@($r.Errors) -join "`n")); continue }
+        if (@($r.Changes).Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return $null }
+        $items = @($r.Changes | ForEach-Object { "$($_.Label): $($_.Display)" })
+        $who = if ($Objects.Count -eq 1) { $Objects[0] } else { "$($Objects.Count) pozycji" }
+        if (Show-HTConfirm -Title $Title -ConfirmText 'Zapisz' -Message "Zapisać zmiany ($($items.Count)) - $($who)? «Anuluj» wraca do formularza." -Items $items) { return @($r.Changes) }
+    }
+}
+
+function Get-HTMailboxSettingOptions {
+    # Listy wartości formularza (strefy czasowe, zasady przechowywania) - pobierane raz na moduł
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not $Module.Data.SettingOptions) {
+        $retention = @()
+        try { $retention = @(Get-HTRetentionPolicyNames) } catch { Write-Log -Message "Zasady przechowywania: $($_.Exception.Message)" -Type 'Warn' }
+        $Module.Data.SettingOptions = @{ TimeZones = @(Get-HTTimeZoneOptions); RetentionPolicies = $retention }
+    }
+    return $Module.Data.SettingOptions
+}
+
+function Get-HTMailboxSectionKeys {
+    # Sekcje ustawień skrzynek (bez sekcji grup)
+    $sections = Get-HTMailboxSettingSections
+    return @($sections.Keys | Where-Object { @(Get-HTMailboxSettingDefinitions -Sections $_).Count -gt 0 })
+}
+
+function Get-HTExchangeDomainOptions {
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not $Module.Data.Domains) { $Module.Data.Domains = @(Get-HTAcceptedDomainNames) }
+    return @($Module.Data.Domains)
+}
+#endregion
+
+#region Ustawienia skrzynki (atrybuty), wzorzec i CSV
+Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings' -Title 'Ustawienia skrzynki' -Icon 'E713' `
+    -Description 'Kilkadziesiąt ustawień w sekcjach: nazwa i atrybuty niestandardowe, limity rozmiaru, dostarczanie, protokoły (OWA, Outlook mobile, IMAP, POP, SMTP AUTH), język i strefa czasowa, godziny pracy, Focused Inbox, wiadomości-śmieci, retencja i inspekcja. Wiele skrzynek naraz - zmieniane są tylko wypełnione pola. Kopiowanie ustawień ze skrzynki wzorcowej.' -Build {
+    param($m)
+    $sections = Get-HTMailboxSettingSections
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Edytuj ustawienia…' -Icon 'E70F' -Primary -OnClick {
+        param($m)
+        $targets = @(Get-HTTargets -Module $m)
+        if ($targets.Count -eq 0) { return }
+        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Ustawienia skrzynki')) { return }
+        $current = $null
+        Set-HTBusy -Busy $true -Text 'Odczyt ustawień skrzynki…'
+        try {
+            $options = Get-HTMailboxSettingOptions -Module $m
+            if ($targets.Count -eq 1) { $current = Get-HTMailboxSettings -Identity $targets[0].PrimarySmtpAddress }
+        }
+        catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie odczytano ustawień skrzynki.' $_; return }
+        finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        $desc = "Skrzynek: $($targets.Count) - zmienione zostaną tylko wypełnione pola («(bez zmian)» i puste pola pozostają)."
+        if ($current) {
+            $desc = "$(Get-HTMailboxLabel $targets[0]) • $($current['__Type'])"
+            if ($current['__DirSynced']) { $desc += ' • synchronizowana z AD: nazwę, alias i biuro zmienia się w AD' }
+            $errs = @($current['__Errors'] | Where-Object { $_ })
+            if ($errs.Count) { $desc += " • nie odczytano: $(@($errs | ForEach-Object { ($_ -split ':')[0] }) -join ', ') (te pola - bez zmian)" }
+        }
+        $changes = Show-HTSettingsEditor -Title 'Ustawienia skrzynki' -Description $desc -Definitions @(Get-HTMailboxSettingDefinitions) -Current $current -Options $options -Objects @($targets | ForEach-Object { Get-HTMailboxLabel $_ }) -Icon 'E715'
+        if (-not $changes) { return }
+        $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
+        Invoke-HTTargetAction -Module $m -Name 'Ustawienia skrzynki' -Targets $targets -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Invoke-HTMailboxSettingPlan -Identity $t.PrimarySmtpAddress -Plan $plan }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Text 'Sekcja:' | Out-Null
+    $m.C.Section = Add-HTComboBox -Parent $row -Width 210 -Items (@('Wszystkie sekcje') + @(Get-HTMailboxSectionKeys | ForEach-Object { $sections[$_].Title }))
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż ustawienia' -Icon 'E8A1' -OnClick {
+        param($m)
+        $targets = @(Get-HTTargets -Module $m)
+        if ($targets.Count -eq 0) { return }
+        $title = Get-HTComboText $m.C.Section
+        $all = Get-HTMailboxSettingSections
+        $chosen = @(Get-HTMailboxSectionKeys | Where-Object { $all[$_].Title -eq $title })
+        if ($chosen.Count -eq 0) { $chosen = @(Get-HTMailboxSectionKeys) }
+        Invoke-HTQuery -Module $m -Name 'Ustawienia skrzynek' -ScriptBlock {
+            if ($targets.Count -eq 1) {
+                $s = Get-HTMailboxSettings -Identity $targets[0].PrimarySmtpAddress -Sections $chosen
+                foreach ($d in @(Get-HTMailboxSettingDefinitions -Sections $chosen)) {
+                    if ($d.Type -eq 'Flag' -or -not $s.Contains($d.Key)) { continue }
+                    [PSCustomObject]@{ Sekcja = $all[$d.Section].Title; Ustawienie = $d.Label; Wartość = (ConvertTo-HTMailboxSettingDisplay -Definition $d -Value $s[$d.Key]); Parametr = $d.Param }
+                }
+                foreach ($e in @($s['__Errors'] | Where-Object { $_ })) { [PSCustomObject]@{ Sekcja = 'Błąd odczytu'; Ustawienie = $e; Wartość = ''; Parametr = ''; __flag = 'warn' } }
+                return
+            }
+            $i = 0
+            foreach ($t in $targets) {
+                $i++
+                Set-HTProgress -Value $i -Maximum $targets.Count -Text "Ustawienia skrzynek [$i/$($targets.Count)] $($t.PrimarySmtpAddress)"
+                try { ConvertTo-HTMailboxSettingsRow -Identity $t.PrimarySmtpAddress -Settings (Get-HTMailboxSettings -Identity $t.PrimarySmtpAddress -Sections $chosen) -Sections $chosen }
+                catch { [PSCustomObject]@{ Skrzynka = $t.PrimarySmtpAddress; 'Błędy odczytu' = $_.Exception.Message; __flag = 'crit' } }
+            }
+        }
+    } | Out-Null
+    $row2 = Add-HTToolbarRow -Module $m -Title 'Wzorzec'
+    Add-HTButton -Parent $row2 -Module $m -Text 'Kopiuj ze skrzynki wzorcowej…' -Icon 'E8C8' -OnClick {
+        param($m)
+        $targets = @(Get-HTTargets -Module $m)
+        if ($targets.Count -eq 0) { return }
+        $all = Get-HTMailboxSettingSections
+        $keys = @(Get-HTMailboxSectionKeys)
+        $fields = @(
+            @{ Name = 'Source'; Label = 'Skrzynka wzorcowa (adres e-mail)'; Required = $true; Validation = 'Email' }
+            @{ Type = 'Info'; Label = 'Kopiowane są ustawienia zaznaczonych sekcji, które różnią się od wzorca (bez nazwy i aliasu). Puste wartości wzorca czyszczą wartości skrzynek docelowych.' }
+            @{ Type = 'Header'; Label = 'Sekcje' }
+        )
+        foreach ($k in $keys) { $fields += @{ Name = "S_$k"; Label = $all[$k].Title; Type = 'Check'; Default = ($k -notin 'General', 'Custom') } }
+        $form = Show-HTFormDialog -Title 'Kopiuj ustawienia ze skrzynki wzorcowej' -Description "Skrzynki docelowe: $($targets.Count)" -Icon 'E8C8' -OkText 'Dalej' -Fields $fields
+        if (-not $form) { return }
+        $chosen = @($keys | Where-Object { $form["S_$_"] })
+        if ($chosen.Count -eq 0) { Show-HTWarning 'Zaznacz co najmniej jedną sekcję.'; return }
+        $source = [string]$form.Source
+        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+        Set-HTBusy -Busy $true -Text "Odczyt ustawień wzorca $source…"
+        try { $src = Get-HTMailboxSettings -Identity $source -Sections $chosen }
+        catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError "Nie odczytano ustawień skrzynki $source." $_; return }
+        finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        $copy = Get-HTMailboxSettingCopyForm -Source $src -Sections $chosen
+        $list = @($targets | Where-Object { [string]$_.PrimarySmtpAddress -ine $source })
+        if ($list.Count -eq 0) { Show-HTWarning 'Zaznacz skrzynki docelowe inne niż wzorzec.'; return }
+        Invoke-HTTargetAction -Module $m -Name 'Kopiowanie ustawień' -Targets $list -Label { param($t) Get-HTMailboxLabel $t } `
+            -Confirm "Skopiować ustawienia skrzynki $source (sekcje: $(@($chosen | ForEach-Object { $all[$_].Title }) -join ', ')) do wybranych skrzynek? Zmienione zostaną tylko ustawienia, które różnią się od wzorca." -Action {
+            param($t)
+            $cur = Get-HTMailboxSettings -Identity $t.PrimarySmtpAddress -Sections $chosen
+            $r = Get-HTMailboxSettingChanges -Form $copy -Current $cur
+            if (@($r.Errors).Count) { throw (@($r.Errors) -join '; ') }
+            if (@($r.Changes).Count -eq 0) { return 'Bez zmian - ustawienia jak we wzorcu' }
+            $result = Invoke-HTMailboxSettingPlan -Identity $t.PrimarySmtpAddress -Plan (ConvertTo-HTMailboxSettingPlan -Changes @($r.Changes))
+            "$result [$(@($r.Changes | ForEach-Object { $_.Label }) -join ', ')]"
+        }
+    } | Out-Null
+    Add-HTLabel -Parent $row2 -Hint -Text 'Np. nowa skrzynka działu jak istniejąca: język, strefa, limity, protokoły, kopie wysłanych, godziny pracy.' | Out-Null
+}
+
+Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings.csv' -Title 'Masowa zmiana ustawień (CSV)' -Icon 'E8F4' `
+    -Description 'Ustawienia wielu skrzynek z pliku CSV: kolumna «Skrzynka» i kolumny ustawień (np. Office, CustomAttribute1, ProhibitSendQuota, Language, ImapEnabled). Puste pole - bez zmian. Najpierw sprawdzenie pliku (podgląd zmian i błędów), potem zapis poprawnych wierszy.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Zapisz szablon CSV' -Icon 'E74E' -OnClick {
+        param($m)
+        $path = Select-HTSaveFile -Title 'Szablon CSV ustawień skrzynek' -Filter 'CSV (*.csv)|*.csv' -FileName 'Ustawienia_skrzynek.csv' -DefaultExt '.csv'
+        if (-not $path) { return }
+        [System.IO.File]::WriteAllText($path, (Get-HTMailboxSettingsCsvTemplate), (New-Object System.Text.UTF8Encoding($true)))
+        Show-HTToast 'Zapisano szablon - usuń niepotrzebne kolumny; opis wartości: «Opis kolumn».' 'ok' 8
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Opis kolumn' -Icon 'E946' -OnClick { param($m) Show-HTDataViewer -Title 'Kolumny pliku CSV - ustawienia skrzynek' -Data @(Get-HTMailboxSettingsCsvColumnHelp) -ExportName 'kolumny_ustawien_skrzynek' -Icon 'E946' } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Wczytaj i sprawdź plik…' -Icon 'E8E5' -Primary -OnClick {
+        param($m)
+        $path = Select-HTOpenFile -Title 'Plik CSV z ustawieniami skrzynek' -Filter 'CSV (*.csv)|*.csv'
+        if (-not $path) { return }
+        $m.Data.Csv = New-Object System.Collections.Generic.List[object]
+        $m.Data.CsvUnknown = @()
+        Invoke-HTQuery -Module $m -Name 'Sprawdzenie pliku CSV' -Service '' -ScriptBlock {
+            $rows = @(Import-HTCsvFile -Path $path)
+            if ($rows.Count) { $m.Data.CsvUnknown = @(Get-HTMailboxSettingsCsvUnknownColumns -Columns @($rows[0].PSObject.Properties.Name)) }
+            $n = 0
+            foreach ($r in $rows) {
+                $n++
+                $p = ConvertFrom-HTMailboxSettingsCsvRow -Row $r
+                $m.Data.Csv.Add($p)
+                [PSCustomObject]@{
+                    Lp        = $n
+                    Skrzynka  = $p.Identity
+                    Zmiany    = @($p.Changes).Count
+                    Status    = $(if ($p.Valid) { 'Do zmiany' } else { 'Błąd' })
+                    Szczegóły = $(if ($p.Valid) { @($p.Changes | ForEach-Object { "$($_.Label): $($_.Display)" }) -join '; ' } else { @($p.Errors) -join '; ' })
+                    __flag    = $(if ($p.Valid) { '' } else { 'crit' })
+                }
+            }
+        }
+        if (@($m.Data.CsvUnknown).Count) { Show-HTWarning -Title 'Nieznane kolumny' -Text "Kolumny pominięte (literówka?): $(@($m.Data.CsvUnknown) -join ', '). Nazwy kolumn - przycisk «Opis kolumn»." }
+        $bad = @($m.Data.Csv | Where-Object { -not $_.Valid }).Count
+        if ($m.Data.Csv.Count) { Show-HTToast "Wierszy: $($m.Data.Csv.Count), z błędami: $bad." $(if ($bad) { 'warn' } else { 'ok' }) 6 }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Zapisz poprawne wiersze' -Icon 'E74E' -Danger -OnClick {
+        param($m)
+        $valid = @($m.Data.Csv | Where-Object { $_.Valid })
+        if ($valid.Count -eq 0) { Show-HTWarning 'Najpierw wczytaj i sprawdź plik CSV (brak poprawnych wierszy).'; return }
+        Invoke-HTTargetAction -Module $m -Name 'Ustawienia z pliku CSV' -Targets $valid -Label { param($t) $t.Identity } -Confirm "Zapisać zmiany ustawień dla $($valid.Count) skrzynek z pliku?" -Action {
+            param($t)
+            Invoke-HTMailboxSettingPlan -Identity $t.Identity -Plan (ConvertTo-HTMailboxSettingPlan -Changes @($t.Changes))
+        }
+        $m.Data.Csv = $null
+    } | Out-Null
+}
+#endregion
+
+#region Nowe skrzynki współdzielone, sale i zasoby
+Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.newmailbox' -Title 'Nowa skrzynka współdzielona / sala' -Icon 'E710' `
+    -Description 'Tworzenie skrzynek współdzielonych, sal konferencyjnych i zasobów - pojedynczo albo wiele naraz - z pełnym dostępem i «Wyślij jako» dla osób, kopiami wiadomości wysłanych przez delegatów, danymi sali (pojemność, budynek, piętro, miasto) i listą sal. Skrzynka współdzielona do 50 GB nie wymaga licencji.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz skrzynki…' -Icon 'E710' -Primary -OnClick {
+        param($m)
+        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Nowa skrzynka')) { return }
+        $roomLists = @()
+        Set-HTBusy -Busy $true -Text 'Domeny i listy sal…'
+        try {
+            $domains = @(Get-HTExchangeDomainOptions -Module $m)
+            try { $roomLists = @(Get-HTRoomLists | ForEach-Object { $_.Adres }) } catch { $roomLists = @() }
+        }
+        catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
+        finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        $types = [ordered]@{ 'Skrzynka współdzielona' = 'Shared'; 'Sala konferencyjna' = 'Room'; 'Zasób (sprzęt, samochód)' = 'Equipment' }
+        $prev = @{}
+        $get = { param($k, $d) if ($prev.Contains($k)) { $prev[$k] } else { $d } }
+        while ($true) {
+            $form = Show-HTFormDialog -Title 'Nowe skrzynki' -Icon 'E710' -OkText 'Dalej' -Width 660 -MaxHeight 600 -Fields @(
+                @{ Name = 'Type'; Label = 'Rodzaj'; Type = 'Combo'; Options = @($types.Keys); Default = (& $get 'Type' 'Skrzynka współdzielona') }
+                @{ Name = 'Domain'; Label = 'Domena adresów (gdy adres nie jest podany)'; Type = 'Combo'; Options = $domains; Default = (& $get 'Domain' $domains[0]) }
+                @{ Name = 'Lines'; Label = 'Skrzynki - jedna w linii: Nazwa wyświetlana; adres e-mail (adres opcjonalny)'; Type = 'Multiline'; Height = 90; Required = $true; Default = (& $get 'Lines' ''); Hint = 'Np. «Biuro Zarządu» albo «Faktury; faktury@firma.pl». Adres z nazwy - bez polskich znaków, spacje zamieniane na kropki.' }
+                @{ Type = 'Header'; Label = 'Dostęp' }
+                @{ Name = 'FullAccess'; Label = 'Pełny dostęp (adresy osób, jeden w linii)'; Type = 'Multiline'; Height = 60; Default = (& $get 'FullAccess' '') }
+                @{ Name = 'SendAsSame'; Label = '«Wyślij jako» dla tych samych osób'; Type = 'Check'; Default = (& $get 'SendAsSame' $true) }
+                @{ Name = 'AutoMap'; Label = 'Automatyczne dodanie skrzynki w Outlooku (AutoMapping)'; Type = 'Check'; Default = (& $get 'AutoMap' $true) }
+                @{ Name = 'CopySent'; Label = 'Kopia wiadomości wysłanych przez delegatów w «Elementach wysłanych» skrzynki (współdzielone)'; Type = 'Check'; Default = (& $get 'CopySent' $true) }
+                @{ Name = 'Hidden'; Label = 'Ukryj w książce adresowej (GAL)'; Type = 'Check'; Default = (& $get 'Hidden' $false) }
+                @{ Type = 'Header'; Label = 'Sala lub zasób' }
+                @{ Name = 'Capacity'; Label = 'Pojemność sali (osób, 0 - nie ustawiaj)'; Type = 'Number'; Min = 0; Max = 10000; Default = (& $get 'Capacity' 0) }
+                @{ Name = 'Building'; Label = 'Budynek'; Default = (& $get 'Building' '') }
+                @{ Name = 'Floor'; Label = 'Piętro (liczba)'; Default = (& $get 'Floor' '') }
+                @{ Name = 'City'; Label = 'Miasto'; Default = (& $get 'City' '') }
+                @{ Name = 'RoomList'; Label = 'Lista sal (opcjonalnie - adres istniejącej listy)'; Type = 'Combo'; Editable = $true; Options = $roomLists; Default = (& $get 'RoomList' '') }
+            )
+            if (-not $form) { return }
+            $prev = $form
+            $entries = @(ConvertFrom-HTNewMailboxLines -Text $form.Lines -Domain $form.Domain -Domains $domains)
+            $problems = @($entries | Where-Object { -not $_.Valid } | ForEach-Object { "$($_.DisplayName): $(@($_.Errors) -join ', ')" })
+            $floor = 0
+            if ($form.Floor -and -not [int]::TryParse([string]$form.Floor, [ref]$floor)) { $problems += 'Piętro musi być liczbą.' }
+            if ($entries.Count -eq 0) { $problems += 'Wpisz co najmniej jedną skrzynkę.' }
+            if ($problems.Count -eq 0) { break }
+            Show-HTWarning -Title 'Nowe skrzynki' -Text ("Popraw dane:`n`n" + ($problems -join "`n"))
+        }
+        $type = $types[$form.Type]
+        $members = @(Split-HTInputList $form.FullAccess)
+        $place = @{}
+        if ($type -ne 'Shared') {
+            if ($form.Building) { $place.Building = [string]$form.Building }
+            if ($form.Floor) { $place.Floor = $floor }
+            if ($form.City) { $place.City = [string]$form.City }
+        }
+        $capacity = if ($type -eq 'Room') { [int]$form.Capacity } else { 0 }
+        Invoke-HTTargetAction -Module $m -Name 'Tworzenie skrzynek' -Targets $entries -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Confirm "Utworzyć skrzynki ($($form.Type)): $($entries.Count)?" -Action {
+            param($t)
+            $address = New-HTResourceMailbox -Type $type -DisplayName $t.DisplayName -Address $t.Address -Alias $t.Alias -Capacity $capacity
+            $notes = @(Set-HTNewMailboxSetup -Identity $address -FullAccess $members -SendAs $(if ($form.SendAsSame) { $members } else { @() }) -AutoMapping ([bool]$form.AutoMap) `
+                    -CopySent ([bool]$form.CopySent -and $type -eq 'Shared') -Hidden ([bool]$form.Hidden) -Place $place -RoomList $(if ($type -ne 'Shared') { [string]$form.RoomList } else { '' }))
+            $status = if (@($notes | Where-Object { $_ -match 'błąd' }).Count) { 'Utworzono z uwagami' } else { 'OK' }
+            @{ Status = $status; Szczegóły = "Utworzono $address$(if ($notes.Count) { '; ' + ($notes -join '; ') })" }
+        }
+        Show-HTToast 'Nowe skrzynki pojawią się na liście po lewej po odświeżeniu (replikacja trwa do kilku minut).' 'info' 8
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa lista sal…' -Icon 'E8FD' -ToolTip 'Lista sal grupuje sale (np. budynek) w wyszukiwarce sal Outlooka' -OnClick {
+        param($m)
+        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Nowa lista sal')) { return }
+        $form = Show-HTFormDialog -Title 'Nowa lista sal' -Icon 'E8FD' -OkText 'Utwórz' -Fields @(
+            @{ Name = 'Name'; Label = 'Nazwa (np. Warszawa - Budynek A)'; Required = $true }
+            @{ Name = 'Address'; Label = 'Adres e-mail listy'; Required = $true; Validation = 'Email' }
+        )
+        if (-not $form) { return }
+        Invoke-HTTargetAction -Module $m -Name 'Nowa lista sal' -Targets @($form) -Label { param($t) $t.Address } -Action { param($t) "Utworzono: $(New-HTRoomList -DisplayName $t.Name -Address $t.Address)" }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Sale dodasz do istniejącej listy polem «Lista sal».' | Out-Null
+}
+#endregion
+
+#region Grupy: nowa grupa dystrybucyjna, grupy dynamiczne, kontakty
+function New-HTDistributionGroupInteractive {
+    # Nowa grupa dystrybucyjna (formularz) - przestrzeń Exchange > Grupy dystrybucyjne
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+    if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dystrybucyjna')) { return }
+    Set-HTBusy -Busy $true -Text 'Domeny akceptowane…'
+    try { $domains = @(Get-HTExchangeDomainOptions -Module $Module) }
+    catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    $prev = @{}
+    $get = { param($k, $d) if ($prev.Contains($k)) { $prev[$k] } else { $d } }
+    while ($true) {
+        $form = Show-HTFormDialog -Title 'Nowa grupa dystrybucyjna' -Icon 'E902' -OkText 'Utwórz' -Width 620 -Fields @(
+            @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true; Default = (& $get 'Name' '') }
+            @{ Name = 'Address'; Label = 'Adres e-mail (puste - z nazwy i domeny)'; Default = (& $get 'Address' '') }
+            @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains; Default = (& $get 'Domain' $domains[0]) }
+            @{ Name = 'Type'; Label = 'Rodzaj'; Type = 'Combo'; Options = @('Dystrybucyjna', 'Zabezpieczeń (z pocztą)'); Default = (& $get 'Type' 'Dystrybucyjna'); Hint = 'Grupa zabezpieczeń może też nadawać uprawnienia (np. do skrzynek i witryn SharePoint).' }
+            @{ Name = 'Owners'; Label = 'Właściciele (adresy, jeden w linii; puste - Ty)'; Type = 'Multiline'; Height = 50; Default = (& $get 'Owners' '') }
+            @{ Name = 'Members'; Label = 'Członkowie (adresy, jeden w linii)'; Type = 'Multiline'; Height = 80; Default = (& $get 'Members' '') }
+            @{ Name = 'Internal'; Label = 'Przyjmuj wiadomości tylko z organizacji'; Type = 'Check'; Default = (& $get 'Internal' $true) }
+            @{ Name = 'Join'; Label = 'Dołączanie do grupy'; Type = 'Combo'; Options = @('Closed', 'Open', 'ApprovalRequired'); Default = (& $get 'Join' 'Closed'); Hint = 'Closed - dodają właściciele, Open - każdy sam, ApprovalRequired - za zgodą właściciela.' }
+            @{ Name = 'Hidden'; Label = 'Ukryj w książce adresowej'; Type = 'Check'; Default = (& $get 'Hidden' $false) }
+        )
+        if (-not $form) { return }
+        $prev = $form
+        $entry = @(ConvertFrom-HTNewMailboxLines -Text "$($form.Name); $($form.Address)" -Domain $form.Domain -Domains $domains)[0]
+        if ($entry -and $entry.Valid) { break }
+        Show-HTWarning -Title 'Nowa grupa' -Text "Popraw dane: $(if ($entry) { @($entry.Errors) -join ', ' } else { 'brak nazwy' })"
+    }
+    $type = if ($form.Type -like 'Zabezpiecze*') { 'Security' } else { 'Distribution' }
+    Invoke-HTTargetAction -Module $Module -Name 'Nowa grupa dystrybucyjna' -Targets @($entry) -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Action {
+        param($t)
+        $address = New-HTMailDistributionGroup -DisplayName $t.DisplayName -Address $t.Address -Type $type -Owners @(Split-HTInputList $form.Owners) -Members @(Split-HTInputList $form.Members) `
+            -InternalOnly ([bool]$form.Internal) -JoinRestriction $form.Join -Hidden ([bool]$form.Hidden)
+        "Utworzono $address ($(if ($type -eq 'Security') { 'zabezpieczeń' } else { 'dystrybucyjna' }), członków: $(@(Split-HTInputList $form.Members).Count))"
+    }
+}
+
+Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn' -Title 'Grupy dynamiczne' -Icon 'E71C' -Service 'Exchange' `
+    -Description 'Grupy dystrybucyjne z członkami wyliczanymi z atrybutów (np. wszyscy z działu Sprzedaż w Warszawie): lista z filtrem, podgląd członków, nowa grupa z warunków, zmiana filtra i usunięcie (prawy przycisk).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż grupy' -Icon 'E71C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dynamiczne' -ScriptBlock { Get-HTDynamicGroups } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Icon 'E710' -OnClick {
+        param($m)
+        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dynamiczna')) { return }
+        try { $domains = @(Get-HTExchangeDomainOptions -Module $m) } catch { Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
+        $opts = Get-HTDynamicFilterOptions
+        $fields = @(
+            @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true }
+            @{ Name = 'Address'; Label = 'Adres e-mail (puste - z nazwy i domeny)' }
+            @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains }
+            @{ Name = 'Owner'; Label = 'Właściciel (adres, opcjonalnie)' }
+            @{ Name = 'Type'; Label = 'Odbiorcy'; Type = 'Combo'; Options = @($opts.Types) }
+            @{ Type = 'Header'; Label = 'Warunki (wszystkie muszą być spełnione; puste - pomijane; * - dowolny ciąg znaków)' }
+        )
+        $i = 0
+        foreach ($p in $opts.Properties) { $fields += @{ Name = "C_$i"; Label = $p }; $i++ }
+        $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Icon 'E71C' -OkText 'Dalej' -Width 620 -MaxHeight 600 -Fields $fields
+        if (-not $form) { return }
+        $conditions = @(for ($j = 0; $j -lt @($opts.Properties).Count; $j++) { if ($form["C_$j"]) { @{ Property = @($opts.Properties)[$j]; Value = $form["C_$j"] } } })
+        if ($conditions.Count -eq 0) { Show-HTWarning 'Podaj co najmniej jeden warunek (np. dział).'; return }
+        $entry = @(ConvertFrom-HTNewMailboxLines -Text "$($form.Name); $($form.Address)" -Domain $form.Domain -Domains $domains)[0]
+        if (-not $entry -or -not $entry.Valid) { Show-HTWarning "Popraw nazwę lub adres: $(if ($entry) { @($entry.Errors) -join ', ' })"; return }
+        $filter = ConvertTo-HTRecipientFilter -Conditions $conditions -RecipientType $form.Type
+        Invoke-HTTargetAction -Module $m -Name 'Nowa grupa dynamiczna' -Targets @($entry) -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Confirm "Utworzyć grupę dynamiczną z filtrem:`n$filter" -Action {
+            param($t)
+            "Utworzono $(New-HTDynamicGroup -DisplayName $t.DisplayName -Address $t.Address -Filter $filter -Owner ([string]$form.Owner)) - członkowie są wyliczani okresowo (w nowej grupie do 24 h)"
+        }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Podgląd członków' -Icon 'E716' -Action {
+        param($m, $rows)
+        $g = @($rows | Where-Object { $_.Identity })[0]
+        if (-not $g) { return }
+        Set-HTBusy -Busy $true -Text "Członkowie $($g.Nazwa)…"
+        try { $members = @(Get-HTDynamicGroupMembers -Identity $g.Identity) }
+        catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie pobrano członków grupy.' $_; return }
+        finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków • filtr: $($g.Filtr)" -Data $members -ExportName "czlonkowie_$($g.Nazwa)"
+    }
+    Add-HTRowAction -Module $m -Text 'Zmień filtr…' -Icon 'E70F' -Action {
+        param($m, $rows)
+        $g = @($rows | Where-Object { $_.Identity })[0]
+        if (-not $g) { return }
+        $form = Show-HTFormDialog -Title "Filtr grupy: $($g.Nazwa)" -Icon 'E71C' -Width 680 -Fields @(@{ Name = 'Filter'; Label = 'Filtr OPATH (RecipientFilter)'; Type = 'Multiline'; Height = 120; Required = $true; Default = $g.Filtr; Hint = "Np. (RecipientTypeDetails -eq 'UserMailbox') -and (Department -eq 'Sprzedaż') -and (City -like 'Warsz*')" })
+        if (-not $form -or $form.Filter -eq $g.Filtr) { return }
+        Invoke-HTRowAction -Module $m -Name 'Zmiana filtra grupy dynamicznej' -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTDynamicGroupFilter -Identity $r.Identity -Filter $form.Filter; 'Filtr zmieniony' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Usuń grupę' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie grupy dynamicznej' -Rows @($rows | Where-Object { $_.Identity }) -Danger -TypeToConfirm 'USUŃ' -Confirm 'Usunąć zaznaczone grupy dynamiczne?' -Label { param($r) "$($r.Nazwa) <$($r.Identity)>" } `
+            -Action { param($r) Remove-HTDynamicGroup -Identity $r.Identity; 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+
+Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.contacts' -Title 'Kontakty zewnętrzne' -Icon 'E77B' -Service 'Exchange' `
+    -Description 'Kontakty pocztowe (osoby spoza firmy w książce adresowej, cel przekierowań i członkowie grup): lista z firmą i telefonem, tworzenie wielu naraz, edycja, ukrywanie w GAL i usuwanie (prawy przycisk).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż kontakty' -Icon 'E77B' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Kontakty zewnętrzne' -ScriptBlock { Get-HTMailContacts } } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowe kontakty…' -Icon 'E710' -OnClick {
+        param($m)
+        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Nowe kontakty')) { return }
+        $form = Show-HTFormDialog -Title 'Nowe kontakty' -Icon 'E77B' -OkText 'Dalej' -Width 640 -Fields @(
+            @{ Name = 'Lines'; Label = 'Kontakty - jeden w linii: Nazwa; e-mail; firma; telefon (firma i telefon opcjonalne)'; Type = 'Multiline'; Height = 140; Required = $true; Hint = 'Np. «Jan Kowalski; jan.kowalski@partner.pl; Partner sp. z o.o.; +48 600 000 000». Można wkleić kolumny z Excela (tabulator).' }
+            @{ Name = 'Hidden'; Label = 'Ukryj w książce adresowej (np. kontakty tylko do przekierowań)'; Type = 'Check' }
+        )
+        if (-not $form) { return }
+        $entries = @(ConvertFrom-HTContactLines -Text $form.Lines)
+        $bad = @($entries | Where-Object { -not $_.Valid })
+        if ($bad.Count -or $entries.Count -eq 0) { Show-HTWarning -Title 'Nowe kontakty' -Text ("Popraw dane:`n`n" + (@($bad | ForEach-Object { "$($_.DisplayName): $(@($_.Errors) -join ', ')" }) -join "`n")); return }
+        Invoke-HTTargetAction -Module $m -Name 'Nowe kontakty' -Targets $entries -Label { param($t) "$($t.DisplayName) <$($t.Email)>" } -Confirm "Utworzyć kontakty: $($entries.Count)?" -Action {
+            param($t)
+            New-HTMailContact -DisplayName $t.DisplayName -Email $t.Email -Company $t.Company -Phone $t.Phone -Hidden ([bool]$form.Hidden) | Out-Null
+            'Utworzono'
+        }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Edytuj…' -Icon 'E70F' -Action {
+        param($m, $rows)
+        $c = @($rows | Where-Object { $_.Identity })[0]
+        if (-not $c) { return }
+        $form = Show-HTFormDialog -Title "Kontakt: $($c.Nazwa)" -Icon 'E77B' -Fields @(
+            @{ Name = 'DisplayName'; Label = 'Nazwa wyświetlana'; Required = $true; Default = $c.Nazwa }
+            @{ Name = 'Email'; Label = 'Adres e-mail'; Required = $true; Validation = 'Email'; Default = $c.'Adres e-mail' }
+            @{ Name = 'Company'; Label = 'Firma'; Default = $c.Firma }
+            @{ Name = 'Title'; Label = 'Stanowisko'; Default = $c.Stanowisko }
+            @{ Name = 'Phone'; Label = 'Telefon'; Default = $c.Telefon }
+        )
+        if (-not $form) { return }
+        # Tylko zmienione pola; wyczyszczone - «-»
+        $diff = { param($new, $old) if ([string]$new -ceq [string]$old) { '' } elseif (-not $new) { '-' } else { [string]$new } }
+        $params = @{ Identity = $c.Identity; DisplayName = (& $diff $form.DisplayName $c.Nazwa); Email = (& $diff $form.Email $c.'Adres e-mail'); Company = (& $diff $form.Company $c.Firma); Title = (& $diff $form.Title $c.Stanowisko); Phone = (& $diff $form.Phone $c.Telefon) }
+        if (-not (@($params.Keys | Where-Object { $_ -ne 'Identity' -and $params[$_] }).Count)) { Show-HTToast 'Brak zmian.' 'info'; return }
+        Invoke-HTRowAction -Module $m -Name 'Zmiana kontaktu' -Rows @($c) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactDetails @params; 'Zapisano' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Ukrycie kontaktu w GAL' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $true; 'Ukryty' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Pokazanie kontaktu w GAL' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $false; 'Widoczny' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Usuń kontakt' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie kontaktu' -Rows @($rows | Where-Object { $_.Identity }) -Danger -Confirm 'Usunąć zaznaczone kontakty? Przekierowania i członkostwo w grupach z ich udziałem przestaną działać.' -Label { param($r) "$($r.Nazwa) <$($r.'Adres e-mail')>" } `
+            -Action { param($r) Remove-HTMailContact -Identity $r.Identity; 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+#endregion
+
+#region Uprawnienia: foldery skrzynki, kopiowanie dostępu
+Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.folders' -Title 'Uprawnienia do folderów' -Icon 'E8B7' `
+    -Description 'Dostęp do wybranych folderów skrzynki (np. Skrzynka odbiorcza\Faktury) zamiast całej skrzynki: lista folderów, kto ma dostęp, nadawanie poziomu (Reviewer, Editor…) także podfolderom, z widocznością folderów nadrzędnych (bez niej Outlook nie pokaże podfolderu) i odbieranie (prawy przycisk).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż foldery' -Icon 'E8B7' -Primary -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Foldery skrzynki' -Single -Label { param($t) Get-HTMailboxLabel $t } -Action {
+            param($t)
+            $folders = @(Get-HTMailboxFolders -Identity $t.PrimarySmtpAddress)
+            $m.Data.FolderPaths = @($folders | ForEach-Object { $_.__path })
+            $folders
+        }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Zaznacz foldery w wynikach i kliknij prawym przyciskiem. Uprawnienia do całej skrzynki - moduł «Uprawnienia do skrzynki».' | Out-Null
+    Add-HTRowAction -Module $m -Text 'Kto ma dostęp do folderu' -Icon 'E8A1' -Action {
+        param($m, $rows)
+        $f = @($rows | Where-Object { $_.__path })[0]
+        if (-not $f) { return }
+        Set-HTBusy -Busy $true -Text "Uprawnienia folderu $($f.__path)…"
+        try { $perms = @(Get-HTMailboxFolderPermissionRows -Mailbox $f.Skrzynka -Path $f.__path) }
+        catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie odczytano uprawnień folderu.' $_; return }
+        finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        Show-HTDataViewer -Title "Uprawnienia: $($f.Folder)" -Description $f.Skrzynka -Data $perms -ExportName 'uprawnienia_folderu' -Icon 'E8D7'
+    }
+    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Action {
+        param($m, $rows)
+        $folders = @($rows | Where-Object { $_.__path })
+        if ($folders.Count -eq 0) { return }
+        $mailbox = [string]$folders[0].Skrzynka
+        $form = Show-HTFormDialog -Title 'Uprawnienia do folderów' -Description "$mailbox • folderów: $($folders.Count)" -Icon 'E8D7' -OkText 'Nadaj' -Fields @(
+            @{ Name = 'Users'; Label = 'Użytkownicy (adresy, jeden w linii)'; Type = 'Multiline'; Height = 60; Required = $true }
+            @{ Name = 'Rights'; Label = 'Poziom uprawnień'; Type = 'Combo'; Options = @(Get-HTFolderAccessRights); Default = 'Reviewer'; Hint = 'Reviewer - odczyt, Author - odczyt i tworzenie, Editor - pełna edycja, Owner - także uprawnienia, FolderVisible - tylko widoczność folderu.' }
+            @{ Name = 'Sub'; Label = 'Także wszystkie podfoldery'; Type = 'Check'; Default = $true }
+            @{ Name = 'Visible'; Label = 'Widoczność folderów nadrzędnych (FolderVisible) - wymagana, by Outlook pokazał folder'; Type = 'Check'; Default = $true }
+        )
+        if (-not $form) { return }
+        $users = @(Split-HTInputList $form.Users)
+        $paths = @($folders | ForEach-Object { $_.__path })
+        $all = @($m.Data.FolderPaths)
+        Invoke-HTRowAction -Module $m -Name 'Uprawnienia do folderów' -Rows $users -Label { param($u) $u } -Confirm "Nadać $($form.Rights) do folderów ($(@($paths) -join ', '))$(if ($form.Sub) { ' z podfolderami' })?" -Action {
+            param($u)
+            Grant-HTMailboxFolderAccess -Mailbox $mailbox -Paths $paths -User $u -AccessRights $form.Rights -IncludeSubfolders:([bool]$form.Sub) -AllPaths $all -ParentVisibility:([bool]$form.Visible)
+        }
+    }
+    Add-HTRowAction -Module $m -Text 'Odbierz uprawnienia…' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $folders = @($rows | Where-Object { $_.__path })
+        if ($folders.Count -eq 0) { return }
+        $mailbox = [string]$folders[0].Skrzynka
+        $form = Show-HTFormDialog -Title 'Odbierz uprawnienia do folderów' -Description "$mailbox • folderów: $($folders.Count)" -Icon 'E74D' -OkText 'Odbierz' -Danger -Fields @(
+            @{ Name = 'Users'; Label = 'Użytkownicy (adresy, jeden w linii)'; Type = 'Multiline'; Height = 60; Required = $true }
+            @{ Name = 'Sub'; Label = 'Także wszystkie podfoldery'; Type = 'Check'; Default = $true }
+        )
+        if (-not $form) { return }
+        $paths = @($folders | ForEach-Object { $_.__path })
+        $all = @($m.Data.FolderPaths)
+        Invoke-HTRowAction -Module $m -Name 'Odebranie uprawnień do folderów' -Rows @(Split-HTInputList $form.Users) -Danger -Label { param($u) $u } -Action {
+            param($u)
+            Revoke-HTMailboxFolderAccess -Mailbox $mailbox -Paths $paths -User $u -IncludeSubfolders:([bool]$form.Sub) -AllPaths $all
+        }
+    }
+}
+
+Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyaccess' -Title 'Kopiowanie dostępu (następca)' -Icon 'E8C8' -Service 'Exchange' `
+    -Description 'Cały dostęp pracownika do skrzynek innych osób (pełny dostęp, wyślij jako, wyślij w imieniu), grup i kalendarzy - jedną listą. Nadanie zaznaczonych uprawnień następcy lub zastępcy, albo odebranie ich odchodzącemu (prawy przycisk). Przegląd wszystkich skrzynek może potrwać kilka minut.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m -Title 'Pracownik'
+    $m.C.User = Add-HTTextBox -Parent $row -Width 280 -Placeholder 'adres e-mail (puste - zaznaczona skrzynka)'
+    $m.C.Groups = Add-HTCheckBox -Parent $row -Text 'Grupy' -Checked $true
+    $m.C.Calendars = Add-HTCheckBox -Parent $row -Text 'Kalendarze innych skrzynek (wolno)'
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż dostęp' -Icon 'E8A1' -Primary -OnClick {
+        param($m)
+        $user = $m.C.User.Text.Trim()
+        if (-not $user) {
+            $t = @(Get-HTTargets -Module $m -Single)[0]
+            if (-not $t) { return }
+            $user = [string]$t.PrimarySmtpAddress
+        }
+        $groups = Test-HTChecked $m.C.Groups
+        $calendars = Test-HTChecked $m.C.Calendars
+        $m.Data.SourceUser = $user
+        Invoke-HTQuery -Module $m -Name "Dostęp: $user" -ScriptBlock {
+            Get-HTUserAccessForCopy -User $user -IncludeGroups:$groups -IncludeCalendars:$calendars -OnProgress { param($i, $total, $name) if ($i % 5 -eq 0 -or $i -eq $total) { Set-HTProgress -Value $i -Maximum $total -Text "Sprawdzanie [$i/$total] $name" } }
+        }
+    } | Out-Null
+    $row2 = Add-HTToolbarRow -Module $m -Title 'Następca'
+    $m.C.Target = Add-HTTextBox -Parent $row2 -Width 380 -Placeholder 'adresy osób, które mają dostać dostęp (kilka - przecinek)'
+    $m.C.AutoMap = Add-HTCheckBox -Parent $row2 -Text 'AutoMapping' -Checked $true
+    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -OnClick {
+        param($m)
+        $targetUsers = @(Split-HTInputList $m.C.Target.Text)
+        if ($targetUsers.Count -eq 0) { Show-HTWarning 'Wpisz adresy osób, które mają dostać dostęp.'; return }
+        $items = @(Get-HTResultSelection -Module $m | Where-Object { $_.__kind })
+        if ($items.Count -eq 0) {
+            $items = @(Get-HTResultSelection -Module $m -AllVisible | Where-Object { $_.__kind })
+            if ($items.Count -eq 0) { Show-HTWarning 'Najpierw kliknij «Pokaż dostęp».'; return }
+        }
+        $autoMap = Test-HTChecked $m.C.AutoMap
+        $pairs = @(foreach ($u in $targetUsers) { foreach ($it in $items) { @{ Target = $u; Item = $it } } })
+        Invoke-HTRowAction -Module $m -Name 'Kopiowanie dostępu' -Rows $pairs -Confirm "Nadać $($items.Count) uprawnień (zaznaczone wiersze, a gdy żaden - wszystkie widoczne) osobom: $($targetUsers -join ', ')?" `
+            -Label { param($p) "$($p.Target): $($p.Item.Rodzaj) $($p.Item.Obiekt)" } -Action { param($p) Copy-HTUserAccessItem -Item $p.Item -TargetUser $p.Target -AutoMapping $autoMap }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Odbierz pracownikowi' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $user = [string]$m.Data.SourceUser
+        if (-not $user) { return }
+        Invoke-HTRowAction -Module $m -Name 'Odebranie dostępu' -Rows @($rows | Where-Object { $_.__kind }) -Danger -Confirm "Odebrać użytkownikowi $user zaznaczone uprawnienia i członkostwa?" `
+            -Label { param($r) "$($r.Rodzaj): $($r.Obiekt)" } -Action { param($r) Remove-HTUserAccessItem -Item $r -User $user } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+#endregion
+
+#region Raporty: kontrola konfiguracji organizacji
+Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.config' -Title 'Kontrola konfiguracji' -Icon 'E9D9' -Service 'Exchange' `
+    -Description 'Przegląd ustawień organizacji z oceną: nowoczesne uwierzytelnianie, inspekcja skrzynek i dziennik Purview, SMTP AUTH, automatyczne przekazywanie poczty na zewnątrz, DKIM domen, oznaczanie nadawców zewnętrznych, porady pocztowe, wyjątki filtrowania spamu. Z gotowym poleceniem naprawy.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Sprawdź konfigurację' -Icon 'E9D9' -Primary -OnClick {
+        param($m)
+        Invoke-HTQuery -Module $m -Name 'Kontrola konfiguracji Exchange' -ScriptBlock {
+            Get-HTExchangeConfigFindings -Data (Get-HTExchangeConfigData) | Sort-Object -Stable @{ Expression = { switch ($_.Ocena) { 'Ryzyko' { 0 } 'Uwaga' { 1 } 'Nie sprawdzono' { 2 } 'OK' { 3 } default { 4 } } } }
+        }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Centrum administracyjne Exchange' -Icon 'E8A7' -OnClick { param($m) Start-Process 'https://admin.exchange.microsoft.com' } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Część kontroli wymaga ról z dostępem do zasad ochrony (np. Security Reader) - brak dostępu: «Nie sprawdzono».' | Out-Null
 }
 #endregion

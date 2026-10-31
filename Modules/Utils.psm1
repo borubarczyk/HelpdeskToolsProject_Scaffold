@@ -391,6 +391,14 @@ function Import-HTIdentityFile {
     return Split-HTInputList -Text (Get-Content -Path $Path -Raw -Encoding utf8)
 }
 
+# Wiersze pliku CSV (separator ; albo , wykrywany z nagłówka, UTF-8); puste wiersze są pomijane
+function Import-HTCsvFile {
+    param ([Parameter(Mandatory)][string]$Path)
+    $first = Get-Content -LiteralPath $Path -TotalCount 1 -Encoding utf8
+    $delimiter = if ($first -match ';') { ';' } else { ',' }
+    return @(Import-Csv -LiteralPath $Path -Delimiter $delimiter -Encoding utf8 | Where-Object { @($_.PSObject.Properties | Where-Object { "$($_.Value)".Trim() }).Count -gt 0 })
+}
+
 # Spłaszcza słownik szczegółów (z zagnieżdżonymi sekcjami) do wierszy Sekcja / Pole / Wartość
 function ConvertTo-HTDetailRows {
     param (
