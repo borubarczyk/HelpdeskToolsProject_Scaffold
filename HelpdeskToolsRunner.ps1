@@ -54,6 +54,8 @@ foreach ($name in 'Utils', 'Security', 'Config', 'Reports', 'Excel', 'Integratio
     'GraphAPISecurity', 'GraphAPITeams', 'MailboxesExchangeOnline', 'GraphAPIIntune', 'GraphAPISharePoint', 'SharePointAudit') {
     Import-Module (Join-Path $PSScriptRoot "Modules/$name.psm1") -Force -Global -DisableNameChecking
 }
+# Moduły PowerShell w OneDrive bez lokalnej kopii plików - folder pomijany (moduły z C:\Program Files\PowerShell\Modules)
+try { Repair-HTModulePath | Out-Null } catch { Write-Log -Message "Sprawdzenie folderów modułów: $($_.Exception.Message)" -Type 'Warn' }
 
 if ($ListReports) {
     foreach ($k in (Get-HTHeadlessReports).Keys) { $d = (Get-HTHeadlessReports)[$k]; '{0,-26} {1} ({2})' -f $k, $d.Title, $d.Service }

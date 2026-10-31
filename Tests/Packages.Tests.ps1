@@ -90,3 +90,44 @@ Describe "Resolve-HTModuleVersion" {
         (Resolve-HTModuleVersion -Name "HT.Nieistniejacy.Modul").Status | Should -Be "Missing"
     }
 }
+
+Describe "Moduły w OneDrive (pliki tylko w chmurze)" {
+    It "rozpoznaje atrybuty plików tylko w chmurze" {
+        Test-HTCloudOnlyAttributes ([System.IO.FileAttributes]::Archive) | Should -BeFalse
+        Test-HTCloudOnlyAttributes ([System.IO.FileAttributes]::Offline) | Should -BeTrue
+        Test-HTCloudOnlyAttributes (0x400000 -bor 0x20) | Should -BeTrue
+        Test-HTCloudOnlyAttributes 0x40000 | Should -BeTrue
+    }
+    It "rozpoznaje błąd niedziałającego dostawcy plików w chmurze i ścieżkę pliku" {
+        $text = "Dostawca plików w chmurze nie jest uruchomiony. : 'C:\Users\jan\OneDrive\Documents\PowerShell\Modules\PackageManagement\1.4.8.1\PackageManagement.format.ps1xml'."
+        Test-HTCloudFileError $text | Should -BeTrue
+        Test-HTCloudFileError 'The cloud file provider is not running.' | Should -BeTrue
+        Test-HTCloudFileError ([System.ComponentModel.Win32Exception]::new(0x16A)) | Should -BeTrue
+        Test-HTCloudFileError 'Access is denied.' | Should -BeFalse
+        Get-HTErrorFilePath $text | Should -Be 'C:\Users\jan\OneDrive\Documents\PowerShell\Modules\PackageManagement\1.4.8.1\PackageManagement.format.ps1xml'
+    }
+    It "wskazuje folder modułów z PSModulePath dla pliku i rozpoznaje folder OneDrive" {
+        $paths = @('C:\Users\jan\OneDrive\Documents\PowerShell\Modules', 'C:\Program Files\PowerShell\Modules', 'C:\Program Files\PowerShell\7\Modules')
+        Get-HTModulePathOfFile -File 'C:\Users\jan\OneDrive\Documents\PowerShell\Modules\PackageManagement\1.4.8.1\x.ps1xml' -Paths $paths | Should -Be $paths[0]
+        Get-HTModulePathOfFile -File 'C:\Program Files\PowerShell\7\Modules\PowerShellGet\PSGet.psd1' -Paths $paths | Should -Be $paths[2]
+        Get-HTModulePathOfFile -File 'D:\inne\plik.txt' -Paths $paths | Should -Be ''
+        Test-HTOneDrivePath 'C:\Users\jan\OneDrive - Firma sp. z o.o.\Dokumenty\PowerShell\Modules' | Should -BeTrue
+        Test-HTOneDrivePath 'C:\Users\jan\OneDrive\Documents\PowerShell\Modules' | Should -BeTrue
+        Test-HTOneDrivePath 'C:\Program Files\PowerShell\Modules' | Should -BeFalse
+    }
+    It "pomija w sesji folder modułów z pliku z komunikatu błędu" {
+        $sep = [System.IO.Path]::PathSeparator
+        $saved = $env:PSModulePath
+        try {
+            $one = Join-Path $TestDrive 'OneDrive\Documents\PowerShell\Modules'
+            $other = Join-Path $TestDrive 'Program Files\PowerShell\Modules'
+            $env:PSModulePath = @($one, $other) -join $sep
+            $removed = @(Repair-HTModulePath -File (Join-Path $one 'PackageManagement\1.4.8.1\PackageManagement.format.ps1xml') -NoDetection)
+            $removed | Should -Be @($one)
+            $env:PSModulePath | Should -Be $other
+            $global:HTSkippedModulePaths | Should -Contain $one
+            @(Repair-HTModulePath -File 'D:\inny.txt' -NoDetection).Count | Should -Be 0
+        }
+        finally { $env:PSModulePath = $saved }
+    }
+}

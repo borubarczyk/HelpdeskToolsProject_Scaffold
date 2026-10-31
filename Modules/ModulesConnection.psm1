@@ -27,6 +27,115 @@ function Test-HTIsAdministrator {
     }
 }
 
+#region Moduły w OneDrive (pliki tylko w chmurze)
+<#
+    Gdy folder Dokumenty jest przeniesiony do OneDrive, moduły instalowane «dla bieżącego użytkownika» trafiają do
+    ...\OneDrive\Documents\PowerShell\Modules. Przy plikach na żądanie (Files On-Demand) część z nich jest tylko
+    w chmurze - bez działającego klienta OneDrive nie da się ich otworzyć («Dostawca plików w chmurze nie jest
+    uruchomiony» przy imporcie modułu). Program pomija wtedy taki folder w tej sesji (PSModulePath procesu), a brakujące
+    moduły proponuje zainstalować dla wszystkich użytkowników (C:\Program Files\PowerShell\Modules).
+#>
+# FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+$script:CloudOnlyAttributeMask = 0x1000 -bor 0x40000 -bor 0x400000
+$global:HTSkippedModulePaths = @()
+
+function Test-HTCloudOnlyAttributes {
+    # Czy atrybuty pliku / folderu oznaczają dane tylko w chmurze (odnośnik OneDrive bez lokalnej kopii)
+    param ([Parameter(Mandatory)][object]$Attributes)
+    return (([long]$Attributes) -band $script:CloudOnlyAttributeMask) -ne 0
+}
+
+function Test-HTCloudFileError {
+    # Czy błąd (ErrorRecord, wyjątek albo tekst) to brak dostępu do pliku tylko w chmurze (OneDrive nie działa)
+    param ([AllowNull()][object]$ErrorObject)
+    $text = ''
+    $e = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) { $ErrorObject.Exception } elseif ($ErrorObject -is [System.Exception]) { $ErrorObject } else { $null }
+    if ($e) {
+        while ($e) {
+            # Kody Windows ERROR_CLOUD_FILE_* (362-409) - w HResult (0x8007016A…) albo w NativeErrorCode (Win32Exception)
+            $native = if ($e -is [System.ComponentModel.Win32Exception]) { $e.NativeErrorCode } else { 0 }
+            if ($native -ge 362 -and $native -le 409) { return $true }
+            $text += " $($e.Message) 0x$('{0:X8}' -f $e.HResult)"
+            $e = $e.InnerException
+        }
+    }
+    else { $text = [string]$ErrorObject }
+    return $text -match '(?i)cloud file provider|cloud operation|dostawca plików w chmurze|operacja w chmurze|0x8007016A|0x8007017C|0x80070185|0x8007018[0-9A-F]'
+}
+
+function Get-HTErrorFilePath {
+    # Pierwsza ścieżka pliku (C:\…) w komunikacie błędu albo pusty tekst
+    param ([AllowNull()][object]$ErrorObject)
+    $text = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) { [string]$ErrorObject.Exception.Message } else { [string]$ErrorObject }
+    if ($text -match "'?([A-Za-z]:\\[^'`"\r\n]+?)'?(?:\.\s*$|'|$)") { return $Matches[1].Trim() }
+    return ''
+}
+
+function Test-HTOneDrivePath {
+    # Czy ścieżka leży w folderze OneDrive (osobistym albo firmowym)
+    param ([AllowEmptyString()][string]$Path)
+    if (-not $Path) { return $false }
+    $p = $Path.TrimEnd('\', '/')
+    foreach ($root in @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer) | Where-Object { $_ }) {
+        if ($p.StartsWith($root.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $p -match '(?i)[\\/]OneDrive( - [^\\/]+)?([\\/]|$)'
+}
+
+function Get-HTModulePathOfFile {
+    # Folder z PSModulePath, w którym leży plik (np. z komunikatu błędu); pusty tekst, gdy żaden
+    param ([AllowEmptyString()][string]$File, [string[]]$Paths = @($env:PSModulePath -split [System.IO.Path]::PathSeparator))
+    if (-not $File) { return '' }
+    $f = $File.Replace('/', '\')
+    foreach ($p in @($Paths | Where-Object { $_ } | Sort-Object Length -Descending)) {
+        $root = $p.Replace('/', '\').TrimEnd('\') + '\'
+        if ($f.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return $p }
+    }
+    return ''
+}
+
+function Get-HTUnavailableModulePaths {
+    <#
+        Foldery modułów z PSModulePath w OneDrive, w których są pliki tylko w chmurze, gdy klient OneDrive nie działa
+        (pliki nie dadzą się otworzyć). Zwraca @{ Path; Example } - przykładowy niedostępny plik.
+    #>
+    param ([string[]]$Paths = @($env:PSModulePath -split [System.IO.Path]::PathSeparator))
+    $candidates = @($Paths | Where-Object { $_ -and (Test-HTOneDrivePath $_) -and (Test-Path -LiteralPath $_) })
+    if ($candidates.Count -eq 0) { return }
+    if (Get-Process -Name OneDrive -ErrorAction SilentlyContinue) { return }
+    foreach ($p in $candidates) {
+        $errs = $null
+        $hit = Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable errs | Where-Object { Test-HTCloudOnlyAttributes $_.Attributes } | Select-Object -First 1
+        if ($hit) { [PSCustomObject]@{ Path = $p; Example = $hit.FullName }; continue }
+        $cloudError = @($errs | Where-Object { Test-HTCloudFileError $_ })[0]
+        if ($cloudError) { [PSCustomObject]@{ Path = $p; Example = (Get-HTErrorFilePath $cloudError) } }
+    }
+}
+
+function Repair-HTModulePath {
+    <#
+        Pomija w tej sesji (PSModulePath procesu) foldery modułów niedostępne z OneDrive: wykryte automatycznie oraz
+        -File (plik z komunikatu błędu) i -Path. Zwraca pominięte foldery. Pliki na dysku nie są zmieniane.
+    #>
+    param ([string]$File = '', [string[]]$Path = @(), [switch]$NoDetection)
+    $paths = @($env:PSModulePath -split [System.IO.Path]::PathSeparator | Where-Object { $_ })
+    $bad = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $Path) { if ($p) { $bad.Add($p) } }
+    $fromFile = Get-HTModulePathOfFile -File $File -Paths $paths
+    if ($fromFile) { $bad.Add($fromFile) }
+    if (-not $NoDetection) { foreach ($u in @(Get-HTUnavailableModulePaths -Paths $paths)) { $bad.Add([string]$u.Path) } }
+    $norm = { param($x) ([string]$x).TrimEnd('\', '/').ToLowerInvariant() }
+    $badSet = @($bad | ForEach-Object { & $norm $_ } | Select-Object -Unique)
+    if ($badSet.Count -eq 0) { return @() }
+    $removed = @($paths | Where-Object { $badSet -contains (& $norm $_) })
+    if ($removed.Count -eq 0) { return @() }
+    $env:PSModulePath = (@($paths | Where-Object { $badSet -notcontains (& $norm $_) }) -join [System.IO.Path]::PathSeparator)
+    $global:HTSkippedModulePaths = @(@($global:HTSkippedModulePaths) + $removed | Select-Object -Unique)
+    Write-Log -Message "Pominięto moduły PowerShell z OneDrive ($($removed -join '; ')): pliki są tylko w chmurze, a OneDrive nie działa. Brakujące moduły program zaproponuje zainstalować dla wszystkich użytkowników (C:\Program Files\PowerShell\Modules)." -Type 'Warn'
+    return $removed
+}
+#endregion
+
 # Funkcja do instalacji modułu, jeśli nie jest zainstalowany
 function Install-ModuleIfMissing {
     param (
@@ -394,6 +503,24 @@ function Connect-Module {
                 Set-HTBusy -Busy $false
                 return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount -SkipCompatibilityCheck)
             }
+            return $false
+        }
+        if (Test-HTCloudFileError $_) {
+            # Moduł (albo moduł pomocniczy, np. PackageManagement) w OneDrive bez lokalnej kopii plików
+            $file = Get-HTErrorFilePath $_
+            Write-Log "Błąd połączenia z '$Name': moduł w OneDrive niedostępny - $($_.Exception.Message)" "Error"
+            $removed = @(Repair-HTModulePath -File $file)
+            if ($removed.Count -gt 0) {
+                $answer = Show-Dialog -Title "Moduły PowerShell w OneDrive" -Type "Question" -Buttons "YesNo" -Message ("Moduły PowerShell w folderze OneDrive są niedostępne - pliki są tylko w chmurze, a OneDrive nie działa (albo nie jest zainstalowany):`n$($removed -join "`n")`n`nProgram pomija ten folder. Połączyć ponownie? Gdy modułu zabraknie, program zaproponuje instalację dla wszystkich użytkowników (C:\Program Files\PowerShell\Modules) - poza OneDrive.")
+                if ($answer -eq "Yes") {
+                    Set-HTBusy -Busy $false
+                    return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount)
+                }
+                Set-HTBusy -Busy $true
+                return $false
+            }
+            Show-HTError -Text "Nie udało się połączyć z '$Name': plik modułu jest tylko w chmurze OneDrive$(if ($file) { " ($file)" }), a OneDrive nie działa. Uruchom OneDrive albo oznacz folder Dokumenty\PowerShell «Zawsze przechowuj na tym urządzeniu»." -ErrorObject $_
+            Set-HTBusy -Busy $true
             return $false
         }
         Write-Log "Błąd połączenia z '$Name': $($_.Exception.Message)" "Error&Notification"
@@ -900,6 +1027,9 @@ function Get-HTEnvironmentReport {
     $rows.Add([PSCustomObject]@{ Składnik = "PowerShell"; Wersja = "$($PSVersionTable.PSVersion)"; Stan = $(if ($PSVersionTable.PSVersion -ge [version]"7.4") { "OK" } else { "Uwaga" }); Szczegóły = "Zalecany PowerShell 7.4 lub nowszy. Folder: $PSHOME"; __flag = $(if ($PSVersionTable.PSVersion -lt [version]"7.4") { "warn" } else { "" }) })
     $rows.Add([PSCustomObject]@{ Składnik = ".NET"; Wersja = "$([System.Environment]::Version)"; Stan = "OK"; Szczegóły = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription; __flag = "" })
     $rows.Add([PSCustomObject]@{ Składnik = "System"; Wersja = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription; Stan = "OK"; Szczegóły = "Wątek: $apartment, administrator: $(if (Test-HTIsAdministrator) { 'tak' } else { 'nie' })"; __flag = "" })
+    foreach ($p in @($global:HTSkippedModulePaths | Where-Object { $_ })) {
+        $rows.Add([PSCustomObject]@{ Składnik = "Folder modułów (OneDrive)"; Wersja = ""; Stan = "Pominięty"; Szczegóły = "$p - pliki tylko w chmurze, a OneDrive nie działa. Brakujące moduły są instalowane w C:\Program Files\PowerShell\Modules. Na stałe: usuń ten folder albo uruchom OneDrive i oznacz go «Zawsze przechowuj na tym urządzeniu»."; __flag = "warn" })
+    }
     foreach ($name in "Microsoft.Graph.Authentication", "ExchangeOnlineManagement", "PnP.PowerShell") {
         $installed = @(Get-Module -ListAvailable -Name $name | Sort-Object Version -Descending)
         $loaded = Get-Module -Name $name | Select-Object -First 1
