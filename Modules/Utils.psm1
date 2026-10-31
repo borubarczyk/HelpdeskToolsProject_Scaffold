@@ -90,7 +90,25 @@ function Test-HTLogEntryMatch {
     return $true
 }
 
-# Domyślny katalog eksportu: ustawienie ExportPath albo Dokumenty\HelpdeskTools\Eksport
+# Czy w folderze można zapisać plik (folder tworzony w razie potrzeby). Folder w OneDrive z plikami tylko w chmurze
+# przy wyłączonym OneDrive nie przyjmuje zapisu («Dostawca plików w chmurze nie jest uruchomiony»).
+function Test-HTWritableDirectory {
+    param ([AllowEmptyString()][string]$Path)
+    if (-not $Path) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null }
+        $probe = Join-Path $Path (".ht_{0}.tmp" -f [guid]::NewGuid().ToString('N'))
+        [System.IO.File]::WriteAllText($probe, '')
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    catch { return $false }
+}
+
+$script:ExportDirectoryChecked = @{}
+
+# Domyślny katalog eksportu: ustawienie ExportPath albo Dokumenty\HelpdeskTools\Eksport; gdy nie da się w nim zapisać
+# (np. Dokumenty w OneDrive bez działającego OneDrive) - %LOCALAPPDATA%\HelpdeskTools\Eksport
 function Get-HTExportDirectory {
     $documents = [Environment]::GetFolderPath("MyDocuments")
     $path = if ($Global:ExportPath) { $Global:ExportPath }
@@ -98,10 +116,18 @@ function Get-HTExportDirectory {
     elseif ($Global:ConfigDir) { Join-Path $Global:ConfigDir "Exports" }
     else { [System.IO.Path]::GetTempPath() }
 
-    if (-not (Test-Path $path)) {
-        try { New-Item -ItemType Directory -Path $path -Force | Out-Null } catch { $path = $documents }
+    if (-not $script:ExportDirectoryChecked.ContainsKey($path)) {
+        $script:ExportDirectoryChecked[$path] = Test-HTWritableDirectory -Path $path
+        if (-not $script:ExportDirectoryChecked[$path]) { Write-Log -Message "Nie można zapisać plików w $path (np. folder OneDrive bez działającego OneDrive) - eksport do folderu lokalnego." -Type 'Warn' }
     }
-    return $path
+    if ($script:ExportDirectoryChecked[$path]) {
+        # Folder mógł zostać usunięty w trakcie pracy programu
+        if (-not (Test-Path -LiteralPath $path)) { try { New-Item -ItemType Directory -Path $path -Force -ErrorAction Stop | Out-Null } catch { $script:ExportDirectoryChecked.Remove($path) } }
+        if ($script:ExportDirectoryChecked.ContainsKey($path)) { return $path }
+    }
+    $local = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "HelpdeskTools\Eksport" } else { Join-Path ([System.IO.Path]::GetTempPath()) "HelpdeskTools\Eksport" }
+    if (-not (Test-Path -LiteralPath $local)) { try { New-Item -ItemType Directory -Path $local -Force | Out-Null } catch { return [System.IO.Path]::GetTempPath() } }
+    return $local
 }
 
 # Katalog dziennika: %LOCALAPPDATA%\HelpdeskTools\Logs (jak w Domain Ops); bez zmiennej LogDir - katalog konfiguracji

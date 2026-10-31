@@ -228,3 +228,50 @@ Describe "Dziennik z kontem MFA i odczyt pliku dziennika" {
         $files[0].Date | Should -Be ([datetime]"2026-03-15")
     }
 }
+
+Describe "Katalog eksportu i zapis w folderze" {
+    BeforeAll {
+        $script:blocker = Join-Path $TestDrive "plik.txt"
+        Set-Content -Path $script:blocker -Value "x"
+        $script:savedExport = $Global:ExportPath
+        $script:savedLocal = $env:LOCALAPPDATA
+    }
+    AfterEach {
+        $Global:ExportPath = $script:savedExport
+        $env:LOCALAPPDATA = $script:savedLocal
+    }
+
+    It "tworzy brakujący folder i zgłasza możliwość zapisu" {
+        $dir = Join-Path $TestDrive "nowy\podfolder"
+        Test-HTWritableDirectory -Path $dir | Should -BeTrue
+        Test-Path -LiteralPath $dir | Should -BeTrue
+        @(Get-ChildItem -LiteralPath $dir -Force).Count | Should -Be 0
+    }
+
+    It "zwraca false, gdy folderu nie da się utworzyć albo ścieżka jest pusta" {
+        Test-HTWritableDirectory -Path (Join-Path $script:blocker "pod") | Should -BeFalse
+        Test-HTWritableDirectory -Path "" | Should -BeFalse
+    }
+
+    It "używa ustawionego folderu eksportu, gdy da się w nim zapisać" {
+        $Global:ExportPath = Join-Path $TestDrive "eksport-ok"
+        Get-HTExportDirectory | Should -Be $Global:ExportPath
+    }
+
+    It "przechodzi na folder lokalny, gdy w folderze eksportu nie da się zapisać" {
+        $Global:ExportPath = Join-Path $script:blocker "eksport"
+        $env:LOCALAPPDATA = Join-Path $TestDrive "local"
+        $dir = Get-HTExportDirectory
+        $dir | Should -Be (Join-Path $env:LOCALAPPDATA "HelpdeskTools\Eksport")
+        Test-Path -LiteralPath $dir | Should -BeTrue
+        @(Get-HTLogHistory | Where-Object { $_.Type -eq "Warn" -and $_.Message -like "*eksport do folderu lokalnego*" }).Count | Should -BeGreaterThan 0
+    }
+
+    It "odtwarza folder eksportu usunięty w trakcie pracy" {
+        $Global:ExportPath = Join-Path $TestDrive "eksport-usuniety"
+        Get-HTExportDirectory | Out-Null
+        Remove-Item -LiteralPath $Global:ExportPath -Recurse -Force
+        Get-HTExportDirectory | Should -Be $Global:ExportPath
+        Test-Path -LiteralPath $Global:ExportPath | Should -BeTrue
+    }
+}

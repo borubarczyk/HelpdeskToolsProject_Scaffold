@@ -214,6 +214,12 @@ function New-HTDesktopShortcut {
     #>
     param ([Parameter(Mandatory)][string]$ScriptPath, [string]$Name = 'Helpdesk Tools', [string]$IconPath = '')
     $desktop = [Environment]::GetFolderPath('Desktop')
+    # Pulpit w OneDrive bez działającego OneDrive nie przyjmuje zapisu - wtedy pulpit publiczny (wszyscy użytkownicy)
+    if (-not (Test-HTWritableDirectory -Path $desktop)) {
+        $common = [Environment]::GetFolderPath('CommonDesktopDirectory')
+        Write-Log -Message "Nie można zapisać skrótu na pulpicie $desktop - użyto pulpitu publicznego $common." -Type 'Warn'
+        $desktop = $common
+    }
     $link = Join-Path $desktop "$Name.lnk"
     $pwsh = (Get-Process -Id $PID).Path
     $conhost = Join-Path $env:WINDIR 'System32\conhost.exe'
