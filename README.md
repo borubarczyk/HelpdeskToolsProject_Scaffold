@@ -271,6 +271,7 @@ Invoke-ScriptAnalyzer -Path . -Recurse -Settings .\PSScriptAnalyzerSettings.psd1
 11. **Zapytania w tle zgłaszają brak połączenia** - program automatycznie wraca do wykonywania zapytań w wątku okna (wpis w dzienniku). Można to ustawić na stałe: Ustawienia > «Zapytania Microsoft 365 w tle».
 12. **Izolacja urządzeń: błąd logowania Defender** - aplikacja z `DefenderClientId` musi mieć uprawnienia delegowane WindowsDefenderATP (Machine.Read, Machine.Isolate) ze zgodą administratora i platformę «Aplikacje mobilne i klasyczne» z adresem `http://localhost`.
 13. **Raporty zaplanowane nie wychodzą** - sprawdź Zadania > Raporty zaplanowane > «Stan konfiguracji» (certyfikat w CurrentUser\My, skrzynka nadawcy) i dziennik `%LOCALAPPDATA%\HelpdeskTools\Logs`. Zadanie Harmonogramu działa, gdy użytkownik jest zalogowany (certyfikat i ustawienia są w jego profilu).
+14. **«Dostawca plików w chmurze nie jest uruchomiony» przy łączeniu** - folder Dokumenty jest w OneDrive, a moduły PowerShell zainstalowane dla bieżącego użytkownika (`...\OneDrive\Documents\PowerShell\Modules`) są tylko w chmurze, gdy OneDrive nie działa albo nie jest zainstalowany. Program wykrywa to przy starcie i przy łączeniu: pomija ten folder w sesji i proponuje zainstalować brakujące moduły dla wszystkich użytkowników (`C:\Program Files\PowerShell\Modules`). Na stałe: usuń folder `Documents\PowerShell\Modules` w OneDrive albo uruchom OneDrive i oznacz go «Zawsze przechowuj na tym urządzeniu». Stan: Pulpit > «Moduły i środowisko».
 
 ## Licencja
 

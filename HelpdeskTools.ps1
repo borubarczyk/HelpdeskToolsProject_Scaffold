@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.3.0"
+$Global:AppVersion = "3.3.1"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -133,6 +133,8 @@ foreach ($moduleName in $moduleNames) {
 Register-HTLogSink -ScriptBlock { param($entry) Add-HTLogItem -Entry $entry }
 Remove-HTOldLogs -Days 30
 Write-Log -Message "Uruchamianie Helpdesk Tools $($Global:AppVersion) (PowerShell $($PSVersionTable.PSVersion))" -Type "Info"
+# Moduły PowerShell w OneDrive bez lokalnej kopii plików (OneDrive nie działa) - folder pomijany w tej sesji
+try { Repair-HTModulePath | Out-Null } catch { Write-Log -Message "Sprawdzenie folderów modułów: $($_.Exception.Message)" -Type "Warn" }
 
 # Interfejs: okno główne, przestrzenie robocze i moduły
 $guiFiles = @(
