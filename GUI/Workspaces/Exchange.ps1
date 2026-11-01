@@ -1,8 +1,8 @@
 ﻿# Przestrzeń robocza: Exchange Online - skrzynki, uprawnienia, poczta, zgodność, raporty
 
 Register-HTWorkspace -Key 'Exchange' -Title 'Exchange' -Icon 'E715' -Panel 'mailboxes' -Service 'Exchange' `
-    -Description 'Skrzynki Exchange Online: uprawnienia, kalendarze, autoodpowiedzi, reguły, kwarantanna i raporty' `
-    -Categories @('Skrzynka', 'Uprawnienia', 'Poczta', 'Sale i zasoby', 'Grupy i adresy', 'Przepływ poczty', 'Zgodność', 'Raporty')
+    -Description 'Skrzynki Exchange Online: uprawnienia, kalendarze, autoodpowiedzi, reguły, kwarantanna. Tworzenie, przepływ poczty i raporty organizacji - przestrzeń Organizacja; grupy dynamiczne - Grupy i zespoły.' `
+    -Categories @('Skrzynka', 'Uprawnienia', 'Poczta', 'Sale i zasoby', 'Grupy i adresy', 'Zgodność')
 
 $panel = New-HTTargetPanel -Key 'mailboxes' -Title 'Skrzynki' -Placeholder 'Szukaj (nazwa, adres, typ: shared, room)…' -EmptyIcon 'E715' `
     -EmptyText 'Połącz z Exchange Online i kliknij «Wczytaj».' -Describe {
@@ -21,7 +21,7 @@ Add-HTPanelHint -Panel $panel -Text 'Kropka: zielona - użytkownika, niebieska -
 function Get-HTMailboxLabel { param($x) [string]$x.PrimarySmtpAddress }
 
 # Akcje na skrzynkach z dowolnych wyników przestrzeni Exchange (prawy przycisk > «Skrzynka»)
-Register-HTObjectKind -Kind 'Mailbox' -Title 'Skrzynka' -Icon 'E715' -Service 'Exchange' -Workspaces @('Exchange') -Resolve {
+Register-HTObjectKind -Kind 'Mailbox' -Title 'Skrzynka' -Icon 'E715' -Service 'Exchange' -Workspaces @('Exchange', 'Organization', 'Groups') -Resolve {
     param($o)
     foreach ($n in 'PrimarySmtpAddress', '__address', 'Adres', 'Obiekt', 'Skrzynka') {
         $p = $o.PSObject.Properties[$n]
@@ -584,7 +584,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.hold' -
 #endregion
 
 #region Raporty
-Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.forwarding' -Title 'Przekierowania zewnętrzne' -Icon 'E7BA' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Raporty' -Key 'exo.rep.forwarding' -Title 'Przekierowania zewnętrzne' -Icon 'E7BA' -Service 'Exchange' `
     -Description 'Audyt bezpieczeństwa: skrzynki i reguły przekazujące pocztę poza organizację (na czerwono - adresy spoza domen akceptowanych).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -598,7 +598,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.forwar
     } | Out-Null
 }
 
-Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.inactive' -Title 'Nieaktywne skrzynki' -Icon 'E916' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Raporty' -Key 'exo.rep.inactive' -Title 'Nieaktywne skrzynki' -Icon 'E916' -Service 'Exchange' `
     -Description 'Skrzynki bez aktywności użytkownika od wskazanej liczby dni (kandydaci do konwersji lub usunięcia licencji). Sprawdzane są skrzynki z listy.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -724,7 +724,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Sale i zasoby' -Key 'exo.book
 #endregion
 
 #region Przepływ poczty: reguły transportu, lista dozwolonych i zablokowanych
-Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.transport' -Title 'Reguły transportu' -Icon 'E71C' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Poczta (Exchange)' -Key 'exo.transport' -Title 'Reguły transportu' -Icon 'E71C' -Service 'Exchange' `
     -Description 'Reguły przepływu poczty organizacji: kolejność, stan, tryb (wymuszanie / test) i opis warunków i akcji. Prawy przycisk - włączenie lub wyłączenie reguły.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -745,7 +745,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.t
     }
 }
 
-Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.tabl' -Title 'Dozwoleni i zablokowani' -Icon 'E8F8' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Poczta (Exchange)' -Key 'exo.tabl' -Title 'Dozwoleni i zablokowani' -Icon 'E8F8' -Service 'Exchange' `
     -Description 'Lista dozwolonych i zablokowanych (Tenant Allow/Block List): nadawcy i domeny, adresy URL, pliki. Szybkie zablokowanie spamera lub domeny phishingowej. Żółte - wpisy zezwalające.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -780,7 +780,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.t
 #endregion
 
 #region Raporty: skrzynki współdzielone i licencje
-Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.shared' -Title 'Współdzielone a licencje' -Icon 'E8EC' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Raporty' -Key 'exo.rep.shared' -Title 'Współdzielone a licencje' -Icon 'E8EC' -Service 'Exchange' `
     -Description 'Skrzynki współdzielone z niepotrzebną licencją (do 50 GB, bez archiwum i blokady) i bez wymaganej licencji (ponad 50 GB, archiwum, Litigation Hold). Licencje - po połączeniu z Microsoft 365.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -1005,7 +1005,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings.
 #endregion
 
 #region Nowe skrzynki współdzielone, sale i zasoby
-Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.newmailbox' -Title 'Nowa skrzynka współdzielona / sala' -Icon 'E710' `
+Register-HTModule -Workspace 'Organization' -Category 'Tworzenie' -Key 'exo.newmailbox' -Title 'Nowa skrzynka współdzielona / sala' -Icon 'E710' -Service 'Exchange' `
     -Description 'Tworzenie skrzynek współdzielonych, sal konferencyjnych i zasobów - pojedynczo albo wiele naraz - z pełnym dostępem i «Wyślij jako» dla osób, kopiami wiadomości wysłanych przez delegatów, danymi sali (pojemność, budynek, piętro, miasto) i listą sal. Skrzynka współdzielona do 50 GB nie wymaga licencji.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -1320,32 +1320,35 @@ function Show-HTDynamicFilterBuilder {
 }
 #endregion
 
-Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn' -Title 'Grupy dynamiczne' -Icon 'E71C' -Service 'Exchange' `
+function New-HTDynamicGroupInteractive {
+    # Nowa grupa dynamiczna: dane grupy (krok 1) i warunki w kreatorze reguł z testem (krok 2) - wyniki w module -Module
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+    if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dynamiczna')) { return }
+    try { $domains = @(Get-HTExchangeDomainOptions -Module $Module) } catch { Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
+    $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Description 'Krok 1 z 2: dane grupy. W kolejnym kroku - warunki członkostwa (kreator z testem).' -Icon 'E71C' -OkText 'Dalej' -Width 620 -Fields @(
+        @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true }
+        @{ Name = 'Address'; Label = 'Adres e-mail (puste - z nazwy i domeny)' }
+        @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains }
+        @{ Name = 'Owner'; Label = 'Właściciel (adres, opcjonalnie)' }
+    )
+    if (-not $form) { return }
+    $entry = @(ConvertFrom-HTNewMailboxLines -Text "$($form.Name); $($form.Address)" -Domain $form.Domain -Domains $domains)[0]
+    if (-not $entry -or -not $entry.Valid) { Show-HTWarning "Popraw nazwę lub adres: $(if ($entry) { @($entry.Errors) -join ', ' })"; return }
+    $filter = Show-HTDynamicFilterBuilder -Title "Warunki grupy: $($form.Name)" -OkText 'Dalej' -Subtitle 'Krok 2 z 2: kto ma należeć do grupy. «Testuj» pokazuje członków, zanim utworzysz grupę.'
+    if (-not $filter) { return }
+    Invoke-HTTargetAction -Module $Module -Name 'Nowa grupa dynamiczna' -Targets @($entry) -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Confirm "Utworzyć grupę dynamiczną z filtrem:`n$filter" -Action {
+        param($t)
+        "Utworzono $(New-HTDynamicGroup -DisplayName $t.DisplayName -Address $t.Address -Filter $filter -Owner ([string]$form.Owner)) - członkowie są wyliczani okresowo (w nowej grupie do 24 h)"
+    }
+}
+
+Register-HTModule -Workspace 'Groups' -Category 'Grupy dynamiczne (Exchange)' -Key 'exo.dyn' -Title 'Grupy dynamiczne' -Icon 'E71C' -Service 'Exchange' `
     -Description 'Grupy dystrybucyjne z członkami wyliczanymi z atrybutów (np. wszyscy z działu Sprzedaż w Warszawie): lista z filtrem, podgląd członków, nowa grupa z warunków, zmiana filtra i usunięcie (prawy przycisk).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż grupy' -Icon 'E71C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dynamiczne' -ScriptBlock { Get-HTDynamicGroups } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Create -NoRowMenu -Icon 'E710' -OnClick {
-        param($m)
-        if (-not (Assert-HTConnection -Service 'Exchange')) { return }
-        if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dynamiczna')) { return }
-        try { $domains = @(Get-HTExchangeDomainOptions -Module $m) } catch { Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
-        $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Description 'Krok 1 z 2: dane grupy. W kolejnym kroku - warunki członkostwa (kreator z testem).' -Icon 'E71C' -OkText 'Dalej' -Width 620 -Fields @(
-            @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true }
-            @{ Name = 'Address'; Label = 'Adres e-mail (puste - z nazwy i domeny)' }
-            @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains }
-            @{ Name = 'Owner'; Label = 'Właściciel (adres, opcjonalnie)' }
-        )
-        if (-not $form) { return }
-        $entry = @(ConvertFrom-HTNewMailboxLines -Text "$($form.Name); $($form.Address)" -Domain $form.Domain -Domains $domains)[0]
-        if (-not $entry -or -not $entry.Valid) { Show-HTWarning "Popraw nazwę lub adres: $(if ($entry) { @($entry.Errors) -join ', ' })"; return }
-        $filter = Show-HTDynamicFilterBuilder -Title "Warunki grupy: $($form.Name)" -OkText 'Dalej' -Subtitle 'Krok 2 z 2: kto ma należeć do grupy. «Testuj» pokazuje członków, zanim utworzysz grupę.'
-        if (-not $filter) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Nowa grupa dynamiczna' -Targets @($entry) -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Confirm "Utworzyć grupę dynamiczną z filtrem:`n$filter" -Action {
-            param($t)
-            "Utworzono $(New-HTDynamicGroup -DisplayName $t.DisplayName -Address $t.Address -Filter $filter -Owner ([string]$form.Owner)) - członkowie są wyliczani okresowo (w nowej grupie do 24 h)"
-        }
-    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Create -NoRowMenu -Icon 'E710' -OnClick { param($m) New-HTDynamicGroupInteractive -Module $m } | Out-Null
     Add-HTRowAction -Module $m -Text 'Podgląd członków' -Icon 'E716' -Action {
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
@@ -1371,7 +1374,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn
     }
 }
 
-Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.contacts' -Title 'Kontakty zewnętrzne' -Icon 'E77B' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Poczta (Exchange)' -Key 'exo.contacts' -Title 'Kontakty zewnętrzne' -Icon 'E77B' -Service 'Exchange' `
     -Description 'Kontakty pocztowe (osoby spoza firmy w książce adresowej, cel przekierowań i członkowie grup): lista z firmą i telefonem, tworzenie wielu naraz, edycja, ukrywanie w GAL i usuwanie (prawy przycisk).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -1546,7 +1549,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyac
 #endregion
 
 #region Raporty: kontrola konfiguracji organizacji
-Register-HTModule -Workspace 'Exchange' -Category 'Raporty' -Key 'exo.rep.config' -Title 'Kontrola konfiguracji' -Icon 'E9D9' -Service 'Exchange' `
+Register-HTModule -Workspace 'Organization' -Category 'Raporty' -Key 'exo.rep.config' -Title 'Kontrola konfiguracji' -Icon 'E9D9' -Service 'Exchange' `
     -Description 'Przegląd ustawień organizacji z oceną: nowoczesne uwierzytelnianie, inspekcja skrzynek i dziennik Purview, SMTP AUTH, automatyczne przekazywanie poczty na zewnątrz, DKIM domen, oznaczanie nadawców zewnętrznych, porady pocztowe, wyjątki filtrowania spamu. Z gotowym poleceniem naprawy.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m

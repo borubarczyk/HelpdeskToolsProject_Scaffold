@@ -325,10 +325,15 @@ function ConvertTo-HTM365GroupObject {
         Dynamic     = ($types -contains "DynamicMembership")
         Synced      = [bool]$Group.onPremisesSyncEnabled
         Description = $Group.description
+        MailNickname = [string]$Group.mailNickname
+        Visibility  = [string]$Group.visibility
+        Created     = $Group.createdDateTime
+        MembershipRule = [string]$Group.membershipRule
+        IsTeam      = (@($Group.resourceProvisioningOptions) -contains 'Team')
     }
 }
 
-$script:GroupSelect = "id,displayName,description,groupTypes,securityEnabled,mailEnabled,mail,onPremisesSyncEnabled"
+$script:GroupSelect = "id,displayName,description,groupTypes,securityEnabled,mailEnabled,mail,onPremisesSyncEnabled,mailNickname,visibility,createdDateTime,membershipRule,resourceProvisioningOptions"
 
 # Grupy w tenancie
 function Get-HTM365Groups {
@@ -400,6 +405,140 @@ function Add-HTM365GroupMember {
     $body = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$MemberId" }
     Invoke-HTGraphRequest -Uri "groups/$GroupId/members/`$ref" -Method POST -Body $body | Out-Null
 }
+
+#region Grupy jako obiekty (przestrzeń «Grupy i zespoły»)
+function ConvertTo-HTM365DirectoryObjectRow {
+    # Członek / właściciel grupy: użytkownik, grupa, urządzenie, kontakt albo aplikacja
+    param([Parameter(Mandatory)]$Object)
+    $kind = switch -Wildcard ([string]$Object.'@odata.type') {
+        '*user' { if ($Object.userType -eq 'Guest') { 'Gość' } else { 'Użytkownik' } }
+        '*group' { 'Grupa' }
+        '*device' { 'Urządzenie' }
+        '*orgContact' { 'Kontakt' }
+        '*servicePrincipal' { 'Aplikacja' }
+        default { 'Inny' }
+    }
+    return [PSCustomObject]@{
+        Nazwa    = $Object.displayName
+        Adres    = $(if ($Object.userPrincipalName) { $Object.userPrincipalName } elseif ($Object.mail) { $Object.mail } else { '' })
+        Rodzaj   = $kind
+        Włączone = $(if ($null -ne $Object.accountEnabled) { [bool]$Object.accountEnabled } else { $null })
+        Id       = $Object.id
+        __flag   = $(if ($Object.accountEnabled -eq $false) { 'muted' } elseif ($kind -eq 'Gość') { 'warn' } else { '' })
+    }
+}
+
+function Get-HTM365GroupMembers {
+    # Członkowie grupy (bezpośredni): użytkownicy, goście, grupy zagnieżdżone, urządzenia, kontakty
+    param([Parameter(Mandatory)][string]$Id)
+    $items = Invoke-HTGraphRequest -Uri "groups/$Id/members?`$select=id,displayName,userPrincipalName,mail,userType,accountEnabled&`$top=999" -All
+    return @($items | ForEach-Object { ConvertTo-HTM365DirectoryObjectRow -Object $_ } | Sort-Object Nazwa)
+}
+
+function Get-HTM365GroupOwners {
+    param([Parameter(Mandatory)][string]$Id)
+    $items = Invoke-HTGraphRequest -Uri "groups/$Id/owners?`$select=id,displayName,userPrincipalName,mail,userType,accountEnabled&`$top=999" -All
+    return @($items | ForEach-Object { ConvertTo-HTM365DirectoryObjectRow -Object $_ } | Sort-Object Nazwa)
+}
+
+function Test-HTM365GroupOwnersEditable {
+    # Właścicieli grup pocztowych (dystrybucyjne, zabezpieczeń z pocztą) i synchronizowanych z AD zmienia się poza Graph
+    param([Parameter(Mandatory)][object]$Group)
+    return (-not $Group.Synced -and $Group.Type -notin 'Dystrybucyjna', 'Zabezpieczeń (mail)')
+}
+
+function Add-HTM365GroupOwner {
+    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$UserId)
+    Invoke-HTGraphRequest -Uri "groups/$GroupId/owners/`$ref" -Method POST -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/users/$UserId" } | Out-Null
+}
+
+function Remove-HTM365GroupOwner {
+    param([Parameter(Mandatory)][string]$GroupId, [Parameter(Mandatory)][string]$OwnerId)
+    Invoke-HTGraphRequest -Uri "groups/$GroupId/owners/$OwnerId/`$ref" -Method DELETE | Out-Null
+}
+
+function Get-HTM365GroupChanges {
+    # Zmiany grupy (PATCH): tylko pola, które się różnią; widoczność tylko dla grup Microsoft 365
+    param([Parameter(Mandatory)][object]$Group, [string]$DisplayName, [AllowEmptyString()][string]$Description, [string]$Visibility = '')
+    $body = [ordered]@{}
+    if ($DisplayName -and $DisplayName.Trim() -ne [string]$Group.DisplayName) { $body.displayName = $DisplayName.Trim() }
+    if ($PSBoundParameters.ContainsKey('Description') -and $Description.Trim() -ne ([string]$Group.Description).Trim()) { $body.description = $(if ($Description.Trim()) { $Description.Trim() } else { $null }) }
+    if ($Visibility -and $Group.Type -eq 'Microsoft 365' -and $Visibility -ne [string]$Group.Visibility) { $body.visibility = $Visibility }
+    return $body
+}
+
+function Set-HTM365Group {
+    param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][System.Collections.IDictionary]$Changes)
+    if ($Changes.Count) { Invoke-HTGraphRequest -Uri "groups/$Id" -Method PATCH -Body $Changes | Out-Null }
+}
+
+function Remove-HTM365Group {
+    # Usunięcie grupy (grupy Microsoft 365 - do przywrócenia przez 30 dni)
+    param([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "groups/$Id" -Method DELETE | Out-Null
+}
+
+function Get-HTM365DeletedGroups {
+    # Usunięte grupy (kosz katalogu - przywrócenie do 30 dni od usunięcia)
+    $items = Invoke-HTGraphRequest -Uri "directory/deletedItems/microsoft.graph.group?`$select=id,displayName,mail,description,groupTypes,securityEnabled,mailEnabled,deletedDateTime&`$top=999" -All
+    return @($items | ForEach-Object {
+            $g = ConvertTo-HTM365GroupObject -Group $_
+            $deleted = if ($_.deletedDateTime) { [datetime]$_.deletedDateTime } else { $null }
+            [PSCustomObject]@{
+                Grupa             = $g.DisplayName
+                Typ               = $g.Type
+                'E-mail'          = $g.Mail
+                Usunięto          = $deleted
+                'Usunięcie trwałe' = $(if ($deleted) { $deleted.AddDays(30) } else { $null })
+                Opis              = $g.Description
+                Id                = $g.Id
+                __flag            = $(if ($deleted -and $deleted.AddDays(30) -lt (Get-Date).AddDays(3)) { 'warn' } else { '' })
+            }
+        } | Sort-Object Usunięto -Descending)
+}
+
+function Restore-HTM365DeletedGroup {
+    param([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "directory/deletedItems/$Id/restore" -Method POST | Out-Null
+}
+
+function Remove-HTM365DeletedGroup {
+    # Trwałe usunięcie z kosza katalogu (bez możliwości przywrócenia)
+    param([Parameter(Mandatory)][string]$Id)
+    Invoke-HTGraphRequest -Uri "directory/deletedItems/$Id" -Method DELETE | Out-Null
+}
+
+function Get-HTM365GroupHygiene {
+    <#
+        Grupy do uporządkowania: bez właściciela (poza grupami pocztowymi i synchronizowanymi z AD - te mają właścicieli
+        poza Entra ID) i bez członków. Właściciele i członkowie z $expand (do 20 - wystarczy do oceny).
+    #>
+    $select = 'id,displayName,groupTypes,securityEnabled,mailEnabled,mail,onPremisesSyncEnabled,resourceProvisioningOptions,membershipRule'
+    $owners = @{}
+    foreach ($g in @(Invoke-HTGraphRequest -Uri "groups?`$select=$select&`$expand=owners(`$select=id)&`$top=100" -All)) { $owners[[string]$g.id] = @($g.owners).Count }
+    $rows = foreach ($g in @(Invoke-HTGraphRequest -Uri "groups?`$select=$select&`$expand=members(`$select=id)&`$top=100" -All)) {
+        $o = ConvertTo-HTM365GroupObject -Group $g
+        $memberCount = @($g.members).Count
+        $ownerCount = [int]$owners[[string]$g.id]
+        $problems = @()
+        if ($ownerCount -eq 0 -and (Test-HTM365GroupOwnersEditable -Group $o)) { $problems += 'bez właściciela' }
+        if ($memberCount -eq 0 -and -not $o.Dynamic) { $problems += 'bez członków' }
+        if (-not $problems.Count) { continue }
+        [PSCustomObject]@{
+            Grupa        = $o.DisplayName
+            Typ          = $o.Type
+            Problem      = ($problems -join ', ')
+            Właściciele  = $ownerCount
+            Członkowie   = $(if ($memberCount -ge 20) { '20+' } else { [string]$memberCount })
+            'Zespół Teams' = $o.IsTeam
+            'E-mail'     = $o.Mail
+            Id           = $o.Id
+            __flag       = $(if ($problems.Count -gt 1) { 'crit' } else { 'warn' })
+        }
+    }
+    return @($rows | Sort-Object Grupa)
+}
+#endregion
 
 function ConvertTo-HTMailNickname {
     # Alias poczty grupy (mailNickname) z nazwy: bez polskich znaków i spacji; litery, cyfry, myślnik, podkreślenie, kropka

@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.13.0"
+$Global:AppVersion = "3.14.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -148,7 +148,9 @@ $guiFiles = @(
     "GUI/MainWindow.ps1",
     "GUI/Tools.ps1",
     "GUI/Workspaces/Dashboard.ps1",
+    "GUI/Workspaces/Organization.ps1",
     "GUI/Workspaces/M365Users.ps1",
+    "GUI/Workspaces/Groups.ps1",
     "GUI/Workspaces/Security.ps1",
     "GUI/Workspaces/Exchange.ps1",
     "GUI/Workspaces/Intune.ps1",

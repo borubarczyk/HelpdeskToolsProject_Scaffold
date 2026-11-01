@@ -2,7 +2,7 @@
 
 Register-HTWorkspace -Key 'M365' -Title 'Microsoft 365' -Icon 'E716' -Panel 'm365users' -Service 'Graph' `
     -Description 'Użytkownicy Microsoft 365 / Entra ID: konta, hasła i MFA, licencje, grupy, offboarding i raporty' `
-    -Categories @('Konto', 'Bezpieczeństwo', 'Licencje i grupy', 'Teams', 'Cykl życia', 'Raporty')
+    -Categories @('Konto', 'Bezpieczeństwo', 'Licencje i grupy', 'Cykl życia', 'Raporty')
 
 $panel = New-HTTargetPanel -Key 'm365users' -Title 'Użytkownicy Microsoft 365' -Placeholder 'Szukaj (nazwa, UPN, dział)…' -EmptyIcon 'E716' `
     -EmptyText 'Połącz z Microsoft 365 i kliknij «Wczytaj».' -Describe {
@@ -591,7 +591,7 @@ function Show-HTUserProfilesEditor {
 }
 #endregion
 
-Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Title 'Nowy użytkownik' -Icon 'E8FA' -Service 'Graph' `
+Register-HTModule -Workspace 'Organization' -Category 'Tworzenie' -Key 'm365.new' -Title 'Nowy użytkownik' -Icon 'E8FA' -Service 'Graph' `
     -Description 'Tworzy konto w chmurze z losowym hasłem; opcjonalnie od razu licencja i grupy skopiowane z użytkownika wzorcowego.' -Build {
     param($m)
     $m.SecretColumns = @('Hasło')
@@ -982,7 +982,7 @@ function ConvertTo-HTGraphUserKey {
     return ($Id -replace '#', '%23')
 }
 
-Register-HTObjectKind -Kind 'M365User' -Title 'Konto Microsoft 365' -Icon 'E77B' -Service 'Graph' -Workspaces @('Dashboard', 'M365', 'Security', 'Exchange', 'Intune', 'Sites', 'SharePoint', 'Tasks') -Resolve {
+Register-HTObjectKind -Kind 'M365User' -Title 'Konto Microsoft 365' -Icon 'E77B' -Service 'Graph' -Workspaces @('Dashboard', 'Organization', 'M365', 'Groups', 'Security', 'Exchange', 'Intune', 'Sites', 'SharePoint', 'Tasks') -Resolve {
     param($o)
     foreach ($n in 'UPN', 'UserPrincipalName', 'Konto', 'Użytkownik') {
         $p = $o.PSObject.Properties[$n]
@@ -1291,7 +1291,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.conse
 #endregion
 
 #region Licencje grupowe, licencje do odzyskania
-Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.licerr' -Title 'Błędy licencji grupowych' -Icon 'E7BA' -Service 'Graph' `
+Register-HTModule -Workspace 'Organization' -Category 'Licencje' -Key 'm365.licerr' -Title 'Błędy licencji grupowych' -Icon 'E7BA' -Service 'Graph' `
     -Description 'Użytkownicy, którym grupa nie przypisała licencji (brak wolnych licencji, konflikt planów, brak lokalizacji użycia). Po usunięciu przyczyny - «Ponów przypisanie».' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -1316,7 +1316,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
     }
 }
 
-Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.reclaim' -Title 'Licencje do odzyskania' -Icon 'E8EC' -Service 'Graph' `
+Register-HTModule -Workspace 'Organization' -Category 'Licencje' -Key 'm365.reclaim' -Title 'Licencje do odzyskania' -Icon 'E8EC' -Service 'Graph' `
     -Description 'Licencje przypisane kontom zablokowanym albo nieaktywnym (bez logowania od N dni). Prawy przycisk - usunięcie licencji bezpośrednich (licencje z grup usuwa się przez członkostwo).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -1354,7 +1354,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.recl
 #endregion
 
 #region Teams
-Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title 'Zespoły Teams' -Icon 'E902' -Service 'Graph' `
+Register-HTModule -Workspace 'Groups' -Category 'Zespoły Teams' -Key 'm365.teams' -Title 'Zespoły Teams' -Icon 'E902' -Service 'Graph' `
     -Description 'Zespoły z właścicielami, liczbą członków i gości, archiwizacją i ostatnią aktywnością. Czerwone - zespół bez właściciela. Prawy przycisk - właściciel, archiwizacja, goście.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
@@ -1395,7 +1395,7 @@ Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title '
 #endregion
 
 #region Masowe tworzenie kont z pliku CSV
-Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.bulk' -Title 'Masowe tworzenie kont (CSV)' -Icon 'E8F4' -Service 'Graph' `
+Register-HTModule -Workspace 'Organization' -Category 'Tworzenie' -Key 'm365.bulk' -Title 'Masowe tworzenie kont (CSV)' -Icon 'E8F4' -Service 'Graph' `
     -Description 'Nowe konta z pliku CSV według szablonu: imię, nazwisko, login, stanowisko, dział, licencje, grupy, przełożony. Najpierw sprawdzenie pliku (podgląd błędów), potem utworzenie kont z losowymi hasłami.' -Build {
     param($m)
     $m.SecretColumns = @('Hasło')
