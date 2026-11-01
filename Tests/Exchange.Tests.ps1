@@ -88,6 +88,12 @@ Describe "Skrzynki systemowe (DiscoverySearchMailbox)" {
         @(Get-HTMailboxes).PrimarySmtpAddress | Should -Be @('jan@firma.pl')
         (Get-HTMailboxSummary).Total | Should -Be 1
     }
+    It "rozpoznaje skrzynki systemowe po typie, aliasie i nazwie wyświetlanej" {
+        Test-HTSystemMailbox ([PSCustomObject]@{ RecipientTypeDetails = 'ArbitrationMailbox'; PrimarySmtpAddress = 'SystemMailbox{1f05a927}@x.pl' }) | Should -BeTrue
+        Test-HTSystemMailbox ([PSCustomObject]@{ RecipientTypeDetails = 'UserMailbox'; Alias = 'DiscoverySearchMailbox{D919BA05}' }) | Should -BeTrue
+        Test-HTSystemMailbox ([PSCustomObject]@{ RecipientTypeDetails = 'UserMailbox'; DisplayName = 'Discovery Search Mailbox' }) | Should -BeTrue
+        Test-HTSystemMailbox ([PSCustomObject]@{ RecipientTypeDetails = 'SharedMailbox'; PrimarySmtpAddress = 'discovery@firma.pl'; DisplayName = 'Dział Discovery' }) | Should -BeFalse
+    }
     It "pokazuje ją po włączeniu ustawienia albo z -IncludeSystem" {
         @(Get-HTMailboxes -IncludeSystem).Count | Should -Be 2
         $Global:ShowSystemMailboxes = $true

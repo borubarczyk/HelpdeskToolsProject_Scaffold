@@ -57,9 +57,9 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.perms
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         Set-HTBusy -Busy $true -Text 'Pobieranie poziomów uprawnień…'
         try {
@@ -83,12 +83,12 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.perms
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Dziedziczenie'
     $m.C.Copy = Add-HTCheckBox -Parent $row2 -Text 'Kopiuj obecne uprawnienia' -Checked $true
-    Add-HTButton -Parent $row2 -Module $m -Text 'Przerwij dziedziczenie' -Icon 'E71A' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Przerwij dziedziczenie' -Icon 'E71A' -Danger -OnClick {
         param($m)
         $copy = Test-HTChecked $m.C.Copy
         Invoke-HTTargetAction -Module $m -Name 'Przerwanie dziedziczenia' -Confirm 'Przerwać dziedziczenie uprawnień wybranych obiektów?' -Label { param($t) Get-HTSPNodeLabel $t } -Action { param($t) Set-HTSPInheritance -Node $t -Inherit $false -CopyExisting $copy; 'Uprawnienia unikalne' }
     } | Out-Null
-    Add-HTButton -Parent $row2 -Module $m -Text 'Przywróć dziedziczenie' -Icon 'E777' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Przywróć dziedziczenie' -Icon 'E777' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Przywrócenie dziedziczenia' -Danger -Confirm 'Przywrócić dziedziczenie? Unikalne uprawnienia wybranych obiektów zostaną usunięte.' -Label { param($t) Get-HTSPNodeLabel $t } -Action { param($t) Set-HTSPInheritance -Node $t -Inherit $true; 'Dziedziczone' }
     } | Out-Null
@@ -633,9 +633,9 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.libsett
             Get-HTSPLibrarySettings -Node $t
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Zmień ustawienia…' -Icon 'E70F' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Zmień ustawienia…' -Icon 'E70F' -Danger -OnClick {
         param($m)
-        $libs = @(Get-HTTargets -Module $m | Where-Object { $_.IsLibrary })
+        $libs = @(Get-HTChangeTargets -Module $m | Where-Object { $_.IsLibrary })
         if ($libs.Count -eq 0) { Show-HTWarning 'Zaznacz biblioteki w drzewie po lewej.'; return }
         if (-not (Assert-HTConnection -Service 'SharePoint')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Ustawienia bibliotek')) { return }
@@ -659,7 +659,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.libsett
     } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Usuń biblioteki…' -Icon 'E74D' -Danger -OnClick {
         param($m)
-        $libs = @(Get-HTTargets -Module $m | Where-Object { $_.IsLibrary })
+        $libs = @(Get-HTChangeTargets -Module $m | Where-Object { $_.IsLibrary })
         if ($libs.Count -eq 0) { Show-HTWarning 'Zaznacz biblioteki w drzewie po lewej.'; return }
         Invoke-HTTargetAction -Module $m -Name 'Usunięcie biblioteki' -Targets $libs -Danger -TypeToConfirm 'USUŃ' -Label { param($t) Get-HTSPNodeLabel $t } `
             -Confirm 'Usunąć wybrane biblioteki razem z całą zawartością? Trafią do kosza witryny (przywrócenie: Zawartość > Kosz witryny, do 93 dni).' -Action { param($t) Remove-HTSPLibrary -Node $t; 'Przeniesiono do kosza' }
@@ -683,9 +683,9 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.columns
             $cols
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj kolumny…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj kolumny…' -Icon 'E710' -Danger -OnClick {
         param($m)
-        $lists = @(Get-HTTargets -Module $m | Group-Object ListTitle | ForEach-Object { $_.Group[0] })
+        $lists = @(Get-HTChangeTargets -Module $m | Group-Object ListTitle | ForEach-Object { $_.Group[0] })
         if ($lists.Count -eq 0) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Kolumny bibliotek')) { return }
         $text = ''

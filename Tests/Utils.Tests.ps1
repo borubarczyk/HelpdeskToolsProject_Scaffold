@@ -343,3 +343,39 @@ Describe "Ostrzeżenia poleceń w dzienniku" {
         @(Group-HTWarningMessages -Messages @()).Count | Should -Be 0
     }
 }
+
+Describe "Wybór pól ze szczegółów (Sprawdź stan)" {
+    It "wybiera pola także z podsekcji, zmienia nazwy kolumn i zostawia puste brakujące" {
+        $detail = [ordered]@{
+            'Nazwa'         = 'jan'
+            'Włączone'      = $true
+            'Konto i hasło' = [ordered]@{ 'Hasło ustawione' = '2026-10-01'; 'Nazwa' = 'inna' }
+            'Lokalizacja'   = [ordered]@{ 'DN' = 'CN=jan,OU=IT,DC=firma,DC=pl' }
+        }
+        $row = Select-HTDetailFields -Detail $detail -Fields 'Nazwa', 'Hasło ustawione', @{ Name = 'DN'; Label = 'Lokalizacja (DN)' }, 'Brak'
+        @($row.PSObject.Properties.Name) | Should -Be @('Nazwa', 'Hasło ustawione', 'Lokalizacja (DN)', 'Brak')
+        $row.Nazwa | Should -Be 'jan'
+        $row.'Hasło ustawione' | Should -Be '2026-10-01'
+        $row.'Lokalizacja (DN)' | Should -Be 'CN=jan,OU=IT,DC=firma,DC=pl'
+        $row.Brak | Should -BeNullOrEmpty
+    }
+}
+
+Describe "Blok w wątku w tle (Test-HTBackgroundSafeBlock)" {
+    BeforeAll {
+        function global:Get-HTGuiOnlyThing { 1 }
+        $Global:HTTestForm = @{ X = 1 }
+    }
+    AfterAll { Remove-Item function:global:Get-HTGuiOnlyThing -ErrorAction SilentlyContinue }
+    It "dopuszcza bloki z parametrami, zmiennymi lokalnymi, poleceniami PowerShell i funkcjami modułów puli" {
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeTrue
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $x = @($t.A | ForEach-Object { $_ }); foreach ($y in $x) { [PSCustomObject]@{ A = $y; U = $env:USERNAME } } } | Should -BeTrue
+    }
+    It "odrzuca funkcje okna, zmienne z otaczającego kodu, globalne i wywołania dynamiczne" {
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) Get-HTGuiOnlyThing } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $HTTestForm.X } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $Global:HTTestForm } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) & $t.Run } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeFalse
+    }
+}

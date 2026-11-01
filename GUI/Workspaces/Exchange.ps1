@@ -156,9 +156,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.perms'
             foreach ($p in @(Get-HTMailboxPermissions -Identity $t.PrimarySmtpAddress)) { [PSCustomObject]@{ Uprawnienie = $p.Type; Użytkownik = $p.User; Prawa = $p.AccessRights } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $form = Show-HTFormDialog -Title 'Nadaj uprawnienia' -Description "Skrzynki: $($targets.Count)" -Icon 'E8D7' -OkText 'Nadaj' -Fields @(
             @{ Name = 'User'; Label = 'Użytkownicy (adres e-mail, kilka - jeden w linii)'; Type = 'Multiline'; Required = $true; Height = 70 }
@@ -231,7 +231,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.calend
     $row2 = Add-HTToolbarRow -Module $m -Title 'Nadaj'
     $m.C.User = Add-HTTextBox -Parent $row2 -Width 260 -Placeholder 'Użytkownik (e-mail) lub Default'
     $m.C.Level = Add-HTComboBox -Parent $row2 -Items @('Reviewer', 'LimitedDetails', 'AvailabilityOnly', 'Author', 'Editor', 'PublishingEditor', 'Owner', 'None') -Width 160
-    Add-HTButton -Parent $row2 -Module $m -Text 'Ustaw' -Icon 'E73E' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Ustaw' -Icon 'E73E' -Danger -OnClick {
         param($m)
         $user = $m.C.User.Text.Trim()
         if (-not $user) { Show-HTWarning 'Podaj użytkownika.'; return }
@@ -261,9 +261,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
                 __flag = $(if ("$($a.AutoReplyState)" -eq 'Disabled') { 'muted' } else { '' }) }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Ustaw…' -Icon 'E70F' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Ustaw…' -Icon 'E70F' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $current = $null
         if ($targets.Count -eq 1) { try { $current = Get-HTMailboxAutoReply -Identity $targets[0].PrimarySmtpAddress } catch { $current = $null } }
@@ -283,7 +283,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
             "Tryb: $($form.State)"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E711' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E711' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wyłączenie autoodpowiedzi' -Summary 'Tryb: Disabled (odpowiedzi automatyczne wyłączone)' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress -State Disabled; 'Wyłączona' }
     } | Out-Null
@@ -292,10 +292,14 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
 Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.forward' -Title 'Przekierowanie' -Icon 'E89C' `
     -Description 'Przekierowanie poczty na inny adres (z kopią w skrzynce lub bez) i jego usunięcie.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTMailboxLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTMailboxDetail -Identity $t.PrimarySmtpAddress) -Fields 'Typ skrzynki', 'Przekieruj do', 'Zachowaj kopię'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Przekieruj do'
     $m.C.To = Add-HTTextBox -Parent $row -Width 280 -Placeholder 'adres@domena.pl'
     $m.C.Keep = Add-HTCheckBox -Parent $row -Text 'Zachowaj kopię w skrzynce' -Checked $true
-    Add-HTButton -Parent $row -Module $m -Text 'Ustaw' -Icon 'E89C' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Ustaw' -Icon 'E89C' -Primary -Danger -OnClick {
         param($m)
         $to = $m.C.To.Text.Trim()
         if (-not (Test-HTInputValue -Value $to -ValidationType Email)) { Show-HTWarning 'Podaj prawidłowy adres e-mail.'; return }
@@ -308,7 +312,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.forward' -T
             "Do: $to$(if ($keep) { ' (z kopią)' })"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Usuń przekierowanie' -Icon 'E711' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Usuń przekierowanie' -Icon 'E711' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Usunięcie przekierowania' -Summary 'Przekierowanie poczty: (wyczyść)' -Label { param($t) Get-HTMailboxLabel $t } -Action {
             param($t)
@@ -373,10 +377,10 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
         Invoke-HTTargetQuery -Module $m -Name 'Adresy e-mail' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTMailboxAddresses -Identity $t.PrimarySmtpAddress }
     } | Out-Null
     $m.C.Alias = Add-HTTextBox -Parent $row -Width 260 -Placeholder 'nowy.alias@domena.pl'
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj alias' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj alias' -Icon 'E710' -Danger -OnClick {
         param($m)
         $alias = $m.C.Alias.Text.Trim()
-        $t = @(Get-HTTargets -Module $m -Single)[0]
+        $t = @(Get-HTChangeTargets -Module $m -Single)[0]
         if (-not $t) { return }
         Invoke-HTTargetAction -Module $m -Name 'Dodanie aliasu' -Summary "Nowy adres (alias): $alias" -Targets @($t) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Add-HTMailboxAddress -Identity $t.PrimarySmtpAddress -Address $alias; "Dodano: $alias" }
     } | Out-Null
@@ -537,10 +541,14 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.recover
 Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.hold' -Title 'Litigation Hold i retencja' -Icon 'E72E' `
     -Description 'Blokada postępowania sądowego (zachowanie całej zawartości skrzynki) i czas przechowywania usuniętych elementów (do 30 dni).' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTMailboxLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTMailboxDetail -Identity $t.PrimarySmtpAddress) -Fields 'Typ skrzynki', 'Litigation Hold', 'Retencja elementów usuniętych', 'Archiwum', 'Rozmiar'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Litigation Hold'
     Add-HTLabel -Parent $row -Text 'Czas (dni, 0 = bez limitu):' | Out-Null
     $m.C.Duration = Add-HTNumeric -Parent $row -Value 0 -Minimum 0 -Maximum 36500
-    Add-HTButton -Parent $row -Module $m -Text 'Włącz' -Icon 'E72E' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Włącz' -Icon 'E72E' -Primary -Danger -OnClick {
         param($m)
         $days = Get-HTNum $m.C.Duration
         Invoke-HTTargetAction -Module $m -Name 'Litigation Hold' -Confirm 'Włączyć Litigation Hold dla wybranych skrzynek? (wymaga licencji Exchange Plan 2 lub archiwum)' -Label { param($t) Get-HTMailboxLabel $t } -Action {
@@ -549,14 +557,14 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.hold' -
             "Włączono$(if ($days) { " na $days dni" } else { ' bez limitu' })"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E785' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E785' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wyłączenie Litigation Hold' -Confirm 'Wyłączyć Litigation Hold?' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxLitigationHold -Identity $t.PrimarySmtpAddress -Enabled $false; 'Wyłączono' }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Usunięte elementy'
     Add-HTLabel -Parent $row2 -Text 'Przechowuj (dni):' | Out-Null
     $m.C.Retain = Add-HTNumeric -Parent $row2 -Value 30 -Minimum 1 -Maximum 30
-    Add-HTButton -Parent $row2 -Module $m -Text 'Ustaw' -Icon 'E73E' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Ustaw' -Icon 'E73E' -Danger -OnClick {
         param($m)
         $days = Get-HTNum $m.C.Retain
         Invoke-HTTargetAction -Module $m -Name 'Retencja usuniętych elementów' -Summary "Przechowywanie usuniętych elementów: $days dni" -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxRetainDeletedItems -Identity $t.PrimarySmtpAddress -Days $days; "$days dni" }
@@ -655,9 +663,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Sale i zasoby' -Key 'exo.book
         param($m)
         Invoke-HTTargetQuery -Module $m -Name 'Ustawienia rezerwacji' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTRoomBookingSettings -Identity $t.PrimarySmtpAddress }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Zmień ustawienia…' -Icon 'E70F' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Zmień ustawienia…' -Icon 'E70F' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $current = if ($targets.Count -eq 1) { (Get-HTRoomBookingSettings -Identity $targets[0].PrimarySmtpAddress).__settings } else { $null }
         $keep = '(bez zmian)'
@@ -837,9 +845,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings'
     param($m)
     $sections = Get-HTMailboxSettingSections
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Edytuj ustawienia…' -Icon 'E70F' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Edytuj ustawienia…' -Icon 'E70F' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Ustawienia skrzynki')) { return }
@@ -865,7 +873,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings'
     } | Out-Null
     Add-HTLabel -Parent $row -Text 'Sekcja:' | Out-Null
     $m.C.Section = Add-HTComboBox -Parent $row -Width 210 -Items (@('Wszystkie sekcje') + @(Get-HTMailboxSectionKeys | ForEach-Object { $sections[$_].Title }))
-    Add-HTButton -Parent $row -Module $m -Text 'Pokaż ustawienia' -Icon 'E8A1' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż ustawienia' -Icon 'E8A1' -Primary -OnClick {
         param($m)
         $targets = @(Get-HTTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -893,9 +901,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings'
         }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Wzorzec'
-    Add-HTButton -Parent $row2 -Module $m -Text 'Kopiuj ze skrzynki wzorcowej…' -Icon 'E8C8' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Kopiuj ze skrzynki wzorcowej…' -Icon 'E8C8' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $all = Get-HTMailboxSettingSections
         $keys = @(Get-HTMailboxSectionKeys)
@@ -1312,7 +1320,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyac
     $row2 = Add-HTToolbarRow -Module $m -Title 'Następca'
     $m.C.Target = Add-HTTextBox -Parent $row2 -Width 380 -Placeholder 'adresy osób, które mają dostać dostęp (kilka - przecinek)'
     $m.C.AutoMap = Add-HTCheckBox -Parent $row2 -Text 'AutoMapping' -Checked $true
-    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -Danger -OnClick {
         param($m)
         $targetUsers = @(Split-HTInputList $m.C.Target.Text)
         if ($targetUsers.Count -eq 0) { Show-HTWarning 'Wpisz adresy osób, które mają dostać dostęp.'; return }

@@ -184,9 +184,11 @@ Describe "Get-HTM365InactiveUsers" {
                 [PSCustomObject]@{ id = "3"; displayName = "Nigdy"; userPrincipalName = "n@x.pl"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-100).ToString("o"); assignedLicenses = @(); signInActivity = $null }
                 [PSCustomObject]@{ id = "4"; displayName = "Nowy"; userPrincipalName = "w@x.pl"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-2).ToString("o"); assignedLicenses = @(); signInActivity = $null }
                 [PSCustomObject]@{ id = "5"; displayName = "Wyłączony"; userPrincipalName = "d@x.pl"; accountEnabled = $false; userType = "Member"; createdDateTime = $now.AddDays(-400).ToString("o"); assignedLicenses = @(); signInActivity = $null }
+                [PSCustomObject]@{ id = "6"; displayName = "On-Premises Directory Synchronization Service Account"; userPrincipalName = "Sync_SRV01_38f6b1312bc0@x.onmicrosoft.com"; accountEnabled = $true; userType = "Member"; createdDateTime = $now.AddDays(-400).ToString("o"); assignedLicenses = @(); signInActivity = $null }
             )
         }
     }
+    AfterEach { $Global:ShowSystemMailboxes = $null }
     It "zwraca konta bez logowania od N dni (z uwzględnieniem logowań nieinteraktywnych)" {
         $result = @(Get-HTM365InactiveUsers -Days 90)
         $result.UPN | Should -Be @("s@x.pl", "n@x.pl")
@@ -196,6 +198,21 @@ Describe "Get-HTM365InactiveUsers" {
     }
     It "uwzględnia wyłączone konta na żądanie" {
         @(Get-HTM365InactiveUsers -Days 90 -IncludeDisabled).UPN | Should -Contain "d@x.pl"
+    }
+    It "pomija konto synchronizacji Entra Connect, chyba że włączono konta systemowe" {
+        @(Get-HTM365InactiveUsers -Days 90).UPN | Should -Not -Contain "Sync_SRV01_38f6b1312bc0@x.onmicrosoft.com"
+        $Global:ShowSystemMailboxes = $true
+        @(Get-HTM365InactiveUsers -Days 90).UPN | Should -Contain "Sync_SRV01_38f6b1312bc0@x.onmicrosoft.com"
+    }
+    It "ukrywa konta systemowe na liście kont (z wpisem w dzienniku), -IncludeSystem pokazuje wszystkie" {
+        @(Get-HTM365Users).UserPrincipalName | Should -Not -Contain "Sync_SRV01_38f6b1312bc0@x.onmicrosoft.com"
+        @(Get-HTM365Users).Count | Should -Be 5
+        @(Get-HTM365Users -IncludeSystem).Count | Should -Be 6
+    }
+    It "rozpoznaje konta systemowe" {
+        Test-HTSystemAccount ([PSCustomObject]@{ displayName = 'Jan'; userPrincipalName = 'sync_jan@x.pl' }) | Should -BeFalse
+        Test-HTSystemAccount ([PSCustomObject]@{ displayName = 'Jan'; userPrincipalName = 'ADToAADSyncServiceAccount@x.onmicrosoft.com' }) | Should -BeTrue
+        Test-HTSystemAccount ([PSCustomObject]@{ displayName = 'On-Premises Directory Synchronization Service Account'; userPrincipalName = 'x@x.pl' }) | Should -BeTrue
     }
 }
 

@@ -217,6 +217,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
         )
         if (-not $form -or -not $form.When) { return }
         $when = [datetime]$form.When
+        if (-not (Confirm-HTChange -Name 'Zaplanowany offboarding' -Labels @(Get-HTM365Label $user) -Danger -Confirm "Zaplanować offboarding na $($when.ToString('yyyy-MM-dd HH:mm'))? Kroki wykonają się automatycznie w tym terminie.")) { return }
         $steps = @{ Block = [bool]$form.Block; Password = [bool]$form.Password; AutoReply = [string]$form.AutoReply; Forward = [string]$form.Forward; Shared = [bool]$form.Shared; Hide = [bool]$form.Hide; Groups = [bool]$form.Groups; Licenses = [bool]$form.Licenses }
         $job = New-HTScheduledJob -Type 'Offboarding' -RunAt $when -Object (Get-HTM365Label $user) -Description "Zaplanowany offboarding" -Data @{ UserId = $user.Id; Label = (Get-HTM365Label $user); Steps = $steps }
         Add-HTOperationRecord -Operation 'Zaplanowanie offboardingu' -Object (Get-HTM365Label $user) -Details $when.ToString('yyyy-MM-dd HH:mm') -Module $m.Title

@@ -1,10 +1,16 @@
 ﻿# Skrzynki pocztowe Exchange Online (moduł ExchangeOnlineManagement v3)
 
-# Skrzynka systemowa Exchange (DiscoverySearchMailbox - eDiscovery) - domyślnie ukrywana na listach i w raportach
+# Skrzynki systemowe Exchange (DiscoverySearchMailbox - eDiscovery i inne skrzynki usług) - domyślnie ukrywane na listach i w raportach
+$script:SystemMailboxTypes = @('DiscoveryMailbox', 'ArbitrationMailbox', 'AuditLogMailbox', 'AuxAuditLogMailbox', 'MonitoringMailbox', 'SupervisoryReviewPolicyMailbox')
 function Test-HTSystemMailbox {
     param ($Mailbox)
     if (-not $Mailbox) { return $false }
-    return ("$($Mailbox.RecipientTypeDetails)" -eq 'DiscoveryMailbox' -or "$($Mailbox.Name)" -like 'DiscoverySearchMailbox*' -or "$($Mailbox.PrimarySmtpAddress)" -like 'DiscoverySearchMailbox*')
+    if ($script:SystemMailboxTypes -contains "$($Mailbox.RecipientTypeDetails)") { return $true }
+    foreach ($p in 'Name', 'Alias', 'PrimarySmtpAddress', 'UserPrincipalName', 'Identity') {
+        $v = $Mailbox.PSObject.Properties[$p]
+        if ($v -and "$($v.Value)" -like 'DiscoverySearchMailbox*') { return $true }
+    }
+    return ("$($Mailbox.DisplayName)" -eq 'Discovery Search Mailbox')
 }
 
 # Czy pomijać skrzynki systemowe (Ustawienia > Microsoft 365 i Exchange > «Pokazuj skrzynki systemowe»)
@@ -21,7 +27,15 @@ function Get-HTMailboxes {
     if ($RecipientTypeDetails) { $params.RecipientTypeDetails = $RecipientTypeDetails }
 
     $hideSystem = (-not $IncludeSystem) -and (Test-HTHideSystemMailboxes)
-    return @(Get-EXOMailbox @params | Where-Object { -not ($hideSystem -and (Test-HTSystemMailbox $_)) } | ForEach-Object {
+    $all = @(Get-EXOMailbox @params)
+    if ($hideSystem) {
+        $hidden = @($all | Where-Object { Test-HTSystemMailbox $_ })
+        if ($hidden.Count) {
+            Write-Log -Message "Ukryto skrzynki systemowe: $($hidden.Count) ($(@($hidden | ForEach-Object { "$($_.PrimarySmtpAddress)" }) -join ', ')) - pokazanie: Ustawienia > Microsoft 365 i Exchange." -Type 'Info'
+            $all = @($all | Where-Object { -not (Test-HTSystemMailbox $_) })
+        }
+    }
+    return @($all | ForEach-Object {
             [PSCustomObject]@{
                 Identity             = "$($_.PrimarySmtpAddress)"
                 ObjectId             = $_.ExternalDirectoryObjectId

@@ -38,8 +38,12 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.details' -Tit
 Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.state' -Title 'Stan konta' -Icon 'E7E8' `
     -Description 'Włączenie, wyłączenie, data wygaśnięcia konta, przeniesienie do innej OU i usunięcie.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTADLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTADObjectDetail -Section 'User' -Identity $t.ObjectGUID) -Fields 'Nazwa', 'Włączone', 'Zablokowane', 'Wygaśnięcie konta', 'Ostatnie logowanie', @{ Name = 'DN'; Label = 'Lokalizacja (DN)' }
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Włącz' -Icon 'E73E' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Włącz' -Icon 'E73E' -Primary -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Włączenie konta' -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADAccountState -Identity $t.ObjectGUID -State Enable; Update-HTADPanelObject -Panel 'adusers' -Object $t -Changes @{ Enabled = $true }; 'Włączone' }
     } | Out-Null
@@ -47,9 +51,9 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.state' -Title
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wyłączenie konta' -Danger -Confirm 'Wyłączyć wybrane konta?' -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADAccountState -Identity $t.ObjectGUID -State Disable; Update-HTADPanelObject -Panel 'adusers' -Object $t -Changes @{ Enabled = $false }; 'Wyłączone' }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Data wygaśnięcia…' -Icon 'E787' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Data wygaśnięcia…' -Icon 'E787' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $form = Show-HTFormDialog -Title 'Wygaśnięcie konta' -Description "Konta: $($targets.Count)" -Icon 'E787' -Fields @(
             @{ Name = 'Date'; Label = 'Konto wygasa (puste = nigdy)'; Type = 'Date'; DateOnly = $true; Optional = $true }
@@ -61,9 +65,9 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.state' -Title
             if ($form.Date) { "Wygasa: $($form.Date.ToString('yyyy-MM-dd'))" } else { 'Nigdy nie wygasa' }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Przenieś do OU…' -Icon 'E8DE' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Przenieś do OU…' -Icon 'E8DE' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $ou = Select-HTADOrganizationalUnit
         if (-not $ou) { return }
@@ -83,10 +87,14 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.state' -Title
 Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.edit' -Title 'Edycja atrybutów' -Icon 'E70F' `
     -Description 'Nazwa wyświetlana, stanowisko, dział, telefony, opis, przełożony; profil (ścieżka, skrypt logowania, katalog domowy). Dla wielu kont - tylko wypełnione pola.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTADLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTADObjectDetail -Section 'User' -Identity $t.ObjectGUID) -Fields 'Nazwa wyświetlana', 'Stanowisko', 'Dział', 'Firma', 'Biuro', 'Telefon', 'Komórka', 'Przełożony', 'Opis', 'Ścieżka profilu', 'Skrypt logowania', 'Katalog domowy', 'Dysk domowy'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Edytuj atrybuty…' -Icon 'E70F' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Edytuj atrybuty…' -Icon 'E70F' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $single = $targets.Count -eq 1
         $u = if ($single) { Get-ADUser -Identity $targets[0].ObjectGUID -Properties DisplayName, Title, Department, Company, Office, OfficePhone, MobilePhone, EmailAddress, Description, Manager } else { $null }
@@ -111,9 +119,9 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.edit' -Title 
         if ($changes.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
         Invoke-HTTargetAction -Module $m -Name 'Zmiana atrybutów' -Summary @(ConvertTo-HTChangeSummary -Settings $changes) -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADUserAttributes -Identity $t.ObjectGUID -Attributes $changes; "Zmieniono: $(@($changes.Keys) -join ', ')" }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Profil i katalog domowy…' -Icon 'E8B7' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Profil i katalog domowy…' -Icon 'E8B7' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $u = if ($targets.Count -eq 1) { Get-ADUser -Identity $targets[0].ObjectGUID -Properties ProfilePath, ScriptPath, HomeDirectory, HomeDrive } else { $null }
         $form = Show-HTFormDialog -Title 'Profil użytkownika' -Description 'Zmienna %username% zostanie zastąpiona loginem każdego konta.' -Icon 'E8B7' -Fields @(
@@ -136,6 +144,10 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.edit' -Title 
 Register-HTModule -Workspace 'ADUsers' -Category 'Hasło i blokady' -Key 'adu.password' -Title 'Reset hasła' -Icon 'E8D7' `
     -Description 'Losowe lub podane hasło, wymuszenie zmiany przy logowaniu, odblokowanie. Także: «hasło nigdy nie wygasa» i wymuszenie zmiany hasła.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTADLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTADObjectDetail -Section 'User' -Identity $t.ObjectGUID) -Fields 'Włączone', 'Zablokowane', 'Hasło ustawione', 'Hasło nigdy nie wygasa', 'Zmiana hasła przy logowaniu', 'Błędne logowania', 'Ostatnie logowanie'
+    } | Out-Null
     $m.SecretColumns = @('Hasło')
     $row = Add-HTToolbarRow -Module $m -Title 'Opcje'
     $m.C.Mode = Add-HTSegmented -Parent $row -Items @('Losowe hasła', 'Podane hasło')
@@ -144,9 +156,9 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Hasło i blokady' -Key 'adu.pa
     $m.C.Change = Add-HTCheckBox -Parent $row -Text 'Zmiana przy logowaniu' -Checked $true
     $m.C.Unlock = Add-HTCheckBox -Parent $row -Text 'Odblokuj konto' -Checked $true
     $actions = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $actions -Module $m -Text 'Resetuj hasło' -Icon 'E8D7' -Primary -OnClick {
+    Add-HTButton -Parent $actions -Module $m -Text 'Resetuj hasło' -Icon 'E8D7' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $fixed = $null
         if ((Get-HTSegmentIndex $m.C.Mode) -eq 1) {
@@ -172,15 +184,15 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Hasło i blokady' -Key 'adu.pa
         Show-HTToast "Skopiowano hasła: $($rows.Count) (schowek zostanie wyczyszczony po 60 s)." 'ok'
     } | Out-Null
     $row3 = Add-HTToolbarRow -Module $m -Title 'Zasady hasła'
-    Add-HTButton -Parent $row3 -Module $m -Text 'Wymuś zmianę przy logowaniu' -Icon 'E8D7' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Wymuś zmianę przy logowaniu' -Icon 'E8D7' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wymuszenie zmiany hasła' -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADChangePasswordAtLogon -Identity $t.ObjectGUID -Value $true; 'Zmiana przy następnym logowaniu' }
     } | Out-Null
-    Add-HTButton -Parent $row3 -Module $m -Text 'Hasło nigdy nie wygasa' -Icon 'E916' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Hasło nigdy nie wygasa' -Icon 'E916' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Hasło nigdy nie wygasa' -Confirm 'Ustawić «hasło nigdy nie wygasa»? (niezalecane dla kont użytkowników)' -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADPasswordNeverExpires -Identity $t.ObjectGUID -Value $true; 'Włączono' }
     } | Out-Null
-    Add-HTButton -Parent $row3 -Module $m -Text 'Hasło wygasa normalnie' -Icon 'E777' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Hasło wygasa normalnie' -Icon 'E777' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wygasanie hasła' -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADPasswordNeverExpires -Identity $t.ObjectGUID -Value $false; 'Hasło wygasa zgodnie z zasadami' }
     } | Out-Null
@@ -189,8 +201,12 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Hasło i blokady' -Key 'adu.pa
 Register-HTModule -Workspace 'ADUsers' -Category 'Hasło i blokady' -Key 'adu.lockout' -Title 'Blokady kont' -Icon 'E72E' `
     -Description 'Odblokowanie, stan na każdym kontrolerze domeny (błędne hasła) i źródło blokady - komputer, z którego przychodzą błędne hasła (zdarzenie 4740 z PDC).' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTADLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTADObjectDetail -Section 'User' -Identity $t.ObjectGUID) -Fields 'Włączone', 'Zablokowane', 'Błędne logowania', 'Hasło ustawione', 'Ostatnie logowanie'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Odblokuj' -Icon 'E785' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Odblokuj' -Icon 'E785' -Primary -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Odblokowanie konta' -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADAccountState -Identity $t.ObjectGUID -State Unlock; Update-HTADPanelObject -Panel 'adusers' -Object $t -Changes @{ LockedOut = $false }; 'Odblokowane' }
     } | Out-Null
@@ -223,9 +239,9 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
             foreach ($g in @(Get-HTADObjectGroups -DistinguishedName $t.DistinguishedName)) { [PSCustomObject]@{ Grupa = $g.Name; DN = $g.DistinguishedName } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $groups = @(Select-HTADGroups -Prompt "Grupy dla $($targets.Count) kont.")
         if ($groups.Count -eq 0) { return }
@@ -235,9 +251,9 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
             "Dodano do: $(@($groups | ForEach-Object { $_.Name }) -join ', ')"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $source = Select-HTADUser -Title 'Konto wzorcowe' -Prompt 'Grupy tego konta zostaną skopiowane.'
         if (-not $source) { return }
@@ -307,6 +323,10 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.new' -T
 Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.offboard' -Title 'Odejście pracownika' -Icon 'E8F8' `
     -Description 'Wyłączenie konta, losowe hasło, usunięcie z grup, opis z datą i przeniesienie do OU dla kont wyłączonych.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTADLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTADObjectDetail -Section 'User' -Identity $t.ObjectGUID) -Fields 'Nazwa', 'Włączone', 'Opis', 'Ostatnie logowanie', @{ Name = 'Członkostwo'; Label = 'Grupy' }, @{ Name = 'DN'; Label = 'Lokalizacja (DN)' }
+    } | Out-Null
     $m.SecretColumns = @('Hasło')
     $row = Add-HTToolbarRow -Module $m -Title 'Kroki'
     $m.C.Disable = Add-HTCheckBox -Parent $row -Text 'Wyłącz konto' -Checked $true
@@ -317,7 +337,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.offboar
     $actions = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $actions -Module $m -Text 'Wykonaj' -Icon 'E8F8' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $o = @{}
         foreach ($k in 'Disable', 'Password', 'Groups', 'Describe', 'Move') { $o[$k] = Test-HTChecked $m.C[$k] }
@@ -507,13 +527,13 @@ Register-HTModule -Workspace 'ADComputers' -Category 'Zarządzanie' -Key 'adc.ma
     param($m)
     $row = Add-HTToolbarRow -Module $m -Title 'Opis'
     $m.C.Description = Add-HTTextBox -Parent $row -Width 320 -Placeholder 'np. Jan Kowalski, pokój 12'
-    Add-HTButton -Parent $row -Module $m -Text 'Ustaw opis' -Icon 'E70F' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Ustaw opis' -Icon 'E70F' -Primary -Danger -OnClick {
         param($m)
         $text = $m.C.Description.Text.Trim()
         Invoke-HTTargetAction -Module $m -Name 'Opis komputera' -Summary "Opis: $(if ($text) { $text } else { '(wyczyść)' })" -Label { param($t) $t.Name } -Action { param($t) Set-HTADComputerDescription -Identity $t.ObjectGUID -Description $text; Update-HTADPanelObject -Panel 'adcomputers' -Object $t -Changes @{ Description = $text }; 'Zapisano' }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Konto'
-    Add-HTButton -Parent $row2 -Module $m -Text 'Włącz' -Icon 'E73E' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Włącz' -Icon 'E73E' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Włączenie komputera' -Label { param($t) $t.Name } -Action { param($t) Set-HTADAccountState -Identity $t.ObjectGUID -State Enable; Update-HTADPanelObject -Panel 'adcomputers' -Object $t -Changes @{ Enabled = $true }; 'Włączony' }
     } | Out-Null
@@ -521,9 +541,9 @@ Register-HTModule -Workspace 'ADComputers' -Category 'Zarządzanie' -Key 'adc.ma
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wyłączenie komputera' -Danger -Confirm 'Wyłączyć konta wybranych komputerów? Użytkownicy nie zalogują się na nie kontami domenowymi.' -Label { param($t) $t.Name } -Action { param($t) Set-HTADAccountState -Identity $t.ObjectGUID -State Disable; Update-HTADPanelObject -Panel 'adcomputers' -Object $t -Changes @{ Enabled = $false }; 'Wyłączony' }
     } | Out-Null
-    Add-HTButton -Parent $row2 -Module $m -Text 'Przenieś do OU…' -Icon 'E8DE' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Przenieś do OU…' -Icon 'E8DE' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $ou = Select-HTADOrganizationalUnit
         if (-not $ou) { return }
@@ -601,9 +621,9 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Grupa' -Key 'adg.members' -Ti
             foreach ($x in @(Get-HTADGroupMembers -Identity $t.ObjectGUID)) { [PSCustomObject]@{ Członek = $x.Name; Login = $x.SamAccountName; Typ = $x.ObjectClass; DN = $x.DistinguishedName } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $text = Show-InputBox -Title 'Dodaj członków' -Prompt "Loginy, UPN, nazwy komputerów lub grup (jeden w linii) - do $($targets.Count) grup:" -Multiline -Icon 'E8FA'
         $ids = @(Split-HTInputList $text)
@@ -658,9 +678,9 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Zarządzanie' -Key 'adg.manag
         }
         Invoke-HTPanelLoad -Panel (Get-HTPanel 'adgroups') -Quiet
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Edytuj…' -Icon 'E70F' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Edytuj…' -Icon 'E70F' -Danger -OnClick {
         param($m)
-        $t = @(Get-HTTargets -Module $m -Single)[0]
+        $t = @(Get-HTChangeTargets -Module $m -Single)[0]
         if (-not $t) { return }
         $g = Get-ADGroup -Identity $t.ObjectGUID -Properties Description, ManagedBy
         $owner = if ($g.ManagedBy) { (Get-ADObject -Identity $g.ManagedBy -Properties sAMAccountName).sAMAccountName } else { '' }
