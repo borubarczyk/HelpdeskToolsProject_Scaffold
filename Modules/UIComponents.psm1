@@ -626,18 +626,31 @@ $script:ThemeXaml = @'
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="MenuItem">
-          <Border x:Name="b" Background="Transparent" CornerRadius="6" Padding="8,6" MinWidth="200">
-            <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="26"/>
-                <ColumnDefinition Width="*"/>
-              </Grid.ColumnDefinitions>
-              <ContentPresenter ContentSource="Icon" VerticalAlignment="Center" TextElement.Foreground="#8791A5"/>
-              <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center"/>
-            </Grid>
-          </Border>
+          <Grid>
+            <Border x:Name="b" Background="Transparent" CornerRadius="6" Padding="8,6" MinWidth="200">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="26"/>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ContentPresenter ContentSource="Icon" VerticalAlignment="Center" TextElement.Foreground="#8791A5"/>
+                <ContentPresenter Grid.Column="1" ContentSource="Header" VerticalAlignment="Center"/>
+                <TextBlock x:Name="arrow" Grid.Column="2" Text="&#xE76C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10" Foreground="#8791A5" Margin="12,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+              </Grid>
+            </Border>
+            <!-- Podmenu (np. «Konto Microsoft 365 (N)»): bez tego okienka pozycja z podmenu nie reagowała -->
+            <Popup x:Name="PART_Popup" Placement="Right" HorizontalOffset="4" VerticalOffset="-5" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"
+                   IsOpen="{Binding IsSubmenuOpen, RelativeSource={RelativeSource TemplatedParent}}">
+              <Border Background="#1B212A" BorderBrush="#2F3846" BorderThickness="1" CornerRadius="8" Padding="4">
+                <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+              </Border>
+            </Popup>
+          </Grid>
           <ControlTemplate.Triggers>
+            <Trigger Property="HasItems" Value="True"><Setter TargetName="arrow" Property="Visibility" Value="Visible"/></Trigger>
             <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="b" Property="Background" Value="#24304A"/></Trigger>
+            <Trigger Property="IsSubmenuOpen" Value="True"><Setter TargetName="b" Property="Background" Value="#24304A"/></Trigger>
             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
@@ -3768,7 +3781,10 @@ function Add-HTToolbarRow {
     param([Parameter(Mandatory)][hashtable]$Module, [string]$Title = '')
     $wrap = New-Object System.Windows.Controls.WrapPanel
     $wrap.Orientation = 'Horizontal'
-    return (Add-HTParamRow -Module $Module -Title $Title -Content $wrap)
+    $result = Add-HTParamRow -Module $Module -Title $Title -Content $wrap
+    # Ostatni wiersz przycisków - tu trafiają przyciski akcji na zaznaczonych wierszach (Add-HTRowAction -Danger)
+    $Module['LastToolbarRow'] = $wrap
+    return $result
 }
 
 function Add-HTSeparator {
@@ -3916,7 +3932,9 @@ function Add-HTButton {
         [string]$Icon = '',
         [string]$ToolTip = '',
         [switch]$Primary,
-        [switch]$Danger
+        [switch]$Danger,
+        # Czerwony przycisk bez pozycji w menu wierszy wyników (nie działa na zaznaczonych wierszach, np. przywracanie z pliku)
+        [switch]$NoRowMenu
     )
     $b = New-HTButton -Text $Text -Icon $Icon -Primary:$Primary -Danger:$Danger -ToolTip $ToolTip
     $b.Margin = '0,0,8,6'
@@ -3925,7 +3943,7 @@ function Add-HTButton {
     # F5 (główna akcja modułu) nigdy nie wykonuje zmiany - tylko odczyt (zasada trzech etapów)
     if ($Primary -and -not $Danger -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
     # Przyciski zmian (czerwone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
-    if ($Danger) {
+    if ($Danger -and -not $NoRowMenu) {
         if (-not $Module['ChangeButtons']) { $Module['ChangeButtons'] = New-Object System.Collections.Generic.List[hashtable] }
         $Module['ChangeButtons'].Add(@{ Button = $b; Text = $Text; Icon = $Icon })
     }
@@ -3958,9 +3976,32 @@ function Add-HTStateCheck {
 }
 
 function Add-HTRowAction {
-    # Akcja w menu kontekstowym tabeli wyników: { param($m, $rows) } - $rows to zaznaczone obiekty wyników
-    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][scriptblock]$Action, [string]$Icon = 'E76C', [switch]$Danger)
-    [void]$Module.RowActions.Add(@{ Text = $Text; Action = $Action; Icon = $Icon; Danger = [bool]$Danger })
+    <#
+        Akcja w menu kontekstowym tabeli wyników: { param($m, $rows) } - $rows to zaznaczone obiekty wyników.
+        -Danger (zmiana): czerwona pozycja menu z liczbą zaznaczonych wierszy i czerwony przycisk u góry modułu
+        (w ostatnim wierszu przycisków) działający na wierszach zaznaczonych w wynikach. -NoButton: tylko w menu.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][scriptblock]$Action, [string]$Icon = 'E76C', [switch]$Danger, [switch]$NoButton)
+    $entry = @{ Text = $Text; Action = $Action; Icon = $Icon; Danger = [bool]$Danger }
+    [void]$Module.RowActions.Add($entry)
+    if (-not $Danger -or $NoButton) { return }
+    $parent = $Module['LastToolbarRow']
+    if (-not $parent) { $parent = Add-HTToolbarRow -Module $Module; $parent = $Module['LastToolbarRow'] }
+    $b = New-HTButton -Text $Text -Icon $Icon -Danger -ToolTip "$($Text.TrimEnd('…')) - na wierszach zaznaczonych w wynikach (także prawy przycisk na wierszach)"
+    $b.Margin = '0,0,8,6'
+    $b.Tag = $entry
+    Register-HTControlHandler -Control $b -EventName 'Click' -Module $Module -Action {
+        param($m, $s)
+        $rows = @(Get-HTResultSelection -Module $m)
+        if ($rows.Count -eq 0) { Show-HTWarning 'Najpierw pobierz wyniki (niebieski przycisk) i zaznacz w tabeli wiersze, których dotyczy zmiana.' -Title 'Zaznacz wiersze'; return }
+        $null = & $s.Tag.Action $m $rows
+    }
+    [void]$Module.Buttons.Add($b)
+    $entry.Button = $b
+    # Za ostatnim przyciskiem wiersza (przed podpowiedziami)
+    $index = 0
+    for ($i = 0; $i -lt $parent.Children.Count; $i++) { if ($parent.Children[$i] -is [System.Windows.Controls.Button]) { $index = $i + 1 } }
+    $parent.Children.Insert($index, $b)
 }
 
 #region Akcje na obiektach w wynikach (np. blokada konta z raportu nieaktywnych użytkowników)
@@ -4051,8 +4092,9 @@ function Update-HTGridMenu {
     $selected = @($Module.Grid.SelectedItems | Where-Object { $_ -is [System.Data.DataRowView] })
     $hasRows = $selected.Count -gt 0
     foreach ($a in $Module.RowActions) {
-        # Akcja dostaje oryginalne obiekty zaznaczonych wierszy: { param($m, $rows) }
-        [void]$menu.Items.Add((New-HTMenuItem -Text $a.Text -Icon $a.Icon -Module $Module -Danger:$a.Danger -Enabled $hasRows -Data $a.Action -Action {
+        # Akcja dostaje oryginalne obiekty zaznaczonych wierszy: { param($m, $rows) }; zmiany - z liczbą zaznaczonych
+        $text = if ($a.Danger -and $hasRows) { "$($a.Text) - zaznaczone ($($selected.Count))" } else { $a.Text }
+        [void]$menu.Items.Add((New-HTMenuItem -Text $text -Icon $a.Icon -Module $Module -Danger:$a.Danger -Enabled $hasRows -Data $a.Action -Action {
                     param($m, $s)
                     $rows = @(Get-HTResultSelection -Module $m)
                     if ($rows.Count -eq 0) { Show-HTWarning 'Zaznacz wiersze w tabeli wyników.'; return }
@@ -6791,6 +6833,11 @@ function Set-HTCancelVisible([bool]$Visible) {
     if ($m -and $m.View_ -and $m.View_['btnBusyStop']) { $m.View_.btnBusyStop.Visibility = $state }
 }
 
+function Hide-HTCancelIfIdle {
+    # Ukrywa «Przerwij», gdy nic już nie trwa (zapytanie w tle, pętla po obiektach) - po dłuższym poleceniu Exchange
+    if (-not $script:Background.Current -and -not [int]$script:UI.StoppableDepth) { Set-HTCancelVisible $false }
+}
+
 function Start-HTStoppable {
     # Operacja na wielu obiektach w wątku okna: «Przerwij» (albo Esc) zatrzymuje ją po bieżącym obiekcie
     $script:UI.StoppableDepth = [int]$script:UI.StoppableDepth + 1
@@ -6818,6 +6865,9 @@ function Stop-HTBackground {
         Write-Log -Message 'Przerywanie operacji - zatrzyma się po bieżącym obiekcie…' -Type 'Info'
         Set-HTStatus -Text 'Przerywanie… (po bieżącym obiekcie)'
     }
+    # Polecenie Exchange w wątku Exchange (ExchangeWorker) - zatrzymanie od razu
+    $stopExchange = Get-Command -Name Stop-HTExchangeWorkerCommand -ErrorAction Ignore
+    if ($stopExchange -and (& $stopExchange)) { Write-Log -Message 'Przerywanie polecenia Exchange…' -Type 'Info' }
     $ps = $script:Background.Current
     if (-not $ps) { return }
     Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
@@ -7088,10 +7138,11 @@ function Export-HTResultView {
 
 function Select-HTOpenFile {
     # Okno wyboru pliku do odczytu; zwraca ścieżkę albo $null
-    param([string]$Title = 'Wybierz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*')
+    param([string]$Title = 'Wybierz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*', [string]$InitialDirectory = '')
     $dialog = New-Object Microsoft.Win32.OpenFileDialog
     $dialog.Title = $Title
     $dialog.Filter = $Filter
+    if ($InitialDirectory -and (Test-Path -LiteralPath $InitialDirectory)) { $dialog.InitialDirectory = $InitialDirectory }
     $owner = $script:UI.Window
     $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
     if ($accepted -eq $true) { return $dialog.FileName }

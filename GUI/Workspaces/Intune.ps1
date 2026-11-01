@@ -357,7 +357,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Autopilot' -Key 'int.autopilot'
         $data = @(foreach ($r in $items) { $st = Get-HTAutopilotImportStatus -Id $r.__importId; [PSCustomObject]@{ 'Numer seryjny' = $r.Obiekt; Stan = $st.Stan; Błąd = $st.Błąd; Kod = $st.Kod } })
         Show-HTDataViewer -Title 'Stan importu Autopilot' -Data $data -ExportName 'import_autopilot' -Icon 'E916'
     }
-    Add-HTRowAction -Module $m -Text 'Ustaw group tag…' -Icon 'E8EC' -Action {
+    Add-HTRowAction -Module $m -Text 'Ustaw group tag…' -Icon 'E8EC' -Danger -Action {
         param($m, $rows)
         $items = @($rows | Where-Object { $_.Id -and $_.'Numer seryjny' })
         if (-not $items.Count) { return }
@@ -419,7 +419,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Aplikacje i aktualizacje' -Key 
         param($m)
         Invoke-HTQuery -Module $m -Name 'Pierścienie aktualizacji' -Background -ScriptBlock { param($a) Get-HTWindowsUpdateRings }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Synchronizuj urządzenie' -Icon 'E895' -Action {
+    Add-HTRowAction -Module $m -Text 'Synchronizuj urządzenie' -Icon 'E895' -Danger -Action {
         param($m, $rows)
         $items = @($rows | Where-Object { $_.Urządzenie -and $_.Id })
         Invoke-HTRowAction -Module $m -Name 'Synchronizacja urządzenia' -Rows $items -Label { param($r) $r.Urządzenie } -Action { param($r) Sync-HTIntuneDevice -Id $r.Id; 'Zlecono synchronizację' }
@@ -436,7 +436,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Aplikacje i aktualizacje' -Key 
         Invoke-HTQuery -Module $m -Name 'Skrypty naprawcze' -Background -ScriptBlock { param($a) Get-HTRemediationScripts }
     } | Out-Null
     Add-HTLabel -Parent $row -Hint -Text 'Zaznacz urządzenia na liście po lewej, potem prawy przycisk na skrypcie - «Uruchom teraz».' | Out-Null
-    Add-HTRowAction -Module $m -Text 'Uruchom teraz na zaznaczonych urządzeniach' -Icon 'E768' -Action {
+    Add-HTRowAction -Module $m -Text 'Uruchom teraz na zaznaczonych urządzeniach' -Icon 'E768' -Danger -Action {
         param($m, $rows)
         $script = @($rows)[0]
         $devices = @(Get-HTTargets -Module $m)
@@ -483,7 +483,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Porządki' -Key 'int.staleentra
         param($m)
         Invoke-HTQuery -Module $m -Name 'Nieaktywne urządzenia Entra ID' -Background -Arguments @{ Days = (Get-HTNum $m.C.Days); Disabled = (Test-HTChecked $m.C.Disabled) } -ScriptBlock { param($a) Get-HTStaleEntraDevices -Days $a.Days -IncludeDisabled:$a.Disabled }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Wyłącz urządzenie' -Icon 'E711' -Action {
+    Add-HTRowAction -Module $m -Text 'Wyłącz urządzenie' -Icon 'E711' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Wyłączenie urządzenia Entra ID' -Rows $rows -Confirm 'Wyłączyć zaznaczone urządzenia? Logowanie z nich do usług Microsoft 365 przestanie działać (można je włączyć ponownie).' -Label { param($r) $r.Urządzenie } -Action {
             param($r)
@@ -492,7 +492,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Porządki' -Key 'int.staleentra
             'Wyłączono'
         }
     }
-    Add-HTRowAction -Module $m -Text 'Włącz urządzenie' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Włącz urządzenie' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Włączenie urządzenia Entra ID' -Rows $rows -Label { param($r) $r.Urządzenie } -Action { param($r) Set-HTEntraDeviceEnabled -Id $r.Id -Enabled $true; 'Włączono' }
     }

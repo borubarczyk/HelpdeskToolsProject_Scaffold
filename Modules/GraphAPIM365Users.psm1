@@ -250,6 +250,65 @@ function Set-HTM365UserLicense {
     Invoke-HTGraphRequest -Uri "users/$Id/assignLicense" -Method POST -Body $body | Out-Null
 }
 
+function Remove-HTM365DirectLicenses {
+    <#
+        Usuwa licencje bezpośrednie konta po jednej - błąd jednej licencji (np. «User does not have a corresponding
+        license» dla licencji z grupy lub samodzielnej rejestracji) nie blokuje pozostałych.
+        Zwraca @{ Removed = @(skuId); Failed = @(@{ SkuId; Name; Error }) }. -Names: skuId -> nazwa do komunikatów.
+    #>
+    param ([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][string[]]$SkuIds, [hashtable]$Names = @{})
+    $removed = New-Object System.Collections.Generic.List[string]
+    $failed = New-Object System.Collections.Generic.List[object]
+    foreach ($sku in @($SkuIds | Where-Object { $_ } | Select-Object -Unique)) {
+        try {
+            Set-HTM365UserLicense -Id $Id -RemoveSkuIds @($sku)
+            $removed.Add($sku)
+        }
+        catch {
+            $message = [string]$_.Exception.Message
+            if ($message -match 'does not have a corresponding license') { $message = 'licencja nie jest przypisana bezpośrednio (np. z grupy) - usuń konto z grupy' }
+            $failed.Add([PSCustomObject]@{ SkuId = $sku; Name = $(if ($Names.ContainsKey($sku)) { $Names[$sku] } else { $sku }); Error = $message })
+        }
+    }
+    return [PSCustomObject]@{ Removed = $removed.ToArray(); Failed = $failed.ToArray() }
+}
+
+function Get-HTM365AccountBackup {
+    <#
+        Kopia ustawień konta przed offboardingiem (AccountBackup.psm1 zapisuje ją do pliku): dane konta, logowanie,
+        przełożony, licencje (bezpośrednie / z grup), grupy i metody MFA (informacyjnie). Skrzynkę dopisuje Exchange.
+    #>
+    param ([Parameter(Mandatory)][string]$Id)
+    $select = 'id,displayName,userPrincipalName,mail,accountEnabled,jobTitle,department,companyName,officeLocation,usageLocation,assignedLicenses,licenseAssignmentStates'
+    $u = Invoke-HTGraphRequest -Uri "users/$($Id)?`$select=$select"
+    $skuNames = Get-HTSkuNameMap
+    $states = @($u.licenseAssignmentStates | Where-Object { $_ })
+    $licenses = foreach ($l in @($u.assignedLicenses | Where-Object { $_ })) {
+        $sku = "$($l.skuId)"
+        $direct = (-not $states.Count) -or (@($states | Where-Object { "$($_.skuId)" -eq $sku -and -not $_.assignedByGroup }).Count -gt 0)
+        [ordered]@{ SkuId = $sku; SkuPartNumber = [string]$skuNames[$sku]; Name = (Get-HTSkuFriendlyName ($skuNames[$sku] ?? $sku)); Direct = $direct }
+    }
+    $manager = Get-HTM365UserManager -Id $Id
+    $groups = foreach ($g in @(Get-HTM365UserGroups -Id $Id)) { [ordered]@{ Id = $g.Id; DisplayName = $g.DisplayName; Type = $g.Type; Mail = $g.Mail; Dynamic = [bool]$g.Dynamic; Synced = [bool]$g.Synced } }
+    $methods = @()
+    try { $methods = @(foreach ($mt in @(Get-HTM365AuthMethods -Id $Id)) { [ordered]@{ Type = [string]$mt.Type; Detail = [string]$mt.Detail } }) }
+    catch { Write-Log -Message "Kopia konta $($u.userPrincipalName): metody MFA nieodczytane - $($_.Exception.Message)" -Type 'Warn' }
+    return [ordered]@{
+        Version     = 1
+        Created     = (Get-Date).ToUniversalTime().ToString('o')
+        CreatedBy   = [string]$env:USERNAME
+        User        = [ordered]@{
+            Id = $u.id; UserPrincipalName = $u.userPrincipalName; DisplayName = $u.displayName; Mail = $u.mail; AccountEnabled = [bool]$u.accountEnabled
+            JobTitle = $u.jobTitle; Department = $u.department; CompanyName = $u.companyName; OfficeLocation = $u.officeLocation; UsageLocation = $u.usageLocation
+        }
+        Manager     = $(if ($manager) { [ordered]@{ Id = $manager.id; UserPrincipalName = $manager.userPrincipalName; DisplayName = $manager.displayName } } else { $null })
+        Licenses    = @($licenses)
+        Groups      = @($groups)
+        AuthMethods = @($methods)
+        Mailbox     = $null
+    }
+}
+
 # Ujednolicony obiekt grupy
 function ConvertTo-HTM365GroupObject {
     param ([Parameter(Mandatory)][object]$Group)
@@ -500,6 +559,8 @@ function New-HTM365User {
         [string]$JobTitle,
         [string]$Department,
         [string]$UsageLocation,
+        [string]$CompanyName,
+        [string]$OfficeLocation,
         [bool]$ForceChange = $true,
         [bool]$AccountEnabled = $true
     )
@@ -514,6 +575,8 @@ function New-HTM365User {
     if ($Surname) { $body.surname = $Surname }
     if ($JobTitle) { $body.jobTitle = $JobTitle }
     if ($Department) { $body.department = $Department }
+    if ($CompanyName) { $body.companyName = $CompanyName }
+    if ($OfficeLocation) { $body.officeLocation = $OfficeLocation }
     $location = if ($UsageLocation) { $UsageLocation } else { $Global:DefaultUsageLocation }
     if ($location) { $body.usageLocation = $location }
     return Invoke-HTGraphRequest -Uri "users" -Method POST -Body $body
@@ -1033,7 +1096,9 @@ function Get-HTReclaimableLicenses {
         $inactive = if ($null -eq $idle) { $null -eq $created -or $created -ge $Days } else { $idle -ge $Days }
         if ($u.accountEnabled -and -not $inactive) { continue }
         $states = @($u.licenseAssignmentStates | Where-Object { $_ })
-        $direct = @($states | Where-Object { -not $_.assignedByGroup } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
+        # Bezpośrednie = przypisane do konta (assignedLicenses) i mające stan bez grupy
+        $assigned = @($u.assignedLicenses | ForEach-Object { "$($_.skuId)" })
+        $direct = @($states | Where-Object { -not $_.assignedByGroup -and $assigned -contains "$($_.skuId)" } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
         $byGroup = @($states | Where-Object { $_.assignedByGroup } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
         [PSCustomObject]@{
             Nazwa                = $u.displayName
@@ -1043,9 +1108,12 @@ function Get-HTReclaimableLicenses {
             'Ostatnie logowanie' = $last
             Licencje             = (@($u.assignedLicenses | ForEach-Object { Get-HTSkuFriendlyName ($skuNames["$($_.skuId)"] ?? "$($_.skuId)") }) -join ', ')
             Przypisanie          = $(if ($byGroup.Count -and $direct.Count) { 'bezpośrednie i z grup' } elseif ($byGroup.Count) { 'z grup' } else { 'bezpośrednie' })
+            # Licencje, które usunie «Usuń licencje bezpośrednie» (z grup zostają - usuwa się je przez członkostwo)
+            'Do usunięcia'       = (@($direct | ForEach-Object { Get-HTSkuFriendlyName ($skuNames[$_] ?? $_) }) -join ', ')
             Dział                = $u.department
             Id                   = $u.id
             __direct             = $direct
+            __directNames        = @($direct | ForEach-Object { Get-HTSkuFriendlyName ($skuNames[$_] ?? $_) })
             __flag               = if (-not $u.accountEnabled) { 'crit' } else { 'warn' }
         }
     }

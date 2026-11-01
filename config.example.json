@@ -72,6 +72,7 @@
   "DefenderClientId": "",
   "DebugLogging": false,
   "ShowSystemMailboxes": false,
+  "ExchangeInBackground": true,
   "SkippedModulePaths": [],
   "ConfigVersion": 2,
   "LoginTimeoutMinutes": 5,

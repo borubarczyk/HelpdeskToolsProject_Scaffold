@@ -341,3 +341,17 @@ Describe "Wyszukiwanie witryn SharePoint" {
         Should -Invoke -ModuleName GraphAPISharePoint Invoke-HTGraphRequest -Times 1 -Exactly -ParameterFilter { $Uri -eq 'sites/getAllSites' -and $All }
     }
 }
+
+Describe "Usuwanie licencji bezpośrednich po jednej" {
+    It "usuwa pozostałe licencje, gdy jedna nie jest przypisana bezpośrednio, i opisuje błąd po polsku" {
+        Mock -ModuleName GraphAPIM365Users Set-HTM365UserLicense {
+            if ($RemoveSkuIds -contains 'sku-b') { throw 'Response status code does not indicate success: BadRequest (Bad Request). Request_BadRequest: User does not have a corresponding license.' }
+        }
+        $result = Remove-HTM365DirectLicenses -Id 'u1' -SkuIds @('sku-a', 'sku-b', 'sku-a') -Names @{ 'sku-a' = 'Licencja A'; 'sku-b' = 'Licencja B' }
+        @($result.Removed) | Should -Be @('sku-a')
+        @($result.Failed).Count | Should -Be 1
+        $result.Failed[0].Name | Should -Be 'Licencja B'
+        $result.Failed[0].Error | Should -Match 'nie jest przypisana bezpośrednio'
+        Should -Invoke -ModuleName GraphAPIM365Users Set-HTM365UserLicense -Times 2 -Exactly
+    }
+}

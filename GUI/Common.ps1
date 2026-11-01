@@ -27,6 +27,46 @@ function Select-HTM365User {
     return @($selected)[0]
 }
 
+# Adres e-mail z tenanta (konta Microsoft 365 i skrzynki Exchange) - np. dokąd przekierować pocztę.
+# Listy wczytują się z połączonych usług; adres można też po prostu wpisać lub wkleić w pole.
+function Select-HTRecipientAddress {
+    param([string]$Title = 'Wybierz adres z tenanta', [string]$Prompt = 'Osoby i skrzynki z tenanta - wyszukaj po nazwie lub adresie.')
+    $items = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    $add = {
+        param([string]$Name, [string]$Address, [string]$Kind, [string]$Detail)
+        if (-not $Address -or $seen.ContainsKey($Address.ToLowerInvariant())) { return }
+        $seen[$Address.ToLowerInvariant()] = $true
+        $items.Add([PSCustomObject]@{ Nazwa = $Name; Adres = $Address; Rodzaj = $Kind; Szczegóły = $Detail })
+    }
+    if ($Global:ConnectedToExchange) {
+        foreach ($x in @(Get-HTPanelObjects -Key 'mailboxes')) { & $add ([string]$x.DisplayName) ([string]$x.PrimarySmtpAddress) $(switch ([string]$x.RecipientTypeDetails) { 'SharedMailbox' { 'skrzynka współdzielona' } 'RoomMailbox' { 'sala' } 'EquipmentMailbox' { 'zasób' } default { 'skrzynka użytkownika' } }) '' }
+    }
+    if ($Global:ConnectedToGraphAPI) {
+        foreach ($u in @(Get-HTPanelObjects -Key 'm365users')) {
+            if (-not $u.AccountEnabled) { continue }
+            & $add ([string]$u.DisplayName) $(if ($u.Mail) { [string]$u.Mail } else { [string]$u.UserPrincipalName }) 'konto Microsoft 365' (@($u.JobTitle, $u.Department) | Where-Object { $_ }) -join ', '
+        }
+    }
+    if ($items.Count -eq 0) { Show-HTWarning 'Połącz się z Exchange Online albo Microsoft 365, żeby wybrać adres z tenanta - albo wpisz / wklej adres w pole.' -Title $Title; return $null }
+    $columns = @(@{ Text = 'Nazwa'; Property = 'Nazwa' }, @{ Text = 'Adres'; Property = 'Adres' }, @{ Text = 'Rodzaj'; Property = 'Rodzaj' }, @{ Text = 'Szczegóły'; Property = 'Szczegóły' })
+    $picked = @(Show-HTSelectionDialog -Title $Title -Prompt $Prompt -Items @($items | Sort-Object Nazwa) -Columns $columns -Icon 'E716')[0]
+    if (-not $picked) { return $null }
+    return [string]$picked.Adres
+}
+
+# Przycisk «Wybierz…» obok pola adresu: adres z tenanta trafia do pola (można też wpisać lub wkleić własny)
+function Add-HTAddressPicker {
+    param([Parameter(Mandatory)]$Parent, [Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)]$TextBox)
+    $b = Add-HTButton -Parent $Parent -Module $Module -Text 'Wybierz…' -Icon 'E716' -ToolTip 'Wybierz osobę lub skrzynkę z tenanta (albo wpisz / wklej adres w pole obok)' -OnClick {
+        param($m, $s)
+        $address = Select-HTRecipientAddress
+        if ($address) { $s.Tag.TextBox.Text = $address }
+    }
+    $b.Tag = @{ TextBox = $TextBox }
+    return $b
+}
+
 # Wybór użytkownika AD (z listy przestrzeni Użytkownicy AD)
 function Select-HTADUser {
     param([string]$Title = 'Wybierz użytkownika AD', [string]$Prompt = '')

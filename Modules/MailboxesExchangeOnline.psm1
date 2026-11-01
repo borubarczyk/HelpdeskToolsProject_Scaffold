@@ -16,6 +16,21 @@ function Test-HTSystemMailbox {
 # Czy pomijać skrzynki systemowe (Ustawienia > Microsoft 365 i Exchange > «Pokazuj skrzynki systemowe»)
 function Test-HTHideSystemMailboxes { return (-not $Global:ShowSystemMailboxes) }
 
+# Stan skrzynki do kopii konta przed offboardingiem (typ, GAL, przekierowanie, autoodpowiedź)
+function Get-HTMailboxBackupInfo {
+    param ([Parameter(Mandatory)][string]$Identity)
+    $m = Get-EXOMailbox -Identity $Identity -Properties HiddenFromAddressListsEnabled, ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward -ErrorAction Stop
+    $auto = $null
+    try { $auto = Get-MailboxAutoReplyConfiguration -Identity $Identity -ErrorAction Stop } catch { Write-Verbose $_ }
+    return [ordered]@{
+        Type           = "$($m.RecipientTypeDetails)"
+        HiddenFromGAL  = [bool]$m.HiddenFromAddressListsEnabled
+        ForwardTo      = $(if ($m.ForwardingSmtpAddress) { "$($m.ForwardingSmtpAddress)" -replace '^smtp:', '' } elseif ($m.ForwardingAddress) { "$($m.ForwardingAddress)" } else { '' })
+        KeepCopy       = [bool]$m.DeliverToMailboxAndForward
+        AutoReplyState = $(if ($auto) { "$($auto.AutoReplyState)" } else { '' })
+    }
+}
+
 # Lista skrzynek
 function Get-HTMailboxes {
     param ([string[]]$RecipientTypeDetails, [switch]$IncludeSystem)

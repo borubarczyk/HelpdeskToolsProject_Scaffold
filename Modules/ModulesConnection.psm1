@@ -531,7 +531,7 @@ function Connect-Module {
             }
             'ExchangeOnlineManagement' {
                 $params = Get-HTExchangeConnectParams
-                Invoke-HTLogin -Title "Exchange Online" -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
+                Connect-HTExchangeSession -Title "Exchange Online" -Parameters $params
                 $tenant = Get-HTExchangeTenantName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
@@ -555,7 +555,7 @@ function Connect-Module {
                 $params = Get-HTExchangeConnectParams
                 $params.UserPrincipalName = $gdap.Account
                 $params.DelegatedOrganization = $gdap.Organization
-                Invoke-HTLogin -Title "Exchange Online (GDAP)" -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
+                Connect-HTExchangeSession -Title "Exchange Online (GDAP)" -Parameters $params
                 $tenant = Get-HTExchangeTenantName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
@@ -781,6 +781,31 @@ function Show-HTSharePointConnectDialog {
             }
         }
     )
+}
+
+function Connect-HTExchangeSession {
+    <#
+        Logowanie do Exchange Online: domyślnie w osobnym wątku Exchange (ExchangeWorker - okno nie zamarza, polecenia
+        Exchange idą przez pośredników), po wyłączeniu w Ustawieniach albo gdy wątek nie wczyta modułu - w wątku okna.
+    #>
+    param([Parameter(Mandatory)][string]$Title, [Parameter(Mandatory)][hashtable]$Parameters)
+    if ($Global:ExchangeInBackground -ne $false -and (Get-Command -Name Connect-HTExchangeWorker -ErrorAction SilentlyContinue)) {
+        $module = @(Get-Module -Name ExchangeOnlineManagement | Sort-Object Version -Descending)[0]
+        $path = if ($module) { $manifest = Join-Path $module.ModuleBase "$($module.Name).psd1"; if (Test-Path -LiteralPath $manifest) { $manifest } else { $module.Path } } else { '' }
+        $ready = $false
+        if ($path) {
+            try { Start-HTExchangeWorker -ModulePath $path; $ready = $true }
+            catch { Write-Log "Exchange w osobnym wątku niedostępny ($($_.Exception.Message)) - łączenie w wątku okna." "Warn" }
+        }
+        if ($ready) {
+            Write-HTDebug { "Exchange: logowanie w wątku Exchange (moduł $path)" }
+            Invoke-HTLogin -Title $Title -ScriptBlock { Connect-HTExchangeWorker -ModulePath $path -Parameters $Parameters }.GetNewClosure()
+            return
+        }
+    }
+    # Wątek okna: pośrednicy z poprzedniego połączenia w wątku Exchange nie mogą przechwytywać poleceń
+    if (Get-Command -Name Remove-HTExchangeProxies -ErrorAction SilentlyContinue) { Remove-HTExchangeProxies }
+    Invoke-HTLogin -Title $Title -ScriptBlock { Connect-ExchangeOnline @Parameters }.GetNewClosure()
 }
 
 # Parametry Connect-ExchangeOnline: logowanie w przeglądarce zamiast okna Windows (WAM) - -DisableWAM, EXO 3.7.2+

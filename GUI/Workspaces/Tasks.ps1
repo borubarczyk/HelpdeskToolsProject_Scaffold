@@ -107,7 +107,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
         Update-HTJobsView -Module $m
     } | Out-Null
     $m.OnShow = { param($m) Update-HTJobsView -Module $m }
-    Add-HTRowAction -Module $m -Text 'Wykonaj teraz' -Icon 'E768' -Action {
+    Add-HTRowAction -Module $m -Text 'Wykonaj teraz' -Icon 'E768' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Wykonanie zadania' -Rows @($rows | Where-Object { $_.__job.Status -in 'Zaplanowane', 'Oczekuje na połączenie', 'Błąd' }) -Confirm 'Wykonać zaznaczone zadania teraz?' -Label { param($r) "$($r.Zadanie): $($r.Obiekt)" } -Action { param($r) Invoke-HTJobNow -Job $r.__job } -Refresh { param($m) Update-HTJobsView -Module $m }
     }
@@ -208,8 +208,9 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
             @{ Type = 'Header'; Label = 'Kroki' }
             @{ Name = 'Block'; Label = 'Zablokuj logowanie i unieważnij sesje'; Type = 'Check'; Default = $true }
             @{ Name = 'Password'; Label = 'Losowe hasło'; Type = 'Check'; Default = $true }
-            @{ Name = 'AutoReply'; Label = 'Autoodpowiedź (opcjonalnie, wymaga połączenia z Exchange w terminie)'; Type = 'Multiline'; Height = 50 }
+            @{ Name = 'AutoReply'; Label = 'Autoodpowiedź - ta sama treść dla osób z firmy i spoza firmy (opcjonalnie, wymaga połączenia z Exchange w terminie)'; Type = 'Multiline'; Height = 50 }
             @{ Name = 'Forward'; Label = 'Przekieruj pocztę do (opcjonalnie)'; Validation = 'Email' }
+            @{ Type = 'Buttons'; Buttons = @(@{ Text = 'Wybierz z tenanta…'; Icon = 'E716'; OnClick = { param($w) $address = Select-HTRecipientAddress; if ($address) { $w.Tag.Controls['Forward'].Control.Text = $address } } }) }
             @{ Name = 'Shared'; Label = 'Konwertuj na skrzynkę współdzieloną'; Type = 'Check'; Default = $true }
             @{ Name = 'Hide'; Label = 'Ukryj w książce adresowej'; Type = 'Check'; Default = $true }
             @{ Name = 'Groups'; Label = 'Usuń z grup'; Type = 'Check'; Default = $true }
