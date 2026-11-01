@@ -84,21 +84,32 @@ Register-HTModule -Workspace 'Dashboard' -Category 'Microsoft 365' -Key 'dash.li
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pobierz licencje' -Icon 'E72C' -Primary -OnClick {
         param($m)
+        # Oficjalne nazwy licencji Microsoft (pobierane raz na 30 dni, potem z pliku)
+        [void](Get-HTLicenseCatalog)
         Invoke-HTQuery -Module $m -Name 'Licencje' -ScriptBlock {
             foreach ($sku in @(Get-HTSubscribedSkus -Force | Sort-Object SkuPartNumber)) {
                 [PSCustomObject]@{
                     Licencja    = Get-HTSkuFriendlyName $sku.SkuPartNumber
+                    'Co zawiera' = Get-HTSkuDescription -ServicePlans @($sku.ServicePlans)
                     SKU         = $sku.SkuPartNumber
                     Zakupione   = $sku.Enabled
                     Przypisane  = $sku.Consumed
                     Dostępne    = $sku.Available
                     Stan        = $sku.Status
                     SkuId       = "$($sku.SkuId)"
+                    'Plany usług' = (@(Get-HTServicePlanNames -ServicePlans @($sku.ServicePlans)) -join "`n")
                     __flag      = if ($sku.Status -ne 'Enabled') { 'muted' } elseif ($sku.Enabled -gt 0 -and $sku.Available -le 0) { 'warn' } else { '' }
                 }
             }
         }
     } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Odśwież nazwy licencji' -Icon 'E895' -ToolTip 'Pobierz aktualną listę nazw licencji Microsoft (download.microsoft.com)' -OnClick {
+        param($m)
+        Set-HTBusy -Busy $true -Text 'Pobieranie listy nazw licencji…'
+        try { $catalog = Get-HTLicenseCatalog -Refresh } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        if ($catalog) { Show-HTToast "Lista nazw licencji: $($catalog.Products.Count) pozycji." 'ok'; Invoke-HTModulePrimary $m }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Dwuklik na licencji - pełna lista planów usług. Nazwy z oficjalnej listy Microsoft, najpopularniejsze po polsku.' | Out-Null
     Add-HTRowAction -Module $m -Text 'Pokaż użytkowników z licencją' -Icon 'E716' -Action {
         param($m, $rows)
         $sku = @($rows)[0]

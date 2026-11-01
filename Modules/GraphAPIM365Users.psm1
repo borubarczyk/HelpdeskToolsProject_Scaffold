@@ -51,6 +51,7 @@ function Get-HTSubscribedSkus {
                 Consumed      = [int]$_.consumedUnits
                 Available     = $enabled - [int]$_.consumedUnits
                 Status        = $_.capabilityStatus
+                ServicePlans  = @($_.servicePlans | Where-Object { $_ -and "$($_.provisioningStatus)" -ne 'Disabled' } | ForEach-Object { [string]$_.servicePlanName })
             }
         })
     return $script:SkuCache
@@ -443,8 +444,8 @@ function Get-HTM365UserDevices {
                     System        = "$($d.operatingSystem) $($d.osVersion)"
                     Zgodność      = $d.complianceState
                     Model         = $d.model
-                    NumerSeryjny  = $d.serialNumber
-                    OstatniaAktywność = $d.lastSyncDateTime
+                    'Numer seryjny'      = $d.serialNumber
+                    'Ostatnia aktywność' = $d.lastSyncDateTime
                 })
         }
     }
@@ -458,8 +459,8 @@ function Get-HTM365UserDevices {
                     System        = "$($d.operatingSystem) $($d.operatingSystemVersion)"
                     Zgodność      = if ($null -ne $d.isCompliant) { if ($d.isCompliant) { "compliant" } else { "noncompliant" } } else { "" }
                     Model         = $d.model
-                    NumerSeryjny  = ""
-                    OstatniaAktywność = $d.approximateLastSignInDateTime
+                    'Numer seryjny'      = ""
+                    'Ostatnia aktywność' = $d.approximateLastSignInDateTime
                 })
         }
     }
@@ -800,14 +801,145 @@ $script:SkuFriendlyNames = @{
     "FLOW_FREE" = "Power Automate (bezpłatna)"; "TEAMS_EXPLORATORY" = "Teams Exploratory"; "MCOEV" = "Teams Phone Standard"; "MCOMEETADV" = "Audio Conferencing"
     "VISIOCLIENT" = "Visio Plan 2"; "PROJECTPROFESSIONAL" = "Project Plan 3"; "WINDOWS_STORE" = "Windows Store for Business"; "ATP_ENTERPRISE" = "Defender for Office 365 (Plan 1)"
     "Microsoft_Teams_Rooms_Pro" = "Teams Rooms Pro"; "Microsoft_365_Copilot" = "Microsoft 365 Copilot"; "Microsoft_Teams_Premium" = "Teams Premium"
+    "DEVELOPERPACK_E5" = "Microsoft 365 E5 Developer (bez Windows i Audio Conferencing)"; "DEVELOPERPACK" = "Office 365 E3 Developer"
+    "POWERAPPS_DEV" = "Power Apps dla deweloperów (bezpłatna)"; "POWERAPPS_VIRAL" = "Power Apps Plan 2 (wersja próbna)"; "POWERAPPS_PER_USER" = "Power Apps Premium"
+    "Power_Pages_vTrial_for_Makers" = "Power Pages (wersja próbna dla twórców)"; "POWERAUTOMATE_ATTENDED_RPA" = "Power Automate Premium"; "FLOW_PER_USER" = "Power Automate (na użytkownika)"
+    "POWER_BI_PREMIUM_PER_USER" = "Power BI Premium (na użytkownika)"; "PBI_PREMIUM_PER_USER" = "Power BI Premium (na użytkownika)"; "STREAM" = "Microsoft Stream"
+    "SPE_E3_USGOV_DOD" = "Microsoft 365 E3 (DoD)"; "M365_F1" = "Microsoft 365 F1"; "SPE_F5_SEC" = "Microsoft 365 F5 Security"; "M365_E5_SUITE_COMPONENTS" = "Microsoft 365 E5 Suite"
+    "IDENTITY_THREAT_PROTECTION" = "Microsoft 365 E5 Security"; "INFORMATION_PROTECTION_COMPLIANCE" = "Microsoft 365 E5 Compliance"; "MDATP_XPLAT" = "Defender for Endpoint P2"
+    "DEFENDER_ENDPOINT_P1" = "Defender for Endpoint P1"; "THREAT_INTELLIGENCE" = "Defender for Office 365 (Plan 2)"; "Microsoft_Intune_Suite" = "Microsoft Intune Suite"
+    "PROJECTPREMIUM" = "Project Plan 5"; "PROJECT_P1" = "Project Plan 1"; "VISIO_PLAN1_DEPT" = "Visio Plan 1"; "EXCHANGEARCHIVE_ADDON" = "Exchange Online Archiving"
+    "MCOPSTN1" = "Plan połączeń krajowych Teams"; "PHONESYSTEM_VIRTUALUSER" = "Teams Phone - konto zasobu"; "Microsoft_Teams_Exploratory_Dept" = "Teams Exploratory"
+    "RIGHTSMANAGEMENT" = "Azure Information Protection P1"; "CCIBOTS_PRIVPREV_VIRAL" = "Copilot Studio (wersja próbna)"; "Microsoft_Copilot_Studio_Viral_Trial" = "Copilot Studio (wersja próbna)"
+}
+
+# Funkcje w planach usług licencji - krótki opis «co zawiera» (kolejność = kolejność w opisie)
+$script:ServicePlanFeatures = [ordered]@{
+    '^EXCHANGE_S_(STANDARD|ENTERPRISE|DESKLESS|FOUNDATION)'                    = 'poczta Exchange'
+    '^EXCHANGE_S_ARCHIVE'                                                       = 'archiwum poczty'
+    '^(SHAREPOINT(STANDARD|ENTERPRISE|DESKLESS|_S_DEVELOPER)|ONEDRIVE)'       = 'SharePoint i OneDrive'
+    '^(TEAMS1|TEAMS_FREE|TEAMS_AR)'                                             = 'Teams'
+    '^OFFICESUBSCRIPTION|^O365_BUSINESS$|^OFFICE_BUSINESS'                      = 'aplikacje Office na komputer'
+    '^SHAREPOINTWAC'                                                            = 'Office w przeglądarce'
+    '^MCOEV'                                                                    = 'Teams Phone'
+    '^MCOMEETADV'                                                               = 'Audio Conferencing'
+    '^INTUNE_'                                                                  = 'Intune'
+    '^AAD_PREMIUM$'                                                             = 'Entra ID P1'
+    '^AAD_PREMIUM_P2'                                                           = 'Entra ID P2'
+    '^(ATP_ENTERPRISE|THREAT_INTELLIGENCE)'                                     = 'Defender for Office 365'
+    '^(MDE_|WINDEFATP|MDATP)'                                                   = 'Defender for Endpoint'
+    '^(INFORMATION_PROTECTION|RMS_S_|MIP_S_)'                                   = 'ochrona informacji (Purview)'
+    '^(LOCKBOX|EQUIVIO|INSIDER_RISK|COMMUNICATIONS_COMPLIANCE|M365_ADVANCED_AUDITING|PAM_ENTERPRISE)' = 'zgodność (Purview)'
+    '^(WIN10_|WIN_ENT|WINDOWS_STORE|WINE5)'                                     = 'Windows Enterprise'
+    '^POWERAPPS_'                                                               = 'Power Apps'
+    '^FLOW_'                                                                    = 'Power Automate'
+    '^(POWER_PAGES|POWERAPPS_PORTALS|DYN365_CDS_VIRAL_PAGES)'                  = 'Power Pages'
+    '^(BI_AZURE_P|PBI_PREMIUM)'                                                 = 'Power BI'
+    '^(PROJECT_|PROJECTWORKMANAGEMENT|PROJECT_CLIENT)'                          = 'Project / Planner'
+    '^VISIO'                                                                    = 'Visio'
+    '^(STREAM|MICROSOFTSTREAM)'                                                 = 'Stream'
+    '^YAMMER'                                                                   = 'Viva Engage'
+    '^(M365_COPILOT|Microsoft_Copilot|COPILOT_STUDIO|CCIBOTS)'                  = 'Copilot'
+    '^(DYN365|D365_)'                                                           = 'Dynamics 365'
+}
+
+<#
+    Oficjalna lista nazw licencji Microsoft («Product names and service plan identifiers for licensing», CSV) - pobierana
+    na żądanie i zapisywana w %LOCALAPPDATA%\HelpdeskTools\LicenseNames.json (odświeżana co 30 dni).
+#>
+$script:LicenseCatalogUrl = 'https://download.microsoft.com/download/e/3/e/e3e9faf2-f28b-490a-9ada-c6089a1fc5b0/Product%20names%20and%20service%20plan%20identifiers%20for%20licensing.csv'
+$script:LicenseCatalog = $null
+$script:LicenseCatalogLoaded = $false
+# Nieudane pobranie (np. blokada sieci) - kolejna próba dopiero na żądanie (-Refresh), bez czekania przy każdym odświeżeniu
+$script:LicenseCatalogDownloadFailed = $false
+
+function Get-HTLicenseCatalogPath {
+    $base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [System.IO.Path]::GetTempPath() }
+    return (Join-Path $base 'HelpdeskTools\LicenseNames.json')
+}
+
+function ConvertFrom-HTLicenseCatalogCsv {
+    # Wiersze CSV Microsoft: Product_Display_Name, String_Id, GUID, Service_Plan_Name, Service_Plan_Id, Service_Plans_Included_Friendly_Names
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows)
+    $products = @{}
+    $plans = @{}
+    foreach ($r in $Rows) {
+        $sku = ([string]$r.String_Id).Trim()
+        if (-not $sku) { continue }
+        $name = ([string]$r.Product_Display_Name).Trim()
+        if ($name -and -not $products.ContainsKey($sku)) { $products[$sku] = $name }
+        $plan = ([string]$r.Service_Plan_Name).Trim()
+        $friendly = ([string]$r.Service_Plans_Included_Friendly_Names).Trim()
+        if ($plan -and $friendly -and -not $plans.ContainsKey($plan)) { $plans[$plan] = $friendly }
+    }
+    return @{ Products = $products; Plans = $plans; Updated = (Get-Date).ToUniversalTime().ToString('o') }
+}
+
+function Get-HTLicenseCatalog {
+    <#
+        Lista nazw licencji (Products: SKU -> nazwa, Plans: plan usługi -> nazwa). Z pliku w pamięci podręcznej; pobiera
+        nową, gdy jej brak lub jest starsza niż 30 dni (-NoDownload: tylko plik, -Refresh: pobranie teraz). $null - brak listy.
+    #>
+    param([switch]$Refresh, [switch]$NoDownload)
+    if ($script:LicenseCatalogLoaded -and -not $Refresh -and ($script:LicenseCatalog -or $NoDownload)) { return $script:LicenseCatalog }
+    $path = Get-HTLicenseCatalogPath
+    $catalog = $null
+    if (Test-Path -LiteralPath $path) {
+        try { $catalog = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+        catch { Write-Log -Message "Lista nazw licencji: nie odczytano pliku $path - $($_.Exception.Message)" -Type 'Warn' }
+    }
+    $updated = [datetime]::MinValue
+    $stale = -not $catalog -or -not [datetime]::TryParse([string]$catalog.Updated, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$updated) -or ((Get-Date).ToUniversalTime() - $updated.ToUniversalTime()).TotalDays -gt 30
+    if (($Refresh -or ($stale -and -not $script:LicenseCatalogDownloadFailed)) -and -not $NoDownload) {
+        $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("HT_licencje_" + [guid]::NewGuid().ToString('N') + '.csv')
+        try {
+            Invoke-WebRequest -Uri $script:LicenseCatalogUrl -OutFile $temp -TimeoutSec 20 -UseBasicParsing -ErrorAction Stop
+            $fresh = ConvertFrom-HTLicenseCatalogCsv -Rows @(Import-Csv -LiteralPath $temp -Encoding utf8)
+            if ($fresh.Products.Count -lt 50) { throw "nieoczekiwany format pliku ($($fresh.Products.Count) licencji)" }
+            $dir = Split-Path -Parent $path
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $fresh | ConvertTo-Json -Depth 4 -Compress | Set-Content -LiteralPath $path -Encoding utf8
+            $catalog = $fresh
+            $script:LicenseCatalogDownloadFailed = $false
+            Write-Log -Message "Pobrano listę nazw licencji Microsoft ($($fresh.Products.Count) licencji)." -Type 'Info'
+        }
+        catch {
+            $script:LicenseCatalogDownloadFailed = $true
+            Write-Log -Message "Nie pobrano listy nazw licencji Microsoft: $($_.Exception.Message). Używane są nazwy wbudowane$(if ($catalog) { ' i zapisana lista' })." -Type 'Warn'
+        }
+        finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+    $script:LicenseCatalog = $catalog
+    $script:LicenseCatalogLoaded = $true
+    return $catalog
 }
 
 function Get-HTSkuFriendlyName {
+    # Nazwa licencji: polska nazwa wbudowana, nazwa z oficjalnej listy Microsoft albo kod SKU
     param ([AllowEmptyString()][string]$SkuPartNumber)
     if (-not $SkuPartNumber) { return "" }
     $name = $script:SkuFriendlyNames[$SkuPartNumber]
     if ($name) { return $name }
+    $catalog = Get-HTLicenseCatalog -NoDownload
+    if ($catalog -and $catalog.Products -and $catalog.Products[$SkuPartNumber]) { return [string]$catalog.Products[$SkuPartNumber] }
     return $SkuPartNumber
+}
+
+function Get-HTSkuDescription {
+    # Krótki opis «co zawiera» z planów usług licencji (np. «poczta Exchange, Teams, SharePoint i OneDrive»)
+    param ([AllowEmptyCollection()][string[]]$ServicePlans = @())
+    $features = New-Object System.Collections.Generic.List[string]
+    foreach ($pattern in $script:ServicePlanFeatures.Keys) {
+        if (@($ServicePlans | Where-Object { $_ -match $pattern }).Count -and -not $features.Contains($script:ServicePlanFeatures[$pattern])) { $features.Add($script:ServicePlanFeatures[$pattern]) }
+    }
+    return ($features -join ', ')
+}
+
+function Get-HTServicePlanNames {
+    # Nazwy planów usług z oficjalnej listy (bez listy - kody planów)
+    param ([AllowEmptyCollection()][string[]]$ServicePlans = @())
+    $catalog = Get-HTLicenseCatalog -NoDownload
+    return @($ServicePlans | Where-Object { $_ } | ForEach-Object { if ($catalog -and $catalog.Plans -and $catalog.Plans[$_]) { [string]$catalog.Plans[$_] } else { $_ } } | Sort-Object -Unique)
 }
 
 # Użytkownicy z przypisaną licencją

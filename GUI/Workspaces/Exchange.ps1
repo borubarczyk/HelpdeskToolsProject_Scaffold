@@ -113,18 +113,18 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.type' -Ti
     $row2 = Add-HTToolbarRow -Module $m -Title 'Książka adresowa'
     Add-HTButton -Parent $row2 -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -Danger -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Ukrycie w GAL' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $true; 'Ukryta' }
+        Invoke-HTTargetAction -Module $m -Name 'Ukrycie w GAL' -Summary 'Skrzynka ukryta w książce adresowej (GAL): tak' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $true; 'Ukryta' }
     } | Out-Null
     Add-HTButton -Parent $row2 -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -Danger -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Pokazanie w GAL' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $false; 'Widoczna' }
+        Invoke-HTTargetAction -Module $m -Name 'Pokazanie w GAL' -Summary 'Skrzynka ukryta w książce adresowej (GAL): nie' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $false; 'Widoczna' }
     } | Out-Null
     $row3 = Add-HTToolbarRow -Module $m -Title 'Archiwum'
     $m.C.AutoExpand = Add-HTCheckBox -Parent $row3 -Text 'Archiwum automatycznie rozszerzane'
     Add-HTButton -Parent $row3 -Module $m -Text 'Włącz archiwum' -Icon 'E7B8' -Danger -OnClick {
         param($m)
         $auto = Test-HTChecked $m.C.AutoExpand
-        Invoke-HTTargetAction -Module $m -Name 'Włączenie archiwum' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Enable-HTMailboxArchive -Identity $t.PrimarySmtpAddress -AutoExpanding:$auto; 'Archiwum włączone' }
+        Invoke-HTTargetAction -Module $m -Name 'Włączenie archiwum' -Summary "Archiwum automatycznie rozszerzane: $(if ($auto) { 'tak' } else { 'nie' })" -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Enable-HTMailboxArchive -Identity $t.PrimarySmtpAddress -AutoExpanding:$auto; 'Archiwum włączone' }
     } | Out-Null
 }
 
@@ -236,7 +236,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.calend
         $user = $m.C.User.Text.Trim()
         if (-not $user) { Show-HTWarning 'Podaj użytkownika.'; return }
         $level = Get-HTComboText $m.C.Level
-        Invoke-HTTargetAction -Module $m -Name 'Uprawnienia kalendarza' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTCalendarPermission -Identity $t.PrimarySmtpAddress -User $user -AccessRights $level; "$user : $level" }
+        Invoke-HTTargetAction -Module $m -Name 'Uprawnienia kalendarza' -Summary @("Użytkownik: $user", "Poziom uprawnień do kalendarza: $level") -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTCalendarPermission -Identity $t.PrimarySmtpAddress -User $user -AccessRights $level; "$user : $level" }
     } | Out-Null
     Add-HTRowAction -Module $m -Text 'Usuń uprawnienie' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
@@ -285,7 +285,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
     } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E711' -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Wyłączenie autoodpowiedzi' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress -State Disabled; 'Wyłączona' }
+        Invoke-HTTargetAction -Module $m -Name 'Wyłączenie autoodpowiedzi' -Summary 'Tryb: Disabled (odpowiedzi automatyczne wyłączone)' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress -State Disabled; 'Wyłączona' }
     } | Out-Null
 }
 
@@ -300,7 +300,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.forward' -T
         $to = $m.C.To.Text.Trim()
         if (-not (Test-HTInputValue -Value $to -ValidationType Email)) { Show-HTWarning 'Podaj prawidłowy adres e-mail.'; return }
         $keep = Test-HTChecked $m.C.Keep
-        Invoke-HTTargetAction -Module $m -Name 'Przekierowanie' -Confirm "Przekierować pocztę do $($to)?" -Label { param($t) Get-HTMailboxLabel $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Przekierowanie' -Confirm "Przekierować pocztę do $($to)?" -Summary @("Przekierowanie do: $to", "Kopia w skrzynce: $(if ($keep) { 'tak' } else { 'nie' })") -Label { param($t) Get-HTMailboxLabel $t } -Action {
             param($t)
             Set-HTMailboxForwarding -Identity $t.PrimarySmtpAddress -ForwardTo $to -KeepCopy $keep
             $t.Forwarding = $to
@@ -310,7 +310,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.forward' -T
     } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Usuń przekierowanie' -Icon 'E711' -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Usunięcie przekierowania' -Label { param($t) Get-HTMailboxLabel $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Usunięcie przekierowania' -Summary 'Przekierowanie poczty: (wyczyść)' -Label { param($t) Get-HTMailboxLabel $t } -Action {
             param($t)
             Set-HTMailboxForwarding -Identity $t.PrimarySmtpAddress -ForwardTo ''
             $t.Forwarding = ''
@@ -378,7 +378,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
         $alias = $m.C.Alias.Text.Trim()
         $t = @(Get-HTTargets -Module $m -Single)[0]
         if (-not $t) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Dodanie aliasu' -Targets @($t) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Add-HTMailboxAddress -Identity $t.PrimarySmtpAddress -Address $alias; "Dodano: $alias" }
+        Invoke-HTTargetAction -Module $m -Name 'Dodanie aliasu' -Summary "Nowy adres (alias): $alias" -Targets @($t) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Add-HTMailboxAddress -Identity $t.PrimarySmtpAddress -Address $alias; "Dodano: $alias" }
     } | Out-Null
     Add-HTRowAction -Module $m -Text 'Usuń adres' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
@@ -448,7 +448,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         $changes = Show-HTSettingsEditor -Title 'Ustawienia grupy' -Description $desc -Definitions $defs -Current $current -Objects @($groups | ForEach-Object { $_.Nazwa }) -Icon 'E902'
         if (-not $changes) { return }
         $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
-        Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy' -Rows $groups -Label { param($r) $r.Nazwa } -Action { param($r) Invoke-HTMailboxSettingPlan -Identity $r.Identity -Plan $plan } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy' -Rows $groups -NoConfirm -Label { param($r) $r.Nazwa } -Action { param($r) Invoke-HTMailboxSettingPlan -Identity $r.Identity -Plan $plan } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Action {
         param($m, $rows)
@@ -456,7 +456,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         if (-not $g) { return }
         $members = @(Split-HTInputList (Show-InputBox -Title "Dodaj do: $($g.Nazwa)" -Prompt 'Adresy e-mail członków (jeden w linii, przecinek albo średnik):' -Multiline -Icon 'E8FA'))
         if ($members.Count -eq 0) { return }
-        Invoke-HTRowAction -Module $m -Name "Dodanie członków do $($g.Nazwa)" -Rows @($g) -Label { param($r) $r.Nazwa } -Action {
+        Invoke-HTRowAction -Module $m -Name "Dodanie członków do $($g.Nazwa)" -Summary @("Nowi członkowie ($($members.Count)): $(@($members | Select-Object -First 15) -join ', ')$(if ($members.Count -gt 15) { ' …' })") -Rows @($g) -Label { param($r) $r.Nazwa } -Action {
             param($r)
             $res = Add-HTDistributionGroupMembers -Group $r.Identity -Members $members
             if (@($res.Errors).Count) { throw "dodano: $($res.Added); błędy: $(@($res.Errors) -join '; ')" }
@@ -559,7 +559,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.hold' -
     Add-HTButton -Parent $row2 -Module $m -Text 'Ustaw' -Icon 'E73E' -OnClick {
         param($m)
         $days = Get-HTNum $m.C.Retain
-        Invoke-HTTargetAction -Module $m -Name 'Retencja usuniętych elementów' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxRetainDeletedItems -Identity $t.PrimarySmtpAddress -Days $days; "$days dni" }
+        Invoke-HTTargetAction -Module $m -Name 'Retencja usuniętych elementów' -Summary "Przechowywanie usuniętych elementów: $days dni" -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxRetainDeletedItems -Identity $t.PrimarySmtpAddress -Days $days; "$days dni" }
     } | Out-Null
 }
 #endregion
@@ -641,7 +641,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.access
         param($m, $rows)
         $full = @($rows | Where-Object { $_.__type -eq 'FullAccess' })
         if (-not $full.Count) { Show-HTWarning 'Zaznacz wiersze «Pełny dostęp».'; return }
-        Invoke-HTRowAction -Module $m -Name 'Włączenie automapowania' -Rows $full -Label { param($r) "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" } -Action { param($r) Set-HTMailboxAutoMapping -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Enabled $true; 'Pełny dostęp z automapowaniem' }
+        Invoke-HTRowAction -Module $m -Name 'Włączenie automapowania' -Summary 'Pełny dostęp zostanie nadany ponownie z automapowaniem (skrzynka pojawi się w Outlooku)' -Rows $full -Label { param($r) "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" } -Action { param($r) Set-HTMailboxAutoMapping -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Enabled $true; 'Pełny dostęp z automapowaniem' }
     }
 }
 #endregion
@@ -695,7 +695,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Sale i zasoby' -Key 'exo.book
             }
         }
         if ($settings.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
-        Invoke-HTTargetAction -Module $m -Name 'Ustawienia rezerwacji' -Targets $targets -Label { param($t) Get-HTMailboxLabel $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Ustawienia rezerwacji' -Summary @(ConvertTo-HTChangeSummary -Settings $settings) -Targets $targets -Label { param($t) Get-HTMailboxLabel $t } -Action {
             param($t)
             Set-HTRoomBookingSettings -Identity $t.PrimarySmtpAddress -Settings $settings
             "Zmieniono: $(@($settings.Keys) -join ', ')"
@@ -802,8 +802,8 @@ function Show-HTSettingsEditor {
         if (@($r.Errors).Count) { Show-HTWarning -Title $Title -Text ("Popraw wartości:`n`n" + (@($r.Errors) -join "`n")); continue }
         if (@($r.Changes).Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return $null }
         $items = @($r.Changes | ForEach-Object { "$($_.Label): $($_.Display)" })
-        $who = if ($Objects.Count -eq 1) { $Objects[0] } else { "$($Objects.Count) pozycji" }
-        if (Show-HTConfirm -Title $Title -ConfirmText 'Zapisz' -Message "Zapisać zmiany ($($items.Count)) - $($who)? «Anuluj» wraca do formularza." -Items $items) { return @($r.Changes) }
+        # Potwierdzenie z listą zmian i obiektów (wywołujący wykonuje zmiany z -NoConfirm)
+        if (Confirm-HTChange -Name $Title -Labels $Objects -Summary $items -Confirm "Zapisać zmiany ($($items.Count))? «Anuluj» wraca do formularza.") { return @($r.Changes) }
     }
 }
 
@@ -861,7 +861,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.settings'
         $changes = Show-HTSettingsEditor -Title 'Ustawienia skrzynki' -Description $desc -Definitions @(Get-HTMailboxSettingDefinitions) -Current $current -Options $options -Objects @($targets | ForEach-Object { Get-HTMailboxLabel $_ }) -Icon 'E715'
         if (-not $changes) { return }
         $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
-        Invoke-HTTargetAction -Module $m -Name 'Ustawienia skrzynki' -Targets $targets -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Invoke-HTMailboxSettingPlan -Identity $t.PrimarySmtpAddress -Plan $plan }
+        Invoke-HTTargetAction -Module $m -Name 'Ustawienia skrzynki' -Targets $targets -NoConfirm -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Invoke-HTMailboxSettingPlan -Identity $t.PrimarySmtpAddress -Plan $plan }
     } | Out-Null
     Add-HTLabel -Parent $row -Text 'Sekcja:' | Out-Null
     $m.C.Section = Add-HTComboBox -Parent $row -Width 210 -Items (@('Wszystkie sekcje') + @(Get-HTMailboxSectionKeys | ForEach-Object { $sections[$_].Title }))
@@ -1202,16 +1202,18 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.con
         # Tylko zmienione pola; wyczyszczone - «-»
         $diff = { param($new, $old) if ([string]$new -ceq [string]$old) { '' } elseif (-not $new) { '-' } else { [string]$new } }
         $params = @{ Identity = $c.Identity; DisplayName = (& $diff $form.DisplayName $c.Nazwa); Email = (& $diff $form.Email $c.'Adres e-mail'); Company = (& $diff $form.Company $c.Firma); Title = (& $diff $form.Title $c.Stanowisko); Phone = (& $diff $form.Phone $c.Telefon) }
-        if (-not (@($params.Keys | Where-Object { $_ -ne 'Identity' -and $params[$_] }).Count)) { Show-HTToast 'Brak zmian.' 'info'; return }
-        Invoke-HTRowAction -Module $m -Name 'Zmiana kontaktu' -Rows @($c) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactDetails @params; 'Zapisano' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        $changed = [ordered]@{}
+        foreach ($k in 'DisplayName', 'Email', 'Company', 'Title', 'Phone') { if ($params[$k]) { $changed[$k] = $params[$k] } }
+        if ($changed.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
+        Invoke-HTRowAction -Module $m -Name 'Zmiana kontaktu' -Summary @(ConvertTo-HTChangeSummary -Settings $changed -Labels @{ DisplayName = 'Nazwa'; Email = 'Adres e-mail'; Company = 'Firma'; Title = 'Stanowisko'; Phone = 'Telefon' }) -Rows @($c) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactDetails @params; 'Zapisano' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -Action {
         param($m, $rows)
-        Invoke-HTRowAction -Module $m -Name 'Ukrycie kontaktu w GAL' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $true; 'Ukryty' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        Invoke-HTRowAction -Module $m -Name 'Ukrycie kontaktu w GAL' -Summary 'Kontakt ukryty w książce adresowej (GAL): tak' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $true; 'Ukryty' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -Action {
         param($m, $rows)
-        Invoke-HTRowAction -Module $m -Name 'Pokazanie kontaktu w GAL' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $false; 'Widoczny' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        Invoke-HTRowAction -Module $m -Name 'Pokazanie kontaktu w GAL' -Summary 'Kontakt ukryty w książce adresowej (GAL): nie' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $false; 'Widoczny' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Usuń kontakt' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
@@ -1278,7 +1280,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.folder
         if (-not $form) { return }
         $paths = @($folders | ForEach-Object { $_.__path })
         $all = @($m.Data.FolderPaths)
-        Invoke-HTRowAction -Module $m -Name 'Odebranie uprawnień do folderów' -Rows @(Split-HTInputList $form.Users) -Danger -Label { param($u) $u } -Action {
+        Invoke-HTRowAction -Module $m -Name 'Odebranie uprawnień do folderów' -Summary @("Skrzynka: $mailbox", "Foldery: $($folders.Count)$(if ($form.Sub) { ' wraz z podfolderami' })") -Rows @(Split-HTInputList $form.Users) -Danger -Label { param($u) $u } -Action {
             param($u)
             Revoke-HTMailboxFolderAccess -Mailbox $mailbox -Paths $paths -User $u -IncludeSubfolders:([bool]$form.Sub) -AllPaths $all
         }

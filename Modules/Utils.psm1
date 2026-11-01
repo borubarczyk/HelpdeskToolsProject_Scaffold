@@ -474,3 +474,92 @@ function Get-HTDaysSince {
     if ($value.Year -lt 1700) { return $null }
     return [int][Math]::Floor(((Get-Date) - $value).TotalDays)
 }
+
+#region Potwierdzenie zmian (treść bez interfejsu)
+$script:FormSecretLabelPattern = 'hasł|password|secret|sekret|klucz|token|\bpin\b'
+
+function ConvertTo-HTFormSummaryLine {
+    <#
+        Jedna linia «Etykieta: wartość» do okna potwierdzenia zmiany; pusty tekst - pole pomijane
+        (puste, «(bez zmian)», niezaznaczone pole wyboru, pole z NoSummary). Hasła i sekrety są maskowane.
+    #>
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Field, [string]$Type = 'Text', $Value)
+    if ($Field.NoSummary) { return '' }
+    $label = ([string]$Field.Label).Trim().TrimEnd(':', '*', ' ')
+    if (-not $label) { $label = [string]$Field.Name }
+    switch ($Type) {
+        'Check' { if ($Value -eq $true) { return "$label - tak" }; return '' }
+        'Date' {
+            if ($Value -is [datetime]) { return "${label}: $($Value.ToString($(if ($Field.DateOnly) { 'yyyy-MM-dd' } else { 'yyyy-MM-dd HH:mm' })))" }
+            return ''
+        }
+        'Number' { return "${label}: $Value" }
+    }
+    $text = [string]$Value
+    if (-not $text.Trim() -or $text.Trim() -eq '(bez zmian)') { return '' }
+    if ($Type -eq 'Password' -or $Field.Secret -or $label -match $script:FormSecretLabelPattern) { return "${label}: ••••••" }
+    $lines = @($text -split '\r?\n' | Where-Object { $_.Trim() })
+    $first = $lines[0].Trim()
+    if ($first.Length -gt 90) { $first = $first.Substring(0, 89) + '…' }
+    elseif ($lines.Count -gt 1) { $first += ' …' }
+    if ($lines.Count -gt 1) { $first += " (wierszy: $($lines.Count))" }
+    return "${label}: $first"
+}
+
+function ConvertTo-HTChangeSummary {
+    # Słownik zmian (parametr -> wartość) jako linie «Nazwa: wartość» do potwierdzenia; $null/«-» - wyczyszczenie
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Settings, [hashtable]$Labels = @{})
+    foreach ($k in @($Settings.Keys)) {
+        $v = $Settings[$k]
+        $name = if ($Labels.ContainsKey([string]$k)) { $Labels[[string]$k] } else { [string]$k }
+        $text = if ($null -eq $v -or "$v" -eq '-') { '(wyczyść)' }
+        elseif ($v -is [bool]) { if ($v) { 'tak' } else { 'nie' } }
+        elseif ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { $list = @($v | ForEach-Object { "$_" }); if ($list.Count) { $list -join ', ' } else { '(wyczyść)' } }
+        else { [string]$v }
+        "${name}: $text"
+    }
+}
+
+function Get-HTChangeConfirmation {
+    <#
+        Treść potwierdzenia zmiany (bez interfejsu): @{ Message; Details; ItemsHeader; ConfirmText; LogText }.
+        Pokazuje nazwę operacji, co zostanie ustawione (-Summary albo wartości formularza) i liczbę obiektów.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Labels,
+        [string]$Confirm = '',
+        [string[]]$Summary = @(),
+        [string]$Source = ''
+    )
+    $details = @($Summary | Where-Object { "$_".Trim() })
+    $count = $Labels.Count
+    $message = if ($Confirm) { $Confirm } else { "Operacja: $Name. Sprawdź, co zostanie zmienione i na których obiektach." }
+    $header = "Dotyczy obiektów ($count)" + $(if ($Source) { " - $Source" } else { '' }) + ':'
+    $preview = @($Labels | Select-Object -First 10) -join ', '
+    if ($count -gt 10) { $preview += " … (+$($count - 10))" }
+    $log = "«$Name» - obiektów: $count ($preview)" + $(if ($details.Count) { "; $($details -join '; ')" } else { '' })
+    return @{
+        Message     = $message
+        Details     = $details
+        ItemsHeader = $header
+        ConfirmText = $(if ($count -gt 1) { "Wykonaj ($count)" } else { 'Wykonaj' })
+        LogText     = $log
+    }
+}
+function Group-HTWarningMessages {
+    <#
+        Ostrzeżenia poleceń do dziennika: bez powtórzeń (kolejność pierwszego wystąpienia), z liczbą powtórzeń «(×N)»
+        i bez pustych wierszy (np. Exchange powtarza to samo ostrzeżenie dla każdej skrzynki).
+    #>
+    param([AllowEmptyCollection()][string[]]$Messages = @())
+    $order = New-Object System.Collections.Generic.List[string]
+    $counts = @{}
+    foreach ($m in $Messages) {
+        $text = (([string]$m) -replace '\s+', ' ').Trim()
+        if (-not $text) { continue }
+        if ($counts.ContainsKey($text)) { $counts[$text]++ } else { $counts[$text] = 1; $order.Add($text) }
+    }
+    foreach ($text in $order) { if ($counts[$text] -gt 1) { "$text (×$($counts[$text]))" } else { $text } }
+}
+#endregion

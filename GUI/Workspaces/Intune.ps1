@@ -79,7 +79,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Urządzenie' -Key 'int.primary'
         if ($targets.Count -eq 0) { return }
         $user = Select-HTM365User -Title 'Użytkownik podstawowy' -Prompt "Dla urządzeń: $($targets.Count)"
         if (-not $user) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Zmiana użytkownika podstawowego' -Targets $targets -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Set-HTIntunePrimaryUser -Id $t.Id -UserId $user.Id; "Użytkownik: $($user.UserPrincipalName)" }
+        Invoke-HTTargetAction -Module $m -Name 'Zmiana użytkownika podstawowego' -Summary "Nowy użytkownik podstawowy: $($user.UserPrincipalName)" -Targets $targets -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Set-HTIntunePrimaryUser -Id $t.Id -UserId $user.Id; "Użytkownik: $($user.UserPrincipalName)" }
     } | Out-Null
 }
 
@@ -351,7 +351,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Autopilot' -Key 'int.autopilot'
         if (-not $items.Count) { return }
         $tag = Show-InputBox -Title 'Group tag' -Prompt "Group tag dla urządzeń: $($items.Count) (puste - usunięcie tagu):" -AllowEmpty -DefaultText ([string]$items[0].'Group tag') -Icon 'E8EC'
         if ($null -eq $tag) { return }
-        Invoke-HTRowAction -Module $m -Name 'Group tag Autopilot' -Rows $items -Label { param($r) $r.'Numer seryjny' } -Action { param($r) Set-HTAutopilotGroupTag -Id $r.Id -GroupTag $tag; "Group tag: $(if ($tag) { $tag } else { '(brak)' })" } -Refresh $m.Data.Refresh
+        Invoke-HTRowAction -Module $m -Name 'Group tag Autopilot' -Summary "Group tag: $(if ($tag) { $tag } else { '(usunięcie tagu)' })" -Rows $items -Label { param($r) $r.'Numer seryjny' } -Action { param($r) Set-HTAutopilotGroupTag -Id $r.Id -GroupTag $tag; "Group tag: $(if ($tag) { $tag } else { '(brak)' })" } -Refresh $m.Data.Refresh
     }
     Add-HTRowAction -Module $m -Text 'Usuń z Autopilot' -Icon 'E74D' -Danger -Action {
         param($m, $rows)

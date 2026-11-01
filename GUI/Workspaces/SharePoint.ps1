@@ -147,7 +147,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.newfo
         if (-not $name) { Show-HTWarning 'Podaj nazwę folderu.'; return }
         $t = @(Get-HTTargets -Module $m -Single)[0]
         if (-not $t) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Nowy folder' -Targets @($t) -Label { param($t) Get-HTSPNodeLabel $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Nowy folder' -Summary "Nowy folder: $name" -Targets @($t) -Label { param($t) Get-HTSPNodeLabel $t } -Action {
             param($t)
             $folder = New-HTSPFolder -ParentNode $t -Name $name
             "Utworzono: $($folder.ServerRelativeUrl)"
@@ -200,6 +200,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
             @{ Name = 'Members'; Label = 'Członkowie (e-mail, jeden w linii)'; Type = 'Multiline'; Height = 80 }
         )
         if (-not $form) { return }
+        if (-not (Confirm-HTChange -Name 'Tworzenie grupy' -Labels @([string]$form.Title) -Confirm "Utworzyć grupę SharePoint $($form.Title)?")) { return }
         Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -ScriptBlock {
             New-HTSPGroup -Title $form.Title -Description $form.Description -Members @(Split-HTInputList $form.Members) | Out-Null
             if ($form.Role -and $form.Role -ne $none) { Set-HTSPGroupWebRole -Group $form.Title -Role $form.Role }
@@ -218,7 +219,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
         $text = Show-InputBox -Title "Dodaj do: $($g.Nazwa)" -Prompt 'Adresy e-mail lub loginy (jeden w linii):' -Multiline -Icon 'E8FA'
         $logins = @(Split-HTInputList $text)
         if ($logins.Count -eq 0) { return }
-        Invoke-HTRowAction -Module $m -Name "Dodanie do $($g.Nazwa)" -Rows $logins -Label { param($r) $r } -Action { param($r) Add-HTSPGroupMember -Group $g.Nazwa -LoginName $r }
+        Invoke-HTRowAction -Module $m -Name "Dodanie do $($g.Nazwa)" -Summary "Grupa SharePoint: $($g.Nazwa)" -Rows $logins -Label { param($r) $r } -Action { param($r) Add-HTSPGroupMember -Group $g.Nazwa -LoginName $r }
     }
     Add-HTRowAction -Module $m -Text 'Usuń członków…' -Icon 'E738' -Danger -Action {
         param($m, $rows)
@@ -261,7 +262,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
             if ([string]$v -cne [string]$cur[$k]) { $settings[$k] = $v }
         }
         if ($settings.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
-        Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy SharePoint' -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTSPGroupOptions -Group $r.Nazwa -Settings $settings; "Zmieniono: $(@($settings.Keys) -join ', ')" } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy SharePoint' -Summary @(ConvertTo-HTChangeSummary -Settings $settings) -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTSPGroupOptions -Group $r.Nazwa -Settings $settings; "Zmieniono: $(@($settings.Keys) -join ', ')" } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Usuń grupę' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
@@ -699,7 +700,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.columns
             if ($columns.Count -and -not $bad.Count) { break }
             Show-HTWarning -Title 'Kolumny' -Text ("Popraw:`n`n" + (@($bad | ForEach-Object { "$($_.DisplayName): $(@($_.Errors) -join ', ')" }) -join "`n"))
         }
-        Invoke-HTTargetAction -Module $m -Name 'Dodanie kolumn' -Targets $lists -Label { param($t) $t.ListTitle } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Dodanie kolumn' -Summary "Kolumny ($($columns.Count)): $(@($columns | ForEach-Object { $_.DisplayName }) -join ', ')" -Targets $lists -Label { param($t) $t.ListTitle } -Action {
             param($t)
             $done = @(); $failed = @()
             foreach ($c in $columns) { try { Add-HTSPLibraryColumn -Node $t -Column $c; $done += $c.DisplayName } catch { $failed += "$($c.DisplayName): $($_.Exception.Message)" } }
@@ -1002,7 +1003,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.newsite' 
         $type = $types[$form.Type]
         $lcid = $languages[$form.Language]
         $owners = @(Split-HTInputList $form.Owners)
-        if (-not (Show-HTConfirm -Title 'Nowa witryna' -ConfirmText 'Utwórz' -Message "Utworzyć witrynę «$($form.Title)» ($($form.Type)) pod adresem /sites/$($alias)? Tworzenie trwa do kilku minut.")) { return }
+        if (-not (Confirm-HTChange -Name 'Nowa witryna' -Labels @("/sites/$alias") -Confirm "Utworzyć witrynę «$($form.Title)» ($($form.Type)) pod adresem /sites/$($alias)? Tworzenie trwa do kilku minut.")) { return }
         Reset-HTResults -Module $m
         Set-HTBusy -Busy $true -Text "Tworzenie witryny $($form.Title)… (do kilku minut)"
         try { $url = New-HTSPSite -Type $type -Title $form.Title -Alias $alias -Description ([string]$form.Description) -Owners $owners -IsPublic ([bool]$form.Public) -Lcid $lcid }

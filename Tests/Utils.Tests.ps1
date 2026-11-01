@@ -296,3 +296,50 @@ Describe "Szczegółowy dziennik (debug)" {
         @(Read-HTLogFile -Path (Get-HTLogFile) -Text "Graph GET users")[-1].Poziom | Should -Be "Debug"
     }
 }
+
+Describe "Potwierdzenie zmian - treść" {
+    It "opisuje pola formularza: pomija puste, «(bez zmian)» i niezaznaczone, maskuje hasła" {
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Tryb' } -Type Combo -Value 'Scheduled' | Should -Be 'Tryb: Scheduled'
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Od' } -Type Date -Value ([datetime]'2026-11-02 08:00') | Should -Be 'Od: 2026-11-02 08:00'
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Wygasa'; DateOnly = $true } -Type Date -Value ([datetime]'2026-12-31') | Should -Be 'Wygasa: 2026-12-31'
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Jednorazowy' } -Type Check -Value $true | Should -Be 'Jednorazowy - tak'
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Jednorazowy' } -Type Check -Value $false | Should -Be ''
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Opis' } -Type Text -Value '  ' | Should -Be ''
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Język' } -Type Combo -Value '(bez zmian)' | Should -Be ''
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Hasło' } -Type Password -Value 'Tajne123!' | Should -Be 'Hasło: ••••••'
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Nowe hasło konta' } -Type Text -Value 'Tajne123!' | Should -Be 'Nowe hasło konta: ••••••'
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Notatka'; NoSummary = $true } -Type Text -Value 'x' | Should -Be ''
+        ConvertTo-HTFormSummaryLine -Field @{ Name = 'Days' } -Type Number -Value 30 | Should -Be 'Days: 30'
+    }
+    It "skraca wielowierszowe i długie wartości" {
+        ConvertTo-HTFormSummaryLine -Field @{ Label = 'Wiadomość wewnętrzna' } -Type Multiline -Value "Jestem na urlopie.`r`nWracam 10.11.`r`n`r`nPozdrawiam" | Should -Be 'Wiadomość wewnętrzna: Jestem na urlopie. … (wierszy: 3)'
+        $long = ConvertTo-HTFormSummaryLine -Field @{ Label = 'Opis' } -Type Text -Value ('a' * 200)
+        $long.Length | Should -Be ('Opis: '.Length + 90)
+        $long | Should -BeLike '*…'
+    }
+    It "zamienia słownik zmian na linie (tak/nie, listy, wyczyszczenie, etykiety)" {
+        $lines = @(ConvertTo-HTChangeSummary -Settings ([ordered]@{ AllowConflicts = $false; BookInPolicy = @('a@x.pl', 'b@x.pl'); ResourceDelegates = $null; Title = 'Kierownik' }) -Labels @{ Title = 'Stanowisko' })
+        $lines | Should -Be @('AllowConflicts: nie', 'BookInPolicy: a@x.pl, b@x.pl', 'ResourceDelegates: (wyczyść)', 'Stanowisko: Kierownik')
+    }
+    It "buduje treść potwierdzenia: operacja, ustawienia, liczba obiektów i wpis do dziennika" {
+        $labels = @(1..12 | ForEach-Object { "user$_@firma.pl" })
+        $c = Get-HTChangeConfirmation -Name 'Autoodpowiedź' -Labels $labels -Summary @('Tryb: Enabled', '', 'Odbiorcy zewnętrzni: All') -Source 'zaznaczone na liście'
+        $c.Message | Should -Match 'Autoodpowiedź'
+        $c.Details | Should -Be @('Tryb: Enabled', 'Odbiorcy zewnętrzni: All')
+        $c.ItemsHeader | Should -Be 'Dotyczy obiektów (12) - zaznaczone na liście:'
+        $c.ConfirmText | Should -Be 'Wykonaj (12)'
+        $c.LogText | Should -Match '^«Autoodpowiedź» - obiektów: 12 \(user1@firma.pl, .*user10@firma.pl … \(\+2\)\); Tryb: Enabled; Odbiorcy zewnętrzni: All$'
+        $single = Get-HTChangeConfirmation -Name 'Nowy folder' -Labels @('Dokumenty') -Confirm 'Utworzyć folder?'
+        $single.Message | Should -Be 'Utworzyć folder?'
+        $single.ConfirmText | Should -Be 'Wykonaj'
+        $single.ItemsHeader | Should -Be 'Dotyczy obiektów (1):'
+    }
+}
+
+Describe "Ostrzeżenia poleceń w dzienniku" {
+    It "łączy powtórzenia z liczbą i pomija puste" {
+        $lines = @(Group-HTWarningMessages -Messages @('Events from Email parameters of this cmdlet are deprecated.', '', 'Inne  ostrzeżenie', 'Events from Email parameters of this cmdlet are deprecated.', "Inne ostrzeżenie`n"))
+        $lines | Should -Be @('Events from Email parameters of this cmdlet are deprecated. (×2)', 'Inne ostrzeżenie (×2)')
+        @(Group-HTWarningMessages -Messages @()).Count | Should -Be 0
+    }
+}
