@@ -57,7 +57,7 @@ function Start-HTServiceWorker {
     $state.Runspace = $rs
     $state.ModulePath = ''
     try {
-        $r = Invoke-HTServiceWorker -Service $Service -Script 'param($Path) Import-Module -Name $Path -ErrorAction Stop -WarningAction SilentlyContinue -DisableNameChecking | Out-Null' -Arguments @{ Path = $ModulePath }
+        $r = Invoke-HTServiceWorker -Service $Service -Script 'param($Path) Import-Module -Name $Path -Global -ErrorAction Stop -WarningAction SilentlyContinue -DisableNameChecking | Out-Null' -Arguments @{ Path = $ModulePath }
         if (@($r.Errors).Count) { throw $r.Errors[0].Exception }
     }
     catch {
@@ -120,7 +120,8 @@ function Invoke-HTServiceWorker {
     $ps = [System.Management.Automation.PowerShell]::Create()
     $ps.Runspace = $rs
     if ($Script) {
-        [void]$ps.AddScript($Script)
+        # Własny zakres skryptu - zmienne skryptu (np. $PSModuleAutoLoadingPreference) nie zostają w wątku usługi
+        [void]$ps.AddScript($Script, $true)
         if ($Arguments.Count) { [void]$ps.AddParameters($Arguments) }
     }
     else {
@@ -239,17 +240,27 @@ function Register-HTServiceProxies {
     $always = if ($definition) { @($definition.Always) } else { @() }
     $never = if ($definition) { @($definition.Never) } else { @() }
     $all = @(@($Names) + $always | Where-Object { $_ -and $never -notcontains $_ } | Select-Object -Unique)
+    # Tylko polecenia z modułów usługi już wczytanych w wątku (ExportedCommands) - bez Get-Command po nazwach:
+    # Get-Command automatycznie wczytuje każdy moduł z poleceniem o tej nazwie (np. ActiveDirectory, Graph, PnP
+    # w wątku Exchange), co trwa długo albo się zawiesza (moduł AD łączy się z kontrolerem domeny)
     $describe = @'
 param($Names, $Modules)
+$PSModuleAutoLoadingPreference = 'None'
+$wanted = New-Object 'System.Collections.Generic.HashSet[string]' ([string[]]@($Names), [System.StringComparer]::OrdinalIgnoreCase)
+$seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 $common = @([System.Management.Automation.Cmdlet]::CommonParameters) + @([System.Management.Automation.Cmdlet]::OptionalCommonParameters)
-foreach ($c in @(Get-Command -Name $Names -CommandType Function, Cmdlet -ErrorAction SilentlyContinue)) {
-    $module = [string]$c.ModuleName
+foreach ($m in @(Get-Module)) {
+    $module = [string]$m.Name
     if (-not @($Modules | Where-Object { $module -like $_ }).Count) { continue }
-    $params = foreach ($p in @($c.Parameters.Values)) {
-        if ($common -contains $p.Name) { continue }
-        [PSCustomObject]@{ Name = $p.Name; Switch = [bool]$p.SwitchParameter; Aliases = @($p.Aliases) }
+    foreach ($c in @($m.ExportedCommands.Values)) {
+        if ("$($c.CommandType)" -notin 'Function', 'Cmdlet') { continue }
+        if (-not $wanted.Contains($c.Name) -or -not $seen.Add($c.Name)) { continue }
+        $params = foreach ($p in @($c.Parameters.Values)) {
+            if ($common -contains $p.Name) { continue }
+            [PSCustomObject]@{ Name = $p.Name; Switch = [bool]$p.SwitchParameter; Aliases = @($p.Aliases) }
+        }
+        [PSCustomObject]@{ Name = $c.Name; Module = $module; Parameters = @($params) }
     }
-    [PSCustomObject]@{ Name = $c.Name; Module = $module; Parameters = @($params) }
 }
 '@
     $r = Invoke-HTServiceWorker -Service $Service -Script $describe -Arguments @{ Names = [string[]]$all; Modules = [string[]]$Modules }
@@ -295,10 +306,15 @@ function Connect-HTExchangeWorker {
     Start-HTServiceWorker -Service 'Exchange' -ModulePath $ModulePath
     $params = [ordered]@{}
     foreach ($k in @($Parameters.Keys)) { if ($script:LocalOnlyParameters -notcontains [string]$k) { $params[[string]$k] = $Parameters[$k] } }
+    $debug = Get-Command -Name Write-HTDebug -ErrorAction Ignore
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $r = Invoke-HTServiceWorker -Service 'Exchange' -Command 'Connect-ExchangeOnline' -Parameters $params
+    if ($debug) { & $debug { "Wątek Exchange: Connect-ExchangeOnline zakończone po $([int]$sw.Elapsed.TotalSeconds) s (błędy: $(@($r.Errors).Count))" } }
     if (@($r.Errors).Count) { throw $r.Errors[0].Exception }
     foreach ($w in @($r.Warnings)) { Write-Warning ([string]$w.Message) }
+    $sw.Restart()
     [void](Register-HTServiceProxies -Service 'Exchange' -Names (Get-HTProgramCommandNames))
+    if ($debug) { & $debug { "Wątek Exchange: pośrednicy gotowi po $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s" } }
 }
 
 function Enable-HTSharePointWorker {
