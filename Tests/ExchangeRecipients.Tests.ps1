@@ -54,6 +54,45 @@ Describe "Filtr grupy dynamicznej" {
         ConvertTo-HTRecipientFilter -Conditions @(@{ Property = 'CustomAttribute1'; Value = 'X' }) -RecipientType 'Wszyscy odbiorcy' | Should -Match "^\(CustomAttribute1 -eq 'X'\)"
         { ConvertTo-HTRecipientFilter -Conditions @(@{ Property = 'Dział; Remove'; Value = 'X' }) } | Should -Throw
     }
+    It "operatory kreatora: zaczyna się, zawiera, kończy, różne, puste" {
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Dział'; Operator = 'startswith'; Value = 'Sprzed' } | Should -Be "(Department -like 'Sprzed*')"
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Stanowisko'; Operator = 'contains'; Value = 'kierownik' } | Should -Be "(Title -like '*kierownik*')"
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Adres e-mail'; Operator = 'endswith'; Value = '@firma.pl' } | Should -Be "(PrimarySmtpAddress -like '*@firma.pl')"
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Miasto'; Operator = 'ne'; Value = 'Kraków' } | Should -Be "(City -ne 'Kraków')"
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Firma'; Operator = 'empty' } | Should -Be '(Company -eq $null)'
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Firma'; Operator = 'notempty' } | Should -Be '(Company -ne $null)'
+        ConvertTo-HTRecipientFilterCondition @{ Property = 'Atrybut niestandardowy 12'; Operator = 'eq'; Value = 'X' } | Should -Be "(CustomAttribute12 -eq 'X')"
+    }
+    It "dowolny warunek (OR) - warunki w nawiasie, rodzaj odbiorców zawsze wymagany" {
+        $f = ConvertTo-HTRecipientFilter -Join or -Conditions @(@{ Property = 'Dział'; Value = 'IT' }, @{ Property = 'Dział'; Value = 'Serwis' })
+        $f | Should -Match "^\(RecipientTypeDetails -eq 'UserMailbox'\) -and \(\(Department -eq 'IT'\) -or \(Department -eq 'Serwis'\)\) -and "
+    }
+    It "odczytuje filtr z kreatora z powrotem na warunki (AND i OR)" {
+        $conds = @(@{ Property = 'Dział'; Operator = 'eq'; Value = "O'Neil" }, @{ Property = 'Miasto'; Operator = 'startswith'; Value = 'Warsz' }, @{ Property = 'Firma'; Operator = 'notempty' })
+        $r = ConvertFrom-HTRecipientFilter (ConvertTo-HTRecipientFilter -Conditions $conds -RecipientType 'Skrzynki współdzielone')
+        $r.Parsed | Should -BeTrue
+        $r.RecipientType | Should -Be 'Skrzynki współdzielone'
+        $r.Join | Should -Be 'and'
+        @($r.Conditions).Count | Should -Be 3
+        $r.Conditions[0].Property | Should -Be 'Dział'
+        $r.Conditions[0].Value | Should -Be "O'Neil"
+        $r.Conditions[1].Operator | Should -Be 'startswith'
+        $r.Conditions[1].Value | Should -Be 'Warsz'
+        $r.Conditions[2].Operator | Should -Be 'notempty'
+        $or = ConvertFrom-HTRecipientFilter (ConvertTo-HTRecipientFilter -Join or -Conditions @(@{ Property = 'Dział'; Value = 'IT' }, @{ Property = 'Biuro'; Operator = 'contains'; Value = 'Gdańsk' }) -RecipientType 'Użytkownicy i kontakty')
+        $or.Parsed | Should -BeTrue
+        $or.Join | Should -Be 'or'
+        $or.RecipientType | Should -Be 'Użytkownicy i kontakty'
+        $or.Conditions[1].Operator | Should -Be 'contains'
+    }
+    It "filtr domyślny Exchange (wykluczenia systemowe) - wszystkie skrzynki bez warunków; filtr złożony - do edycji ręcznej" {
+        $default = "((RecipientType -eq 'UserMailbox') -and (-not(Name -like 'SystemMailbox{*')) -and (-not(Name -like 'CAS_{*')) -and (-not(RecipientTypeDetailsValue -eq 'MailboxPlan')) -and (-not(RecipientTypeDetailsValue -eq 'DiscoveryMailbox')))"
+        $r = ConvertFrom-HTRecipientFilter $default
+        $r.Parsed | Should -BeTrue
+        $r.RecipientType | Should -Be 'Wszystkie skrzynki (użytkowników, współdzielone, sale)'
+        @($r.Conditions).Count | Should -Be 0
+        (ConvertFrom-HTRecipientFilter "((Department -eq 'IT') -and ((City -eq 'A') -or (City -eq 'B')))").Parsed | Should -BeFalse
+    }
 }
 
 Describe "Ścieżki folderów skrzynki" {

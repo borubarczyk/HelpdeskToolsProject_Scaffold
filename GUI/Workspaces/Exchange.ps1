@@ -1125,6 +1125,201 @@ function New-HTDistributionGroupInteractive {
     }
 }
 
+#region Kreator reguł grup dynamicznych
+$script:FilterBuilderXaml = @'
+<StackPanel>
+  <Grid Margin="0,0,0,10">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <StackPanel Grid.Column="0">
+      <TextBlock Text="Odbiorcy" Foreground="#8791A5" FontSize="12" Margin="0,0,0,4"/>
+      <ComboBox x:Name="fbType"/>
+    </StackPanel>
+    <StackPanel Grid.Column="2">
+      <TextBlock Text="Łączenie warunków" Foreground="#8791A5" FontSize="12" Margin="0,0,0,4"/>
+      <ComboBox x:Name="fbJoin"/>
+    </StackPanel>
+  </Grid>
+  <TextBlock Text="Warunki (atrybut, porównanie, wartość; * - dowolny ciąg znaków)" Foreground="#8791A5" FontSize="12" Margin="0,0,0,4"/>
+  <StackPanel x:Name="fbRows"/>
+  <StackPanel x:Name="fbAddHost" Orientation="Horizontal" Margin="0,4,0,10"/>
+  <Grid Margin="0,0,0,4">
+    <TextBlock Text="Filtr (OPATH) - budowany z warunków" Foreground="#8791A5" FontSize="12" VerticalAlignment="Center"/>
+    <CheckBox x:Name="fbManual" Content="Edytuj ręcznie (zaawansowane)" HorizontalAlignment="Right"/>
+  </Grid>
+  <TextBox x:Name="fbFilter" Style="{StaticResource MultiText}" Height="78" TextWrapping="Wrap" IsReadOnly="True" FontFamily="Consolas" FontSize="12"/>
+  <StackPanel x:Name="fbTestHost" Orientation="Horizontal" Margin="0,8,0,6"/>
+  <TextBlock x:Name="fbInfo" Foreground="#AEB6C4" TextWrapping="Wrap" Margin="0,0,0,6"/>
+  <TextBox x:Name="fbPreview" Style="{StaticResource MultiText}" Height="150" IsReadOnly="True" TextWrapping="NoWrap" Visibility="Collapsed"/>
+</StackPanel>
+'@
+
+$script:FilterBuilderEvents = @{
+    Changed = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); if ($w) { Update-HTFilterBuilderText -Window $w } }
+    Add     = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); Add-HTFilterBuilderRow -Window $w; Update-HTFilterBuilderText -Window $w }
+    Remove  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        [void]$w.FindName('fbRows').Children.Remove($s.Tag)
+        Update-HTFilterBuilderText -Window $w
+    }
+    Manual  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        if (-not $w) { return }
+        Set-HTFilterBuilderManual -Window $w -Manual ($s.IsChecked -eq $true)
+        if ($s.IsChecked -ne $true) { Update-HTFilterBuilderText -Window $w }
+    }
+    Test    = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); Invoke-HTFilterBuilderTest -Window $w }
+}
+
+function Set-HTFilterBuilderManual {
+    # Edycja ręczna filtra: warunki nieaktywne, pole filtra edytowalne
+    param([Parameter(Mandatory)]$Window, [bool]$Manual)
+    $Window.FindName('fbFilter').IsReadOnly = -not $Manual
+    foreach ($n in 'fbRows', 'fbAddHost', 'fbType', 'fbJoin') { $Window.FindName($n).IsEnabled = -not $Manual }
+}
+
+function Add-HTFilterBuilderRow {
+    # Wiersz warunku: atrybut (lista albo nazwa atrybutu), porównanie, wartość, usuń
+    param([Parameter(Mandatory)]$Window, $Condition = $null)
+    $opts = $Window.Tag.FB.Options
+    $grid = New-Object System.Windows.Controls.Grid
+    $grid.Margin = '0,0,0,6'
+    foreach ($w in @('2*', '1.5*', '2*', 'Auto')) {
+        $c = New-Object System.Windows.Controls.ColumnDefinition
+        $c.Width = (New-Object System.Windows.GridLengthConverter).ConvertFromString($w)
+        [void]$grid.ColumnDefinitions.Add($c)
+    }
+    $attr = New-Object System.Windows.Controls.ComboBox
+    $attr.IsEditable = $true
+    foreach ($p in @($opts.Properties)) { [void]$attr.Items.Add($p) }
+    $attr.Text = $(if ($Condition -and $Condition.Property) { [string]$Condition.Property } else { 'Dział' })
+    $attr.Margin = '0,0,6,0'
+    $attr.ToolTip = 'Atrybut z listy albo nazwa atrybutu Exchange (np. CustomAttribute7)'
+    $op = New-Object System.Windows.Controls.ComboBox
+    $keys = @($opts.Operators.Keys)
+    foreach ($k in $keys) { [void]$op.Items.Add([string]$opts.Operators[$k]) }
+    $op.SelectedIndex = [Math]::Max(0, $keys.IndexOf($(if ($Condition -and $Condition.Operator) { [string]$Condition.Operator } else { 'eq' })))
+    $op.Margin = '0,0,6,0'
+    $value = New-Object System.Windows.Controls.TextBox
+    $value.Text = $(if ($Condition) { [string]$Condition.Value } else { '' })
+    $value.Margin = '0,0,6,0'
+    $remove = New-HTButton -Icon 'E711' -Ghost -ToolTip 'Usuń warunek'
+    $remove.Tag = $grid
+    [System.Windows.Controls.Grid]::SetColumn($op, 1)
+    [System.Windows.Controls.Grid]::SetColumn($value, 2)
+    [System.Windows.Controls.Grid]::SetColumn($remove, 3)
+    foreach ($el in $attr, $op, $value, $remove) { [void]$grid.Children.Add($el) }
+    $grid.Tag = @{ Attr = $attr; Op = $op; Value = $value; Keys = $keys }
+    $attr.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    $attr.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]$script:FilterBuilderEvents.Changed)
+    $op.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    $value.add_TextChanged($script:FilterBuilderEvents.Changed)
+    $remove.add_Click($script:FilterBuilderEvents.Remove)
+    [void]$Window.FindName('fbRows').Children.Add($grid)
+}
+
+function Get-HTFilterBuilderConditions {
+    param([Parameter(Mandatory)]$Window)
+    foreach ($row in @($Window.FindName('fbRows').Children)) {
+        $t = $row.Tag
+        $key = if ($t.Op.SelectedIndex -ge 0) { $t.Keys[$t.Op.SelectedIndex] } else { 'eq' }
+        # Porównanie bez wartości (puste / niepuste) - pole wartości nieaktywne
+        $t.Value.IsEnabled = $key -notin 'empty', 'notempty'
+        @{ Property = ([string]$t.Attr.Text).Trim(); Operator = $key; Value = [string]$t.Value.Text }
+    }
+}
+
+function Update-HTFilterBuilderText {
+    # Filtr z warunków (poza edycją ręczną); wynik poprzedniego testu znika
+    param([Parameter(Mandatory)]$Window)
+    $info = $Window.FindName('fbInfo')
+    $Window.FindName('fbPreview').Visibility = 'Collapsed'
+    $info.Text = ''
+    if ($Window.FindName('fbManual').IsChecked -eq $true) { return }
+    $conditions = @(Get-HTFilterBuilderConditions -Window $Window)
+    $join = if ($Window.FindName('fbJoin').SelectedIndex -eq 1) { 'or' } else { 'and' }
+    try { $Window.FindName('fbFilter').Text = ConvertTo-HTRecipientFilter -Conditions $conditions -RecipientType ([string]$Window.FindName('fbType').SelectedItem) -Join $join }
+    catch { $info.Text = "Popraw warunek: $($_.Exception.Message)" }
+}
+
+function Invoke-HTFilterBuilderTest {
+    # Test filtra: liczba i lista odbiorców, którzy trafią do grupy (przed zapisem)
+    param([Parameter(Mandatory)]$Window)
+    $filter = ([string]$Window.FindName('fbFilter').Text).Trim()
+    $info = $Window.FindName('fbInfo')
+    $preview = $Window.FindName('fbPreview')
+    if (-not $filter) { $info.Text = 'Filtr jest pusty - dodaj warunek.'; return }
+    if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+    Set-HTBusy -Busy $true -Text 'Test filtra grupy dynamicznej…'
+    try {
+        $r = Get-HTRecipientFilterPreview -Filter $filter -Max 200
+        $items = @($r.Items)
+        $info.Text = if ($items.Count -eq 0) { 'Do grupy nie trafi nikt - sprawdź warunki (wielkość liter nie ma znaczenia, * - dowolny ciąg znaków).' } else { "Do grupy trafi: $($items.Count)$(if ($r.More) { '+ (pokazano pierwszych 200)' }) odbiorców." }
+        $preview.Text = (@($items | ForEach-Object { "$($_.Nazwa) <$($_.Adres)> - $($_.Typ)" }) -join "`r`n")
+        $preview.Visibility = $(if ($items.Count) { 'Visible' } else { 'Collapsed' })
+        Add-HTOperationRecord -Kind Check -Operation 'Test filtra grupy dynamicznej' -Object $filter -Details "odbiorców: $($items.Count)$(if ($r.More) { '+' })" -Module 'Grupy dynamiczne'
+    }
+    catch {
+        $preview.Visibility = 'Collapsed'
+        $info.Text = "Błąd filtra: $($_.Exception.Message)"
+    }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+}
+
+function Show-HTDynamicFilterBuilder {
+    <#
+        Kreator reguły grupy dynamicznej: rodzaj odbiorców, warunki (atrybut, porównanie, wartość) łączone AND / OR,
+        filtr OPATH na bieżąco, test (kto trafi do grupy) i edycja ręczna. -Filter: istniejący filtr (rozkładany na warunki,
+        gdy to możliwe). Zwraca filtr albo $null.
+    #>
+    param([Parameter(Mandatory)][string]$Title, [string]$Filter = '', [string]$OkText = 'Zapisz', [string]$Subtitle = '')
+    $opts = Get-HTDynamicFilterOptions
+    if (-not $Subtitle) { $Subtitle = 'Warunki wybierasz z listy - program buduje filtr. «Testuj» pokazuje, kto trafi do grupy, zanim zapiszesz.' }
+    $w = New-HTDialog -Title $Title -Subtitle $Subtitle -Body $script:FilterBuilderXaml -Icon 'E71C' -OkText $OkText -Width 860 -Validate {
+        param($w)
+        if (-not ([string]$w.FindName('fbFilter').Text).Trim()) { Show-HTWarning 'Filtr jest pusty - dodaj co najmniej jeden warunek.' -Title 'Grupa dynamiczna'; return $false }
+        if ([string]$w.FindName('fbInfo').Text -like 'Popraw warunek*') { Show-HTWarning ([string]$w.FindName('fbInfo').Text) -Title 'Grupa dynamiczna'; return $false }
+        return $true
+    }
+    $w.Tag.FB = @{ Options = $opts }
+    $type = $w.FindName('fbType')
+    foreach ($t in @($opts.Types)) { [void]$type.Items.Add($t) }
+    $join = $w.FindName('fbJoin')
+    foreach ($j in 'Wszystkie warunki muszą być spełnione (AND)', 'Wystarczy dowolny warunek (OR)') { [void]$join.Items.Add($j) }
+    $join.SelectedIndex = 0
+    $manual = $w.FindName('fbManual')
+    $parsed = if ($Filter) { ConvertFrom-HTRecipientFilter $Filter } else { $null }
+    if ($parsed -and $parsed.Parsed) {
+        $type.SelectedItem = $parsed.RecipientType
+        if ($parsed.Join -eq 'or') { $join.SelectedIndex = 1 }
+        foreach ($c in @($parsed.Conditions)) { Add-HTFilterBuilderRow -Window $w -Condition $c }
+    }
+    else { $type.SelectedIndex = 0 }
+    if ($w.FindName('fbRows').Children.Count -eq 0 -and -not ($Filter -and -not $parsed.Parsed)) { Add-HTFilterBuilderRow -Window $w }
+    $add = New-HTButton -Text 'Dodaj warunek' -Icon 'E710' -Create
+    $add.add_Click($script:FilterBuilderEvents.Add)
+    [void]$w.FindName('fbAddHost').Children.Add($add)
+    $test = New-HTButton -Text 'Testuj - kto trafi do grupy' -Icon 'E716'
+    $test.add_Click($script:FilterBuilderEvents.Test)
+    [void]$w.FindName('fbTestHost').Children.Add($test)
+    $type.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    $join.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    if ($Filter -and -not $parsed.Parsed) {
+        # Filtr spoza kreatora (np. zagnieżdżone warunki) - edycja ręczna; wyłączenie buduje nowy filtr z warunków
+        $manual.IsChecked = $true
+        $w.FindName('fbFilter').Text = $Filter
+        Set-HTFilterBuilderManual -Window $w -Manual $true
+        $w.FindName('fbInfo').Text = 'Tego filtra nie da się rozłożyć na warunki kreatora - edytuj go ręcznie albo wyłącz «Edytuj ręcznie», żeby zbudować nowy z warunków.'
+    }
+    else { Update-HTFilterBuilderText -Window $w }
+    $manual.add_Checked($script:FilterBuilderEvents.Manual)
+    $manual.add_Unchecked($script:FilterBuilderEvents.Manual)
+    if (-not (Invoke-HTDialog $w)) { return $null }
+    return ([string]$w.FindName('fbFilter').Text).Trim()
+}
+#endregion
+
 Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn' -Title 'Grupy dynamiczne' -Icon 'E71C' -Service 'Exchange' `
     -Description 'Grupy dystrybucyjne z członkami wyliczanymi z atrybutów (np. wszyscy z działu Sprzedaż w Warszawie): lista z filtrem, podgląd członków, nowa grupa z warunków, zmiana filtra i usunięcie (prawy przycisk).' -Build {
     param($m)
@@ -1135,24 +1330,17 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dynamiczna')) { return }
         try { $domains = @(Get-HTExchangeDomainOptions -Module $m) } catch { Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
-        $opts = Get-HTDynamicFilterOptions
-        $fields = @(
+        $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Description 'Krok 1 z 2: dane grupy. W kolejnym kroku - warunki członkostwa (kreator z testem).' -Icon 'E71C' -OkText 'Dalej' -Width 620 -Fields @(
             @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true }
             @{ Name = 'Address'; Label = 'Adres e-mail (puste - z nazwy i domeny)' }
             @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains }
             @{ Name = 'Owner'; Label = 'Właściciel (adres, opcjonalnie)' }
-            @{ Name = 'Type'; Label = 'Odbiorcy'; Type = 'Combo'; Options = @($opts.Types) }
-            @{ Type = 'Header'; Label = 'Warunki (wszystkie muszą być spełnione; puste - pomijane; * - dowolny ciąg znaków)' }
         )
-        $i = 0
-        foreach ($p in $opts.Properties) { $fields += @{ Name = "C_$i"; Label = $p }; $i++ }
-        $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Icon 'E71C' -OkText 'Dalej' -Width 620 -MaxHeight 600 -Fields $fields
         if (-not $form) { return }
-        $conditions = @(for ($j = 0; $j -lt @($opts.Properties).Count; $j++) { if ($form["C_$j"]) { @{ Property = @($opts.Properties)[$j]; Value = $form["C_$j"] } } })
-        if ($conditions.Count -eq 0) { Show-HTWarning 'Podaj co najmniej jeden warunek (np. dział).'; return }
         $entry = @(ConvertFrom-HTNewMailboxLines -Text "$($form.Name); $($form.Address)" -Domain $form.Domain -Domains $domains)[0]
         if (-not $entry -or -not $entry.Valid) { Show-HTWarning "Popraw nazwę lub adres: $(if ($entry) { @($entry.Errors) -join ', ' })"; return }
-        $filter = ConvertTo-HTRecipientFilter -Conditions $conditions -RecipientType $form.Type
+        $filter = Show-HTDynamicFilterBuilder -Title "Warunki grupy: $($form.Name)" -OkText 'Dalej' -Subtitle 'Krok 2 z 2: kto ma należeć do grupy. «Testuj» pokazuje członków, zanim utworzysz grupę.'
+        if (-not $filter) { return }
         Invoke-HTTargetAction -Module $m -Name 'Nowa grupa dynamiczna' -Targets @($entry) -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Confirm "Utworzyć grupę dynamiczną z filtrem:`n$filter" -Action {
             param($t)
             "Utworzono $(New-HTDynamicGroup -DisplayName $t.DisplayName -Address $t.Address -Filter $filter -Owner ([string]$form.Owner)) - członkowie są wyliczani okresowo (w nowej grupie do 24 h)"
@@ -1172,9 +1360,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
         if (-not $g) { return }
-        $form = Show-HTFormDialog -Title "Filtr grupy: $($g.Nazwa)" -Icon 'E71C' -Width 680 -Fields @(@{ Name = 'Filter'; Label = 'Filtr OPATH (RecipientFilter)'; Type = 'Multiline'; Height = 120; Required = $true; Default = $g.Filtr; Hint = "Np. (RecipientTypeDetails -eq 'UserMailbox') -and (Department -eq 'Sprzedaż') -and (City -like 'Warsz*')" })
-        if (-not $form -or $form.Filter -eq $g.Filtr) { return }
-        Invoke-HTRowAction -Module $m -Name 'Zmiana filtra grupy dynamicznej' -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTDynamicGroupFilter -Identity $r.Identity -Filter $form.Filter; 'Filtr zmieniony' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        $filter = Show-HTDynamicFilterBuilder -Title "Filtr grupy: $($g.Nazwa)" -Filter $g.Filtr -OkText 'Zapisz'
+        if (-not $filter -or $filter -eq $g.Filtr) { return }
+        Invoke-HTRowAction -Module $m -Name 'Zmiana filtra grupy dynamicznej' -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTDynamicGroupFilter -Identity $r.Identity -Filter $filter; 'Filtr zmieniony' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Usuń grupę' -Icon 'E74D' -Danger -Action {
         param($m, $rows)

@@ -230,50 +230,165 @@ function Get-HTDynamicGroupMembers {
 }
 
 $script:DynamicFilterProperties = [ordered]@{
-    'Dział'                   = 'Department'
-    'Firma'                   = 'Company'
-    'Biuro'                   = 'Office'
-    'Miasto'                  = 'City'
-    'Stanowisko'              = 'Title'
-    'Kraj'                    = 'CountryOrRegion'
+    'Dział'                    = 'Department'
+    'Firma'                    = 'Company'
+    'Biuro'                    = 'Office'
+    'Miasto'                   = 'City'
+    'Stanowisko'               = 'Title'
+    'Kraj'                     = 'CountryOrRegion'
     'Atrybut niestandardowy 1' = 'CustomAttribute1'
     'Atrybut niestandardowy 2' = 'CustomAttribute2'
     'Atrybut niestandardowy 3' = 'CustomAttribute3'
+    'Województwo'              = 'StateOrProvince'
+    'Kod pocztowy'             = 'PostalCode'
+    'Ulica'                    = 'StreetAddress'
+    'Telefon'                  = 'Phone'
+    'Nazwa wyświetlana'        = 'DisplayName'
+    'Alias'                    = 'Alias'
+    'Adres e-mail'             = 'PrimarySmtpAddress'
+    'Typ odbiorcy (szczegóły)' = 'RecipientTypeDetails'
 }
+foreach ($n in 4..15) { $script:DynamicFilterProperties["Atrybut niestandardowy $n"] = "CustomAttribute$n" }
 $script:DynamicRecipientTypes = [ordered]@{
-    'Skrzynki użytkowników'   = "RecipientTypeDetails -eq 'UserMailbox'"
-    'Użytkownicy i kontakty'  = "(RecipientTypeDetails -eq 'UserMailbox') -or (RecipientTypeDetails -eq 'MailContact') -or (RecipientTypeDetails -eq 'MailUser')"
-    'Skrzynki współdzielone'  = "RecipientTypeDetails -eq 'SharedMailbox'"
-    'Wszyscy odbiorcy'        = ''
+    'Skrzynki użytkowników'                                 = "RecipientTypeDetails -eq 'UserMailbox'"
+    'Użytkownicy i kontakty'                                = "(RecipientTypeDetails -eq 'UserMailbox') -or (RecipientTypeDetails -eq 'MailContact') -or (RecipientTypeDetails -eq 'MailUser')"
+    'Skrzynki współdzielone'                                = "RecipientTypeDetails -eq 'SharedMailbox'"
+    'Wszystkie skrzynki (użytkowników, współdzielone, sale)' = "RecipientType -eq 'UserMailbox'"
+    'Wszyscy odbiorcy'                                      = ''
+}
+# Operatory kreatora: klucz -> opis
+$script:DynamicFilterOperators = [ordered]@{
+    eq         = 'równa się'
+    ne         = 'różne od'
+    startswith = 'zaczyna się od'
+    contains   = 'zawiera'
+    endswith   = 'kończy się na'
+    like       = 'pasuje do wzorca (*)'
+    notlike    = 'nie pasuje do wzorca (*)'
+    empty      = 'jest puste'
+    notempty   = 'nie jest puste'
 }
 
 function Get-HTDynamicFilterOptions {
-    return @{ Properties = @($script:DynamicFilterProperties.Keys); Types = @($script:DynamicRecipientTypes.Keys) }
+    return @{ Properties = @($script:DynamicFilterProperties.Keys); Types = @($script:DynamicRecipientTypes.Keys); Operators = $script:DynamicFilterOperators }
+}
+
+function ConvertTo-HTRecipientFilterCondition {
+    # Jeden warunek OPATH: @{ Property (opis albo nazwa atrybutu); Operator (klucz); Value } -> «(Atrybut -op 'wartość')» albo ''
+    param([Parameter(Mandatory)]$Condition)
+    $prop = ([string]$Condition.Property).Trim()
+    if ($script:DynamicFilterProperties.Contains($prop)) { $prop = $script:DynamicFilterProperties[$prop] }
+    if (-not $prop) { return '' }
+    if ($prop -notmatch '^[A-Za-z0-9]+$') { throw "Nieprawidłowa właściwość filtra: $prop" }
+    $op = ([string]$Condition.Operator).Trim().ToLowerInvariant()
+    $value = ([string]$Condition.Value).Trim()
+    if ($op -eq 'empty') { return "($prop -eq `$null)" }
+    if ($op -eq 'notempty') { return "($prop -ne `$null)" }
+    if (-not $value) { return '' }
+    $quote = { param($v) "'$($v.Replace("'", "''"))'" }
+    switch ($op) {
+        'ne' { return "($prop -ne $(& $quote $value))" }
+        'startswith' { return "($prop -like $(& $quote "$($value.TrimEnd('*'))*"))" }
+        'contains' { return "($prop -like $(& $quote "*$($value.Trim('*'))*"))" }
+        'endswith' { return "($prop -like $(& $quote "*$($value.TrimStart('*'))"))" }
+        'like' { return "($prop -like $(& $quote $value))" }
+        'notlike' { return "($prop -notlike $(& $quote $value))" }
+        default { if ($value.Contains('*')) { return "($prop -like $(& $quote $value))" } else { return "($prop -eq $(& $quote $value))" } }
+    }
 }
 
 function ConvertTo-HTRecipientFilter {
     <#
-        Filtr OPATH grupy dynamicznej z warunków: -Conditions @(@{ Property = 'Dział' albo 'Department'; Value; Operator = eq|like })
-        łączonych przez -and, oraz rodzaju odbiorców (-RecipientType - klucz z Get-HTDynamicFilterOptions).
-        Apostrofy w wartościach są podwajane. Wartość z * - operator -like.
+        Filtr OPATH grupy dynamicznej z warunków: -Conditions @(@{ Property = 'Dział' albo 'Department'; Operator; Value })
+        łączonych przez -Join and (wszystkie) albo or (dowolny), oraz rodzaju odbiorców (-RecipientType - klucz
+        z Get-HTDynamicFilterOptions). Apostrofy w wartościach są podwajane. Bez operatora: wartość z * - -like, inaczej -eq.
     #>
-    param ([AllowEmptyCollection()][object[]]$Conditions = @(), [string]$RecipientType = 'Skrzynki użytkowników')
+    param ([AllowEmptyCollection()][object[]]$Conditions = @(), [string]$RecipientType = 'Skrzynki użytkowników', [ValidateSet('and', 'or')][string]$Join = 'and')
     $parts = New-Object System.Collections.Generic.List[string]
     $typeFilter = if ($script:DynamicRecipientTypes.Contains($RecipientType)) { $script:DynamicRecipientTypes[$RecipientType] } else { '' }
     if ($typeFilter) { $parts.Add("($typeFilter)") }
-    foreach ($c in @($Conditions | Where-Object { $_ })) {
-        $value = ([string]$c.Value).Trim()
-        if (-not $value) { continue }
-        $prop = [string]$c.Property
-        if ($script:DynamicFilterProperties.Contains($prop)) { $prop = $script:DynamicFilterProperties[$prop] }
-        if ($prop -notmatch '^[A-Za-z0-9]+$') { throw "Nieprawidłowa właściwość filtra: $prop" }
-        $op = if ($c.Operator -eq 'like' -or $value.Contains('*')) { '-like' } else { '-eq' }
-        $parts.Add("($prop $op '$($value.Replace("'", "''"))')")
-    }
+    $items = @(foreach ($c in @($Conditions | Where-Object { $_ })) { $x = ConvertTo-HTRecipientFilterCondition -Condition $c; if ($x) { $x } })
+    if ($Join -eq 'or' -and $items.Count -gt 1) { $parts.Add("($($items -join ' -or '))") }
+    else { foreach ($x in $items) { $parts.Add($x) } }
     # Bez skrzynek systemowych i ukrytych odbiorców grup (jak w filtrach domyślnych Exchange)
     $parts.Add("(-not(Name -like 'SystemMailbox{*'))")
     $parts.Add("(-not(Name -like 'CAS_{*'))")
     return ($parts -join ' -and ')
+}
+
+function ConvertFrom-HTRecipientFilter {
+    <#
+        Rozkład filtra OPATH na warunki kreatora: @{ Parsed; RecipientType; Join; Conditions = @(@{ Property; Operator; Value }) }.
+        Pomija wykluczenia systemowe dodawane przez Exchange i program. Filtr złożony inaczej (np. zagnieżdżone -and / -or)
+        - Parsed = $false (do edycji ręcznej).
+    #>
+    param([AllowEmptyString()][AllowNull()][string]$Filter)
+    $result = [PSCustomObject]@{ Parsed = $false; RecipientType = 'Wszyscy odbiorcy'; Join = 'and'; Conditions = @() }
+    $f = ([string]$Filter).Trim()
+    $exclusion = "\(-not\((Name -like 'SystemMailbox\{\*'|Name -like 'CAS_\{\*'|RecipientTypeDetailsValue -eq '[A-Za-z]+')\)\)"
+    $f = $f -replace "\s*-and\s*$exclusion", '' -replace "^$exclusion\s*-and\s*", '' -replace "^$exclusion$", ''
+    $strip = {
+        param([string]$t)
+        while ($t.StartsWith('(') -and $t.EndsWith(')')) {
+            $depth = 0; $closesAtEnd = $true
+            for ($i = 0; $i -lt $t.Length; $i++) {
+                if ($t[$i] -eq '(') { $depth++ } elseif ($t[$i] -eq ')') { $depth--; if ($depth -eq 0 -and $i -lt $t.Length - 1) { $closesAtEnd = $false; break } }
+            }
+            if (-not $closesAtEnd) { break }
+            $t = $t.Substring(1, $t.Length - 2).Trim()
+        }
+        return $t
+    }
+    $f = & $strip $f
+    foreach ($k in @($script:DynamicRecipientTypes.Keys | Sort-Object { $script:DynamicRecipientTypes[$_].Length } -Descending)) {
+        $t = $script:DynamicRecipientTypes[$k]
+        if (-not $t) { continue }
+        if ($f -eq $t -or $f -eq "($t)") { $result.RecipientType = $k; $f = ''; break }
+        if ($f.StartsWith("($t) -and ")) { $result.RecipientType = $k; $f = $f.Substring("($t) -and ".Length).Trim(); break }
+    }
+    $f = & $strip $f
+    if (-not $f) { $result.Parsed = $true; return $result }
+    $atom = "\((?<p>[A-Za-z0-9]+) (?<op>-eq|-ne|-like|-notlike) (?<v>'(?:[^']|'')*'|\`$null)\)"
+    $tokens = [regex]::Matches($f, "$atom|\s+-(?<j>and|or)\s+")
+    $rebuilt = -join @($tokens | ForEach-Object { $_.Value })
+    if ($rebuilt -ne $f) { return $result }
+    $joins = @($tokens | Where-Object { $_.Groups['j'].Success } | ForEach-Object { $_.Groups['j'].Value } | Select-Object -Unique)
+    if ($joins.Count -gt 1) { return $result }
+    if ($joins.Count -eq 1) { $result.Join = $joins[0] }
+    $labels = @{}
+    foreach ($k in $script:DynamicFilterProperties.Keys) { $labels[$script:DynamicFilterProperties[$k]] = $k }
+    $result.Conditions = @(foreach ($m in @($tokens | Where-Object { $_.Groups['p'].Success })) {
+            $prop = $m.Groups['p'].Value
+            $rawValue = $m.Groups['v'].Value
+            $isNull = $rawValue -eq '$null'
+            $value = if ($isNull) { '' } else { $rawValue.Substring(1, $rawValue.Length - 2).Replace("''", "'") }
+            $op = switch ($m.Groups['op'].Value) {
+                '-eq' { if ($isNull) { 'empty' } else { 'eq' } }
+                '-ne' { if ($isNull) { 'notempty' } else { 'ne' } }
+                '-notlike' { 'notlike' }
+                default {
+                    $inner = $value.Trim('*')
+                    if ($inner.Contains('*')) { 'like' }
+                    elseif ($value.StartsWith('*') -and $value.EndsWith('*') -and $value.Length -gt 1) { $value = $inner; 'contains' }
+                    elseif ($value.EndsWith('*')) { $value = $inner; 'startswith' }
+                    elseif ($value.StartsWith('*')) { $value = $inner; 'endswith' }
+                    else { 'like' }
+                }
+            }
+            [PSCustomObject]@{ Property = $(if ($labels.ContainsKey($prop)) { $labels[$prop] } else { $prop }); Operator = $op; Value = $value }
+        })
+    $result.Parsed = $true
+    return $result
+}
+
+function Get-HTRecipientFilterPreview {
+    # Test filtra przed zapisem: odbiorcy, którzy trafią do grupy (najwyżej -Max; More - jest ich więcej)
+    param([Parameter(Mandatory)][string]$Filter, [int]$Max = 200)
+    $items = @(Get-Recipient -RecipientPreviewFilter $Filter -ResultSize ($Max + 1) -ErrorAction Stop)
+    return [PSCustomObject]@{
+        Items = @($items | Select-Object -First $Max | ForEach-Object { [PSCustomObject]@{ Nazwa = $_.DisplayName; Adres = "$($_.PrimarySmtpAddress)"; Typ = "$($_.RecipientTypeDetails)" } } | Sort-Object Nazwa)
+        More  = ($items.Count -gt $Max)
+    }
 }
 
 function New-HTDynamicGroup {
