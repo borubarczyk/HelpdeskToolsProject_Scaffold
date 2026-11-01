@@ -379,3 +379,42 @@ Describe "Blok w wątku w tle (Test-HTBackgroundSafeBlock)" {
         Test-HTBackgroundSafeBlock -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeFalse
     }
 }
+
+Describe "Podpowiadanie adresów e-mail" {
+    BeforeAll { $Global:HTTestAddresses = @('jan.kowalski@firma.pl', 'jan.nowak@firma.pl', 'anna.zielinska@firma.pl', 'biuro@firma.onmicrosoft.com') }
+    AfterAll { Remove-Variable -Name HTTestAddresses -Scope Global -ErrorAction SilentlyContinue }
+    It "dopisuje końcówkę jednoznacznego adresu, zachowując wpisany tekst" {
+        Get-HTAddressCompletion -Token 'Anna' -Addresses $Global:HTTestAddresses | Should -Be 'Anna.zielinska@firma.pl'
+    }
+    It "przy kilku adresach dopisuje tylko wspólny początek" {
+        Get-HTAddressCompletion -Token 'ja' -Addresses $Global:HTTestAddresses | Should -Be 'jan.'
+        Get-HTAddressCompletion -Token 'jan.' -Addresses $Global:HTTestAddresses | Should -Be ''
+    }
+    It "po @ podpowiada domenę znanych adresów" {
+        Get-HTAddressCompletion -Token 'nowy.pracownik@fi' -Addresses $Global:HTTestAddresses | Should -Be 'nowy.pracownik@firma.'
+        Get-HTAddressCompletion -Token 'nowy@firma.p' -Addresses $Global:HTTestAddresses | Should -Be 'nowy@firma.pl'
+    }
+    It "nie podpowiada przy krótkim tekście ani bez dopasowania" {
+        Get-HTAddressCompletion -Token 'j' -Addresses $Global:HTTestAddresses | Should -Be ''
+        Get-HTAddressCompletion -Token 'xyz' -Addresses $Global:HTTestAddresses | Should -Be ''
+    }
+}
+
+Describe "Dane do zgłoszenia problemu" {
+    It "usuwa sekrety: tokeny, hasła, podpisy w adresach i webhooki" {
+        $t = Protect-HTSupportText "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefgh password=Tajne123 client_secret: abc.def https://x.blob.core.windows.net/f?sv=1&sig=QWERTY https://prod-1.westeurope.logic.azure.com/workflows/abc"
+        $t | Should -Not -Match 'Tajne123'
+        $t | Should -Not -Match 'QWERTY'
+        $t | Should -Not -Match 'eyJhbGci'
+        $t | Should -Not -Match 'abc\.def'
+        $t | Should -Match '\[token\]'
+        $t | Should -Match 'sig=\[ukryte\]'
+        $t | Should -Match '\[adres webhooka\]'
+    }
+    It "składa sekcje w kolejności, puste sekcje opisuje" {
+        $text = Format-HTSupportReport ([ordered]@{ Program = @('Helpdesk Tools 3.12.0'); 'Ostatnie błędy' = @() })
+        $text | Should -Match '== Program ==\r\nHelpdesk Tools 3\.12\.0'
+        $text | Should -Match '== Ostatnie błędy ==\r\n\(brak\)'
+        $text.IndexOf('Program') | Should -BeLessThan $text.IndexOf('Ostatnie')
+    }
+}

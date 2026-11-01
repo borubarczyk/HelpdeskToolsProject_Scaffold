@@ -401,6 +401,72 @@ function Add-HTM365GroupMember {
     Invoke-HTGraphRequest -Uri "groups/$GroupId/members/`$ref" -Method POST -Body $body | Out-Null
 }
 
+function ConvertTo-HTMailNickname {
+    # Alias poczty grupy (mailNickname) z nazwy: bez polskich znaków i spacji; litery, cyfry, myślnik, podkreślenie, kropka
+    param([Parameter(Mandatory)][string]$Name)
+    $n = ((ConvertTo-HTAsciiName $Name) -replace '[^A-Za-z0-9\-_\.]', '').Trim('.')
+    if ($n.Length -gt 64) { $n = $n.Substring(0, 64).Trim('.') }
+    return $n
+}
+
+function Get-HTM365GroupCreateBody {
+    <#
+        Treść żądania nowej grupy: -Type Security (zabezpieczeń - np. uprawnienia SharePoint, aplikacje, licencje grupowe)
+        albo Microsoft365 (poczta, kalendarz, Teams, witryna; -Visibility Private/Public). Właściciele i członkowie:
+        pierwsze 20 w żądaniu (limit Graph), pozostali - osobno po utworzeniu.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$DisplayName,
+        [ValidateSet('Security', 'Microsoft365')][string]$Type = 'Security',
+        [string]$MailNickname = '',
+        [string]$Description = '',
+        [ValidateSet('Private', 'Public')][string]$Visibility = 'Private',
+        [string[]]$OwnerIds = @(),
+        [string[]]$MemberIds = @()
+    )
+    $nick = if ($MailNickname) { $MailNickname } else { ConvertTo-HTMailNickname $DisplayName }
+    if (-not $nick) { throw "Nie da się utworzyć aliasu z nazwy «$DisplayName» - podaj alias (litery, cyfry, myślnik)." }
+    $body = [ordered]@{ displayName = $DisplayName.Trim(); mailNickname = $nick }
+    if ($Description) { $body.description = $Description.Trim() }
+    if ($Type -eq 'Microsoft365') { $body.groupTypes = @('Unified'); $body.mailEnabled = $true; $body.securityEnabled = $false; $body.visibility = $Visibility }
+    else { $body.groupTypes = @(); $body.mailEnabled = $false; $body.securityEnabled = $true }
+    $owners = @($OwnerIds | Where-Object { $_ } | Select-Object -Unique)
+    $members = @($MemberIds | Where-Object { $_ } | Select-Object -Unique)
+    if ($owners.Count) { $body['owners@odata.bind'] = @($owners | Select-Object -First 20 | ForEach-Object { "https://graph.microsoft.com/v1.0/users/$_" }) }
+    if ($members.Count) { $body['members@odata.bind'] = @($members | Select-Object -First 20 | ForEach-Object { "https://graph.microsoft.com/v1.0/directoryObjects/$_" }) }
+    return [PSCustomObject]@{ Body = $body; ExtraOwners = @($owners | Select-Object -Skip 20); ExtraMembers = @($members | Select-Object -Skip 20) }
+}
+
+function New-HTM365Group {
+    # Nowa grupa Entra ID (Get-HTM365GroupCreateBody); zwraca obiekt grupy jak Get-HTM365Groups
+    param(
+        [Parameter(Mandatory)][string]$DisplayName,
+        [ValidateSet('Security', 'Microsoft365')][string]$Type = 'Security',
+        [string]$MailNickname = '',
+        [string]$Description = '',
+        [ValidateSet('Private', 'Public')][string]$Visibility = 'Private',
+        [string[]]$OwnerIds = @(),
+        [string[]]$MemberIds = @()
+    )
+    $request = Get-HTM365GroupCreateBody @PSBoundParameters
+    $g = Invoke-HTGraphRequest -Uri 'groups' -Method POST -Body $request.Body
+    foreach ($id in @($request.ExtraMembers)) { Add-HTM365GroupMember -GroupId $g.id -MemberId $id }
+    foreach ($id in @($request.ExtraOwners)) { Invoke-HTGraphRequest -Uri "groups/$($g.id)/owners/`$ref" -Method POST -Body @{ '@odata.id' = "https://graph.microsoft.com/v1.0/directoryObjects/$id" } | Out-Null }
+    return (ConvertTo-HTM365GroupObject -Group $g)
+}
+
+function Get-HTSPGroupClaim {
+    <#
+        Login grupy Entra ID dla uprawnień SharePoint (EnsureUser): grupa Microsoft 365 - członkowie
+        (c:0o.c|federateddirectoryclaimprovider|<id>), grupa zabezpieczeń - c:0t.c|tenant|<id>.
+    #>
+    param([Parameter(Mandatory)]$Group)
+    $id = [string]$Group.Id
+    if (-not $id) { throw 'Grupa bez identyfikatora.' }
+    if ([string]$Group.Type -eq 'Microsoft 365') { return "c:0o.c|federateddirectoryclaimprovider|$id" }
+    return "c:0t.c|tenant|$id"
+}
+
 function Remove-HTM365GroupMember {
     param (
         [Parameter(Mandatory)][string]$GroupId,

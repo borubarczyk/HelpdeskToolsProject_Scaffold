@@ -351,7 +351,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Checklisty' -Key 'tasks.checklis
     param($m)
     $row = Add-HTToolbarRow -Module $m
     $m.C.All = Add-HTCheckBox -Parent $row -Text 'Także ukończone'
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa checklista…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa checklista…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         $templates = @(Get-HTChecklistTemplates)
         $choice = Show-HTChoiceDialog -Title 'Nowa checklista' -Prompt 'Wybierz szablon.' -Icon 'E9D5' -Choices @($templates | ForEach-Object { @{ Key = $_.Id; Text = $_.Name; Icon = $(if ($_.Kind -eq 'Offboarding') { 'E8F8' } else { 'E8FA' }); Description = "$(@($_.Steps).Count) kroków • $($_.Kind)" } })
@@ -376,7 +376,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Checklisty' -Key 'tasks.checklis
     Add-HTButton -Parent $row -Module $m -Text 'Szablony…' -Icon 'E70F' -OnClick {
         param($m)
         $templates = @(Get-HTChecklistTemplates)
-        $choices = @($templates | ForEach-Object { @{ Key = $_.Id; Text = $_.Name; Icon = 'E70F'; Description = "$(@($_.Steps).Count) kroków • $($_.Kind)" } }) + @(@{ Key = '__new'; Text = 'Nowy szablon…'; Icon = 'E710' })
+        $choices = @($templates | ForEach-Object { @{ Key = $_.Id; Text = $_.Name; Icon = 'E70F'; Description = "$(@($_.Steps).Count) kroków • $($_.Kind)" } }) + @(@{ Key = '__new'; Text = 'Nowy szablon…'; Icon = 'E710'; Style = 'Create' })
         $choice = Show-HTChoiceDialog -Title 'Szablony checklist' -Prompt 'Wybierz szablon do edycji.' -Icon 'E70F' -Choices $choices
         if (-not $choice) { return }
         $template = if ($choice -eq '__new') { [ordered]@{ Id = [guid]::NewGuid().ToString('N'); Name = ''; Kind = 'Onboarding'; Steps = @() } } else { @($templates | Where-Object { $_.Id -eq $choice })[0] }
@@ -564,7 +564,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Automatyzacja' -Key 'tasks.repor
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Stan konfiguracji' -Icon 'E946' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Automatyzacja' -Service '' -ScriptBlock { Get-HTAutomationStatusRows } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz aplikację automatyzacji…' -Icon 'E8D7' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz aplikację automatyzacji…' -Create -NoRowMenu -Icon 'E8D7' -OnClick {
         param($m)
         if (-not (Assert-HTWriteAllowed -Operation 'Aplikacja automatyzacji')) { return }
         $form = Show-HTFormDialog -Title 'Aplikacja automatyzacji' -Icon 'E8D7' -OkText 'Utwórz' -Description 'Rejestracja aplikacji z certyfikatem (magazyn CurrentUser\My), uprawnieniami aplikacji Microsoft Graph (odczyt raportów, Mail.Send, zarządzanie grupami i kontami dla zadań) i Exchange.ManageAsApp. Wymaga roli Global Administrator.' -Fields @(
@@ -583,7 +583,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Automatyzacja' -Key 'tasks.repor
         Show-HTMessage -Title 'Aplikacja automatyzacji' -Tone 'ok' -Text "Utworzono aplikację.`nClient ID: $($app.ClientId)`nCertyfikat: $($app.Thumbprint) (do $($app.Expires.ToString('yyyy-MM-dd')))`nUprawnień z zgodą: $($app.Granted)`n`nUstawienia zapisano. Uprawnienia mogą zacząć działać po kilku minutach."
         Invoke-HTModulePrimary $m
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Zaplanuj raporty…' -Icon 'E787' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Zaplanuj raporty…' -Create -NoRowMenu -Icon 'E787' -OnClick {
         param($m)
         $catalog = Get-HTHeadlessReports
         $items = @($catalog.Keys | ForEach-Object { [PSCustomObject]@{ Raport = $catalog[$_].Title; Nazwa = $_; Usługa = $catalog[$_].Service } })

@@ -156,7 +156,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.perms'
             foreach ($p in @(Get-HTMailboxPermissions -Identity $t.PrimarySmtpAddress)) { [PSCustomObject]@{ Uprawnienie = $p.Type; Użytkownik = $p.User; Prawa = $p.AccessRights } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -248,7 +248,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.calend
 
 #region Poczta
 Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' -Title 'Autoodpowiedź' -Icon 'E8BD' `
-    -Description 'Odpowiedzi automatyczne (poza biurem): podgląd, włączenie, zaplanowanie w czasie i wyłączenie.' -Build {
+    -Description 'Odpowiedzi automatyczne (poza biurem): podgląd, włączenie, zaplanowanie w czasie, wyłączenie i wyczyszczenie treści.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż stan' -Icon 'E8A1' -Primary -OnClick {
@@ -286,6 +286,10 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
     Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E711' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wyłączenie autoodpowiedzi' -Summary 'Tryb: Disabled (odpowiedzi automatyczne wyłączone)' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress -State Disabled; 'Wyłączona' }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Wyczyść' -Icon 'E894' -Danger -ToolTip 'Wyłącza autoodpowiedź i usuwa jej treść (dla osób z firmy i spoza firmy) - niezależnie od tego, czy jest włączona' -OnClick {
+        param($m)
+        Invoke-HTTargetAction -Module $m -Name 'Wyczyszczenie autoodpowiedzi' -Summary @('Tryb: Disabled', 'Treść wewnętrzna i zewnętrzna: usunięta') -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Clear-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress; 'Wyłączona, treść usunięta' }
     } | Out-Null
 }
 
@@ -370,7 +374,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.trace' -Tit
 
 #region Grupy i adresy
 Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.aliases' -Title 'Adresy e-mail' -Icon 'E910' `
-    -Description 'Aliasy (dodatkowe adresy) skrzynki. Dla skrzynek synchronizowanych z AD adresy zmienia się w lokalnym AD (proxyAddresses).' -Build {
+    -Description 'Aliasy (dodatkowe adresy) skrzynki: dodawanie, usuwanie i zmiana adresu głównego. Adresy systemowe (SIP - Teams, SPO - SharePoint, X500) są tylko do podglądu. Dla skrzynek synchronizowanych z AD adresy zmienia się w lokalnym AD (proxyAddresses).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż adresy' -Icon 'E8A1' -Primary -OnClick {
@@ -378,7 +382,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
         Invoke-HTTargetQuery -Module $m -Name 'Adresy e-mail' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTMailboxAddresses -Identity $t.PrimarySmtpAddress }
     } | Out-Null
     $m.C.Alias = Add-HTTextBox -Parent $row -Width 260 -Placeholder 'nowy.alias@domena.pl'
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj alias' -Icon 'E710' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj alias' -Icon 'E710' -Create -OnClick {
         param($m)
         $alias = $m.C.Alias.Text.Trim()
         $t = @(Get-HTChangeTargets -Module $m -Single)[0]
@@ -387,7 +391,13 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
     } | Out-Null
     Add-HTRowAction -Module $m -Text 'Usuń adres' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
-        Invoke-HTRowAction -Module $m -Name 'Usunięcie adresu' -Rows @($rows | Where-Object { $_.Wartość }) -Confirm 'Usunąć zaznaczone adresy?' -Label { param($r) "$($r.Obiekt): $($r.Adres)" } `
+        # Tylko dodatkowe adresy SMTP (aliasy): adres główny zmienia się przez «Ustaw jako adres główny», a adresy systemowe
+        # (SIP - Teams / Skype, SPO - SharePoint, X500 - migracje) tworzy i potrzebuje Microsoft 365
+        $smtp = @($rows | Where-Object { $_ -and $_.Wartość -and [string]$_.Typ -eq 'SMTP' -and -not $_.Główny })
+        $skipped = @($rows | Where-Object { $_ -and $smtp -notcontains $_ })
+        if ($skipped.Count) { Write-Log -Message "Usunięcie adresu - pominięto (adres główny albo systemowy): $(@($skipped | ForEach-Object { "$($_.Typ) $($_.Adres)" }) -join ', ')" -Type 'Warn' }
+        if (-not $smtp.Count) { Show-HTWarning 'Usunąć można tylko dodatkowe adresy SMTP (aliasy). Adres główny zmień przez «Ustaw jako adres główny». Adresów systemowych (SIP - Teams, SPO - SharePoint, X500) nie usuwaj - tworzy je i używa Microsoft 365.' -Title 'Adresy e-mail'; return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie adresu' -Rows $smtp -Confirm "Usunąć zaznaczone aliasy?$(if ($skipped.Count) { " Pominięte (główny albo systemowy): $($skipped.Count)." })" -Label { param($r) "$($r.Obiekt): $($r.Adres)" } `
             -Action { param($r) Remove-HTMailboxAddress -Identity $r.__target.PrimarySmtpAddress -Value $r.Wartość } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Ustaw jako adres główny' -Icon 'E8FB' -Danger -Action {
@@ -404,7 +414,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Wszystkie grupy' -Icon 'E902' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dystrybucyjne' -ScriptBlock { Get-HTDistributionGroups } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Icon 'E710' -OnClick { param($m) New-HTDistributionGroupInteractive -Module $m } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Create -NoRowMenu -Icon 'E710' -OnClick { param($m) New-HTDistributionGroupInteractive -Module $m } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Grupy zaznaczonych skrzynek' -Icon 'E716' -OnClick {
         param($m)
         Invoke-HTTargetQuery -Module $m -Name 'Przynależność do grup' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action {
@@ -419,7 +429,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         try { $members = @(Get-HTDistributionGroupMembers -Identity $g.Identity) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków" -Data $members -ExportName "czlonkowie_$($g.Nazwa)"
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj zaznaczone skrzynki do grupy' -Icon 'E710' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj zaznaczone skrzynki do grupy' -Icon 'E710' -Create -Action {
         param($m, $rows)
         $mailboxes = @(Get-HTTargets -Module $m)
         if ($mailboxes.Count -eq 0) { return }
@@ -455,7 +465,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
         Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy' -Rows $groups -NoConfirm -Label { param($r) $r.Nazwa } -Action { param($r) Invoke-HTMailboxSettingPlan -Identity $r.Identity -Plan $plan } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Create -Action {
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
         if (-not $g) { return }
@@ -482,7 +492,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
 Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.quarantine' -Title 'Kwarantanna' -Icon 'EA18' -Service 'Exchange' `
     -Description 'Wiadomości zatrzymane przez filtr spamu / phishingu / malware. Zwolnienie, podgląd treści i usunięcie (prawy przycisk).' -Build {
     param($m)
-    $row = Add-HTToolbarRow -Module $m -Title 'Zakres'
+    $row = Add-HTToolbarRow -Module $m
     $m.C.Scope = Add-HTSegmented -Parent $row -Items @('Zaznaczone skrzynki', 'Cała organizacja')
     Add-HTLabel -Parent $row -Text 'Dni:' | Out-Null
     $m.C.Days = Add-HTNumeric -Parent $row -Value 7 -Minimum 1 -Maximum 30
@@ -532,7 +542,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.recover
         $subject = $m.C.Subject.Text.Trim()
         Invoke-HTTargetQuery -Module $m -Name 'Elementy do odzyskania' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTRecoverableItems -Identity $t.PrimarySmtpAddress -Days $days -SubjectContains $subject }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Create -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie elementów' -Rows @($rows | Where-Object { $_.EntryID }) -Confirm 'Przywrócić zaznaczone elementy do pierwotnych folderów?' -Label { param($r) "$($r.Skrzynka): $($r.Temat)" } `
             -Action { param($r) Restore-HTRecoverableItem -Identity $r.Skrzynka -EntryID $r.EntryID }
@@ -740,7 +750,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.t
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pobierz listę' -Icon 'E72C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Dozwoleni i zablokowani' -ScriptBlock { Get-HTTenantAllowBlockList } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj wpisy…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj wpisy…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         $form = Show-HTFormDialog -Title 'Lista dozwolonych i zablokowanych' -Icon 'E8F8' -OkText 'Dodaj' -Fields @(
             @{ Name = 'Type'; Label = 'Rodzaj'; Type = 'Combo'; Options = @('Nadawca / domena', 'Adres URL', 'Plik (SHA256)') }
@@ -999,7 +1009,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.newmailbo
     -Description 'Tworzenie skrzynek współdzielonych, sal konferencyjnych i zasobów - pojedynczo albo wiele naraz - z pełnym dostępem i «Wyślij jako» dla osób, kopiami wiadomości wysłanych przez delegatów, danymi sali (pojemność, budynek, piętro, miasto) i listą sal. Skrzynka współdzielona do 50 GB nie wymaga licencji.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz skrzynki…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz skrzynki…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa skrzynka')) { return }
@@ -1061,7 +1071,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.newmailbo
         }
         Show-HTToast 'Nowe skrzynki pojawią się na liście po lewej po odświeżeniu (replikacja trwa do kilku minut).' 'info' 8
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa lista sal…' -Icon 'E8FD' -ToolTip 'Lista sal grupuje sale (np. budynek) w wyszukiwarce sal Outlooka' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa lista sal…' -Create -NoRowMenu -Icon 'E8FD' -ToolTip 'Lista sal grupuje sale (np. budynek) w wyszukiwarce sal Outlooka' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa lista sal')) { return }
@@ -1115,34 +1125,222 @@ function New-HTDistributionGroupInteractive {
     }
 }
 
+#region Kreator reguł grup dynamicznych
+$script:FilterBuilderXaml = @'
+<StackPanel>
+  <Grid Margin="0,0,0,10">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <StackPanel Grid.Column="0">
+      <TextBlock Text="Odbiorcy" Foreground="#8791A5" FontSize="12" Margin="0,0,0,4"/>
+      <ComboBox x:Name="fbType"/>
+    </StackPanel>
+    <StackPanel Grid.Column="2">
+      <TextBlock Text="Łączenie warunków" Foreground="#8791A5" FontSize="12" Margin="0,0,0,4"/>
+      <ComboBox x:Name="fbJoin"/>
+    </StackPanel>
+  </Grid>
+  <TextBlock Text="Warunki (atrybut, porównanie, wartość; * - dowolny ciąg znaków)" Foreground="#8791A5" FontSize="12" Margin="0,0,0,4"/>
+  <StackPanel x:Name="fbRows"/>
+  <StackPanel x:Name="fbAddHost" Orientation="Horizontal" Margin="0,4,0,10"/>
+  <Grid Margin="0,0,0,4">
+    <TextBlock Text="Filtr (OPATH) - budowany z warunków" Foreground="#8791A5" FontSize="12" VerticalAlignment="Center"/>
+    <CheckBox x:Name="fbManual" Content="Edytuj ręcznie (zaawansowane)" HorizontalAlignment="Right"/>
+  </Grid>
+  <TextBox x:Name="fbFilter" Style="{StaticResource MultiText}" Height="78" TextWrapping="Wrap" IsReadOnly="True" FontFamily="Consolas" FontSize="12"/>
+  <StackPanel x:Name="fbTestHost" Orientation="Horizontal" Margin="0,8,0,6"/>
+  <TextBlock x:Name="fbInfo" Foreground="#AEB6C4" TextWrapping="Wrap" Margin="0,0,0,6"/>
+  <TextBox x:Name="fbPreview" Style="{StaticResource MultiText}" Height="150" IsReadOnly="True" TextWrapping="NoWrap" Visibility="Collapsed"/>
+</StackPanel>
+'@
+
+$script:FilterBuilderEvents = @{
+    Changed = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); if ($w) { Update-HTFilterBuilderText -Window $w } }
+    Add     = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); Add-HTFilterBuilderRow -Window $w; Update-HTFilterBuilderText -Window $w }
+    Remove  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        [void]$w.FindName('fbRows').Children.Remove($s.Tag)
+        Update-HTFilterBuilderText -Window $w
+    }
+    Manual  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        if (-not $w) { return }
+        Set-HTFilterBuilderManual -Window $w -Manual ($s.IsChecked -eq $true)
+        if ($s.IsChecked -ne $true) { Update-HTFilterBuilderText -Window $w }
+    }
+    Test    = { param($s, $e) $w = [System.Windows.Window]::GetWindow($s); Invoke-HTFilterBuilderTest -Window $w }
+}
+
+function Set-HTFilterBuilderManual {
+    # Edycja ręczna filtra: warunki nieaktywne, pole filtra edytowalne
+    param([Parameter(Mandatory)]$Window, [bool]$Manual)
+    $Window.FindName('fbFilter').IsReadOnly = -not $Manual
+    foreach ($n in 'fbRows', 'fbAddHost', 'fbType', 'fbJoin') { $Window.FindName($n).IsEnabled = -not $Manual }
+}
+
+function Add-HTFilterBuilderRow {
+    # Wiersz warunku: atrybut (lista albo nazwa atrybutu), porównanie, wartość, usuń
+    param([Parameter(Mandatory)]$Window, $Condition = $null)
+    $opts = $Window.Tag.FB.Options
+    $grid = New-Object System.Windows.Controls.Grid
+    $grid.Margin = '0,0,0,6'
+    foreach ($w in @('2*', '1.5*', '2*', 'Auto')) {
+        $c = New-Object System.Windows.Controls.ColumnDefinition
+        $c.Width = (New-Object System.Windows.GridLengthConverter).ConvertFromString($w)
+        [void]$grid.ColumnDefinitions.Add($c)
+    }
+    $attr = New-Object System.Windows.Controls.ComboBox
+    $attr.IsEditable = $true
+    foreach ($p in @($opts.Properties)) { [void]$attr.Items.Add($p) }
+    $attr.Text = $(if ($Condition -and $Condition.Property) { [string]$Condition.Property } else { 'Dział' })
+    $attr.Margin = '0,0,6,0'
+    $attr.ToolTip = 'Atrybut z listy albo nazwa atrybutu Exchange (np. CustomAttribute7)'
+    $op = New-Object System.Windows.Controls.ComboBox
+    $keys = @($opts.Operators.Keys)
+    foreach ($k in $keys) { [void]$op.Items.Add([string]$opts.Operators[$k]) }
+    $op.SelectedIndex = [Math]::Max(0, $keys.IndexOf($(if ($Condition -and $Condition.Operator) { [string]$Condition.Operator } else { 'eq' })))
+    $op.Margin = '0,0,6,0'
+    $value = New-Object System.Windows.Controls.TextBox
+    $value.Text = $(if ($Condition) { [string]$Condition.Value } else { '' })
+    $value.Margin = '0,0,6,0'
+    $remove = New-HTButton -Icon 'E711' -Ghost -ToolTip 'Usuń warunek'
+    $remove.Tag = $grid
+    [System.Windows.Controls.Grid]::SetColumn($op, 1)
+    [System.Windows.Controls.Grid]::SetColumn($value, 2)
+    [System.Windows.Controls.Grid]::SetColumn($remove, 3)
+    foreach ($el in $attr, $op, $value, $remove) { [void]$grid.Children.Add($el) }
+    $grid.Tag = @{ Attr = $attr; Op = $op; Value = $value; Keys = $keys }
+    $attr.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    $attr.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]$script:FilterBuilderEvents.Changed)
+    $op.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    $value.add_TextChanged($script:FilterBuilderEvents.Changed)
+    $remove.add_Click($script:FilterBuilderEvents.Remove)
+    [void]$Window.FindName('fbRows').Children.Add($grid)
+}
+
+function Get-HTFilterBuilderConditions {
+    param([Parameter(Mandatory)]$Window)
+    foreach ($row in @($Window.FindName('fbRows').Children)) {
+        $t = $row.Tag
+        $key = if ($t.Op.SelectedIndex -ge 0) { $t.Keys[$t.Op.SelectedIndex] } else { 'eq' }
+        # Porównanie bez wartości (puste / niepuste) - pole wartości nieaktywne
+        $t.Value.IsEnabled = $key -notin 'empty', 'notempty'
+        @{ Property = ([string]$t.Attr.Text).Trim(); Operator = $key; Value = [string]$t.Value.Text }
+    }
+}
+
+function Update-HTFilterBuilderText {
+    # Filtr z warunków (poza edycją ręczną); wynik poprzedniego testu znika
+    param([Parameter(Mandatory)]$Window)
+    $info = $Window.FindName('fbInfo')
+    $Window.FindName('fbPreview').Visibility = 'Collapsed'
+    $info.Text = ''
+    if ($Window.FindName('fbManual').IsChecked -eq $true) { return }
+    $conditions = @(Get-HTFilterBuilderConditions -Window $Window)
+    $join = if ($Window.FindName('fbJoin').SelectedIndex -eq 1) { 'or' } else { 'and' }
+    try { $Window.FindName('fbFilter').Text = ConvertTo-HTRecipientFilter -Conditions $conditions -RecipientType ([string]$Window.FindName('fbType').SelectedItem) -Join $join }
+    catch { $info.Text = "Popraw warunek: $($_.Exception.Message)" }
+}
+
+function Invoke-HTFilterBuilderTest {
+    # Test filtra: liczba i lista odbiorców, którzy trafią do grupy (przed zapisem)
+    param([Parameter(Mandatory)]$Window)
+    $filter = ([string]$Window.FindName('fbFilter').Text).Trim()
+    $info = $Window.FindName('fbInfo')
+    $preview = $Window.FindName('fbPreview')
+    if (-not $filter) { $info.Text = 'Filtr jest pusty - dodaj warunek.'; return }
+    if (-not (Assert-HTConnection -Service 'Exchange')) { return }
+    Set-HTBusy -Busy $true -Text 'Test filtra grupy dynamicznej…'
+    try {
+        $r = Get-HTRecipientFilterPreview -Filter $filter -Max 200
+        $items = @($r.Items)
+        $info.Text = if ($items.Count -eq 0) { 'Do grupy nie trafi nikt - sprawdź warunki (wielkość liter nie ma znaczenia, * - dowolny ciąg znaków).' } else { "Do grupy trafi: $($items.Count)$(if ($r.More) { '+ (pokazano pierwszych 200)' }) odbiorców." }
+        $preview.Text = (@($items | ForEach-Object { "$($_.Nazwa) <$($_.Adres)> - $($_.Typ)" }) -join "`r`n")
+        $preview.Visibility = $(if ($items.Count) { 'Visible' } else { 'Collapsed' })
+        Add-HTOperationRecord -Kind Check -Operation 'Test filtra grupy dynamicznej' -Object $filter -Details "odbiorców: $($items.Count)$(if ($r.More) { '+' })" -Module 'Grupy dynamiczne'
+    }
+    catch {
+        $preview.Visibility = 'Collapsed'
+        $info.Text = "Błąd filtra: $($_.Exception.Message)"
+    }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+}
+
+function Show-HTDynamicFilterBuilder {
+    <#
+        Kreator reguły grupy dynamicznej: rodzaj odbiorców, warunki (atrybut, porównanie, wartość) łączone AND / OR,
+        filtr OPATH na bieżąco, test (kto trafi do grupy) i edycja ręczna. -Filter: istniejący filtr (rozkładany na warunki,
+        gdy to możliwe). Zwraca filtr albo $null.
+    #>
+    param([Parameter(Mandatory)][string]$Title, [string]$Filter = '', [string]$OkText = 'Zapisz', [string]$Subtitle = '')
+    $opts = Get-HTDynamicFilterOptions
+    if (-not $Subtitle) { $Subtitle = 'Warunki wybierasz z listy - program buduje filtr. «Testuj» pokazuje, kto trafi do grupy, zanim zapiszesz.' }
+    $w = New-HTDialog -Title $Title -Subtitle $Subtitle -Body $script:FilterBuilderXaml -Icon 'E71C' -OkText $OkText -Width 860 -Validate {
+        param($w)
+        if (-not ([string]$w.FindName('fbFilter').Text).Trim()) { Show-HTWarning 'Filtr jest pusty - dodaj co najmniej jeden warunek.' -Title 'Grupa dynamiczna'; return $false }
+        if ([string]$w.FindName('fbInfo').Text -like 'Popraw warunek*') { Show-HTWarning ([string]$w.FindName('fbInfo').Text) -Title 'Grupa dynamiczna'; return $false }
+        return $true
+    }
+    $w.Tag.FB = @{ Options = $opts }
+    $type = $w.FindName('fbType')
+    foreach ($t in @($opts.Types)) { [void]$type.Items.Add($t) }
+    $join = $w.FindName('fbJoin')
+    foreach ($j in 'Wszystkie warunki muszą być spełnione (AND)', 'Wystarczy dowolny warunek (OR)') { [void]$join.Items.Add($j) }
+    $join.SelectedIndex = 0
+    $manual = $w.FindName('fbManual')
+    $parsed = if ($Filter) { ConvertFrom-HTRecipientFilter $Filter } else { $null }
+    if ($parsed -and $parsed.Parsed) {
+        $type.SelectedItem = $parsed.RecipientType
+        if ($parsed.Join -eq 'or') { $join.SelectedIndex = 1 }
+        foreach ($c in @($parsed.Conditions)) { Add-HTFilterBuilderRow -Window $w -Condition $c }
+    }
+    else { $type.SelectedIndex = 0 }
+    if ($w.FindName('fbRows').Children.Count -eq 0 -and -not ($Filter -and -not $parsed.Parsed)) { Add-HTFilterBuilderRow -Window $w }
+    $add = New-HTButton -Text 'Dodaj warunek' -Icon 'E710' -Create
+    $add.add_Click($script:FilterBuilderEvents.Add)
+    [void]$w.FindName('fbAddHost').Children.Add($add)
+    $test = New-HTButton -Text 'Testuj - kto trafi do grupy' -Icon 'E716'
+    $test.add_Click($script:FilterBuilderEvents.Test)
+    [void]$w.FindName('fbTestHost').Children.Add($test)
+    $type.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    $join.add_SelectionChanged($script:FilterBuilderEvents.Changed)
+    if ($Filter -and -not $parsed.Parsed) {
+        # Filtr spoza kreatora (np. zagnieżdżone warunki) - edycja ręczna; wyłączenie buduje nowy filtr z warunków
+        $manual.IsChecked = $true
+        $w.FindName('fbFilter').Text = $Filter
+        Set-HTFilterBuilderManual -Window $w -Manual $true
+        $w.FindName('fbInfo').Text = 'Tego filtra nie da się rozłożyć na warunki kreatora - edytuj go ręcznie albo wyłącz «Edytuj ręcznie», żeby zbudować nowy z warunków.'
+    }
+    else { Update-HTFilterBuilderText -Window $w }
+    $manual.add_Checked($script:FilterBuilderEvents.Manual)
+    $manual.add_Unchecked($script:FilterBuilderEvents.Manual)
+    if (-not (Invoke-HTDialog $w)) { return $null }
+    return ([string]$w.FindName('fbFilter').Text).Trim()
+}
+#endregion
+
 Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn' -Title 'Grupy dynamiczne' -Icon 'E71C' -Service 'Exchange' `
     -Description 'Grupy dystrybucyjne z członkami wyliczanymi z atrybutów (np. wszyscy z działu Sprzedaż w Warszawie): lista z filtrem, podgląd członków, nowa grupa z warunków, zmiana filtra i usunięcie (prawy przycisk).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż grupy' -Icon 'E71C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dynamiczne' -ScriptBlock { Get-HTDynamicGroups } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dynamiczna')) { return }
         try { $domains = @(Get-HTExchangeDomainOptions -Module $m) } catch { Show-HTError 'Nie odczytano domen akceptowanych.' $_; return }
-        $opts = Get-HTDynamicFilterOptions
-        $fields = @(
+        $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Description 'Krok 1 z 2: dane grupy. W kolejnym kroku - warunki członkostwa (kreator z testem).' -Icon 'E71C' -OkText 'Dalej' -Width 620 -Fields @(
             @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true }
             @{ Name = 'Address'; Label = 'Adres e-mail (puste - z nazwy i domeny)' }
             @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains }
             @{ Name = 'Owner'; Label = 'Właściciel (adres, opcjonalnie)' }
-            @{ Name = 'Type'; Label = 'Odbiorcy'; Type = 'Combo'; Options = @($opts.Types) }
-            @{ Type = 'Header'; Label = 'Warunki (wszystkie muszą być spełnione; puste - pomijane; * - dowolny ciąg znaków)' }
         )
-        $i = 0
-        foreach ($p in $opts.Properties) { $fields += @{ Name = "C_$i"; Label = $p }; $i++ }
-        $form = Show-HTFormDialog -Title 'Nowa grupa dynamiczna' -Icon 'E71C' -OkText 'Dalej' -Width 620 -MaxHeight 600 -Fields $fields
         if (-not $form) { return }
-        $conditions = @(for ($j = 0; $j -lt @($opts.Properties).Count; $j++) { if ($form["C_$j"]) { @{ Property = @($opts.Properties)[$j]; Value = $form["C_$j"] } } })
-        if ($conditions.Count -eq 0) { Show-HTWarning 'Podaj co najmniej jeden warunek (np. dział).'; return }
         $entry = @(ConvertFrom-HTNewMailboxLines -Text "$($form.Name); $($form.Address)" -Domain $form.Domain -Domains $domains)[0]
         if (-not $entry -or -not $entry.Valid) { Show-HTWarning "Popraw nazwę lub adres: $(if ($entry) { @($entry.Errors) -join ', ' })"; return }
-        $filter = ConvertTo-HTRecipientFilter -Conditions $conditions -RecipientType $form.Type
+        $filter = Show-HTDynamicFilterBuilder -Title "Warunki grupy: $($form.Name)" -OkText 'Dalej' -Subtitle 'Krok 2 z 2: kto ma należeć do grupy. «Testuj» pokazuje członków, zanim utworzysz grupę.'
+        if (-not $filter) { return }
         Invoke-HTTargetAction -Module $m -Name 'Nowa grupa dynamiczna' -Targets @($entry) -Label { param($t) "$($t.DisplayName) <$($t.Address)>" } -Confirm "Utworzyć grupę dynamiczną z filtrem:`n$filter" -Action {
             param($t)
             "Utworzono $(New-HTDynamicGroup -DisplayName $t.DisplayName -Address $t.Address -Filter $filter -Owner ([string]$form.Owner)) - członkowie są wyliczani okresowo (w nowej grupie do 24 h)"
@@ -1162,9 +1360,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
         if (-not $g) { return }
-        $form = Show-HTFormDialog -Title "Filtr grupy: $($g.Nazwa)" -Icon 'E71C' -Width 680 -Fields @(@{ Name = 'Filter'; Label = 'Filtr OPATH (RecipientFilter)'; Type = 'Multiline'; Height = 120; Required = $true; Default = $g.Filtr; Hint = "Np. (RecipientTypeDetails -eq 'UserMailbox') -and (Department -eq 'Sprzedaż') -and (City -like 'Warsz*')" })
-        if (-not $form -or $form.Filter -eq $g.Filtr) { return }
-        Invoke-HTRowAction -Module $m -Name 'Zmiana filtra grupy dynamicznej' -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTDynamicGroupFilter -Identity $r.Identity -Filter $form.Filter; 'Filtr zmieniony' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        $filter = Show-HTDynamicFilterBuilder -Title "Filtr grupy: $($g.Nazwa)" -Filter $g.Filtr -OkText 'Zapisz'
+        if (-not $filter -or $filter -eq $g.Filtr) { return }
+        Invoke-HTRowAction -Module $m -Name 'Zmiana filtra grupy dynamicznej' -Rows @($g) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTDynamicGroupFilter -Identity $r.Identity -Filter $filter; 'Filtr zmieniony' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Usuń grupę' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
@@ -1178,7 +1376,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.con
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż kontakty' -Icon 'E77B' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Kontakty zewnętrzne' -ScriptBlock { Get-HTMailContacts } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowe kontakty…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowe kontakty…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowe kontakty')) { return }
@@ -1257,7 +1455,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.folder
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Uprawnienia: $($f.Folder)" -Description $f.Skrzynka -Data $perms -ExportName 'uprawnienia_folderu' -Icon 'E8D7'
     }
-    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Create -Action {
         param($m, $rows)
         $folders = @($rows | Where-Object { $_.__path })
         if ($folders.Count -eq 0) { return }
@@ -1301,6 +1499,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyac
     param($m)
     $row = Add-HTToolbarRow -Module $m -Title 'Pracownik'
     $m.C.User = Add-HTTextBox -Parent $row -Width 280 -Placeholder 'adres e-mail (puste - zaznaczona skrzynka)'
+    Add-HTAddressPicker -Parent $row -Module $m -TextBox $m.C.User | Out-Null
     $m.C.Groups = Add-HTCheckBox -Parent $row -Text 'Grupy' -Checked $true
     $m.C.Calendars = Add-HTCheckBox -Parent $row -Text 'Kalendarze innych skrzynek (wolno)'
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż dostęp' -Icon 'E8A1' -Primary -OnClick {
@@ -1320,8 +1519,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyac
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Następca'
     $m.C.Target = Add-HTTextBox -Parent $row2 -Width 380 -Placeholder 'adresy osób, które mają dostać dostęp (kilka - przecinek)'
+    Add-HTAddressPicker -Parent $row2 -Module $m -TextBox $m.C.Target -Multiple | Out-Null
     $m.C.AutoMap = Add-HTCheckBox -Parent $row2 -Text 'AutoMapping' -Checked $true
-    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $targetUsers = @(Split-HTInputList $m.C.Target.Text)
         if ($targetUsers.Count -eq 0) { Show-HTWarning 'Wpisz adresy osób, które mają dostać dostęp.'; return }

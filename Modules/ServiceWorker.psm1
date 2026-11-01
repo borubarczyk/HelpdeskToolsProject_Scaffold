@@ -223,6 +223,11 @@ function Get-HTProgramCommandNames {
             $n = $c.GetCommandName()
             if ($n -and $n -match '^[A-Za-z]+-[A-Za-z0-9]+$') { [void]$names.Add($n) }
         }
+        # Nazwy poleceń zapisane jako tekst - wywołania dynamiczne (& $command, Get-Command -Name 'Get-MessageTraceV2')
+        foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+            $v = [string]$c.Value
+            if ($v -match '^[A-Z][a-z]+-[A-Za-z][A-Za-z0-9]+$') { [void]$names.Add($v) }
+        }
     }
     $result = @($names | Sort-Object)
     if (-not $PSBoundParameters.ContainsKey('Root')) { $script:ProgramCommandNames = $result }

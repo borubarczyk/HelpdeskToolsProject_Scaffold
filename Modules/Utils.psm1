@@ -375,6 +375,63 @@ function ConvertTo-HTDisplayValue {
 }
 
 # Rozbija tekst (np. wklejoną listę) na unikalne, niepuste wpisy
+function Protect-HTSupportText {
+    # Tekst do wsparcia bez sekretów: tokeny (JWT), hasła i sekrety «nazwa=wartość», podpisy i klucze w adresach, webhooki
+    param([AllowEmptyString()][AllowNull()][string]$Text)
+    if (-not $Text) { return '' }
+    $t = $Text -replace 'eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*', '[token]'
+    $t = $t -replace '(?i)https?://[^\s"''<>]*(webhook|logic\.azure|powerautomate|environment\.api)[^\s"''<>]*', '[adres webhooka]'
+    $t = $t -replace '(?i)([?&](sig|code|token|key|secret|password)=)[^\s&"''<>]+', '$1[ukryte]'
+    $t = $t -replace '(?i)\b(password|passwd|hasło|haslo|secret|sekret|client_?secret|token|api_?key)(\s*[:=]\s*)\S+', '$1$2[ukryte]'
+    return $t
+}
+
+function Format-HTSupportReport {
+    # Dane do zgłoszenia problemu z sekcji [ordered]@{ Tytuł = wiersze } (kolejność zachowana), bez sekretów
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Sections)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $Sections.Keys) {
+        if ($lines.Count) { $lines.Add('') }
+        $lines.Add("== $k ==")
+        $items = @($Sections[$k] | Where-Object { $null -ne $_ })
+        if (-not $items.Count) { $lines.Add('(brak)') }
+        foreach ($l in $items) { $lines.Add((Protect-HTSupportText ([string]$l))) }
+    }
+    return ($lines -join "`r`n")
+}
+
+function Get-HTAddressCompletion {
+    <#
+        Podpowiedź końcówki adresu podczas pisania: najdłuższy wspólny początek znanych adresów zaczynających się od -Token
+        (bez rozróżniania wielkości liter); po «@» - także sama domena znanych adresów (jan.nowy@fi -> jan.nowy@firma.pl).
+        Zwraca -Token z dopisaną końcówką albo '' (brak dopasowania albo nic do dopisania).
+    #>
+    param([AllowEmptyString()][AllowNull()][string]$Token, [AllowEmptyCollection()][string[]]$Addresses = @(), [int]$MinLength = 2)
+    if (-not $Token -or $Token.Length -lt $MinLength) { return '' }
+    $common = {
+        param([string[]]$Items)
+        $prefix = $Items[0]
+        foreach ($item in $Items) {
+            $i = 0
+            while ($i -lt $prefix.Length -and $i -lt $item.Length -and [char]::ToLowerInvariant($prefix[$i]) -eq [char]::ToLowerInvariant($item[$i])) { $i++ }
+            $prefix = $prefix.Substring(0, $i)
+        }
+        return $prefix
+    }
+    $found = @($Addresses | Where-Object { $_ -and $_.StartsWith($Token, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -Unique)
+    if (-not $found.Count -and $Token.Contains('@')) {
+        $at = $Token.IndexOf('@')
+        $local = $Token.Substring(0, $at + 1)
+        $domainPart = $Token.Substring($at + 1)
+        $domains = @($Addresses | Where-Object { $_ -and $_.Contains('@') } | ForEach-Object { $_.Substring($_.IndexOf('@') + 1) } | Where-Object { $_.StartsWith($domainPart, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -Unique)
+        $found = @($domains | ForEach-Object { $local + $_ })
+    }
+    if (-not $found.Count) { return '' }
+    $prefix = & $common $found
+    if ($prefix.Length -le $Token.Length) { return '' }
+    return $Token + $prefix.Substring($Token.Length)
+}
+
 function Split-HTInputList {
     param ([AllowEmptyString()][AllowNull()][string]$Text)
     if (-not $Text) { return @() }

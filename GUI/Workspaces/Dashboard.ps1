@@ -193,13 +193,13 @@ Register-HTModule -Workspace 'Dashboard' -Category 'Program' -Key 'dash.tenants'
         $defaultClientId = "$($Global:LastUsedClientID)"
         Invoke-HTQuery -Module $m -Name 'Profile tenantów' -Service '' -ScriptBlock { foreach ($p in @(Find-HTTenantProfiles -Profiles (Get-HTTenantProfiles))) { ConvertTo-HTTenantProfileRow -TenantProfile $p -DefaultClientId $defaultClientId } }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj profil…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj profil…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         $edited = Edit-HTTenantProfile -New
         if ($edited) { Save-HTTenantProfile -TenantProfile $edited; Show-HTToast "Zapisano profil «$($edited.Name)»." 'ok'; Invoke-HTModulePrimary $m }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Plik CSV'
-    Add-HTButton -Parent $row2 -Module $m -Text 'Import z CSV…' -Icon 'E8B5' -OnClick { param($m) if (Import-HTTenantProfilesInteractive) { Invoke-HTModulePrimary $m } } | Out-Null
+    Add-HTButton -Parent $row2 -Module $m -Text 'Import z CSV…' -Create -NoRowMenu -Icon 'E8B5' -OnClick { param($m) if (Import-HTTenantProfilesInteractive) { Invoke-HTModulePrimary $m } } | Out-Null
     Add-HTButton -Parent $row2 -Module $m -Text 'Eksport do CSV…' -Icon 'EDE1' -OnClick { param($m) Export-HTTenantProfilesInteractive } | Out-Null
     Add-HTButton -Parent $row2 -Module $m -Text 'Zapisz szablon CSV' -Icon 'E74E' -OnClick {
         param($m)

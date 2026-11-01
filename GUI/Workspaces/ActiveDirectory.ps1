@@ -239,7 +239,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
             foreach ($g in @(Get-HTADObjectGroups -DistinguishedName $t.DistinguishedName)) { [PSCustomObject]@{ Grupa = $g.Name; DN = $g.DistinguishedName } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -251,7 +251,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
             "Dodano do: $(@($groups | ForEach-Object { $_.Name }) -join ', ')"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -280,7 +280,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.new' -T
     param($m)
     $m.SecretColumns = @('Hasło')
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz użytkownika…' -Icon 'E8FA' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz użytkownika…' -Create -NoRowMenu -Icon 'E8FA' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'AD')) { return }
         $suffixes = @(Get-HTADUpnSuffixes)
@@ -621,7 +621,7 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Grupa' -Key 'adg.members' -Ti
             foreach ($x in @(Get-HTADGroupMembers -Identity $t.ObjectGUID)) { [PSCustomObject]@{ Członek = $x.Name; Login = $x.SamAccountName; Typ = $x.ObjectClass; DN = $x.DistinguishedName } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -658,7 +658,7 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Grupa' -Key 'adg.details' -Ti
 Register-HTModule -Workspace 'ADGroups' -Category 'Zarządzanie' -Key 'adg.manage' -Title 'Edycja i nowe grupy' -Icon 'E70F' -Description 'Nowa grupa, zmiana nazwy, typu i zakresu, opis i właściciel, usunięcie.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'AD')) { return }
         $form = Show-HTFormDialog -Title 'Nowa grupa AD' -Icon 'E902' -OkText 'Dalej' -Fields @(
