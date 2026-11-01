@@ -49,7 +49,15 @@
       "TenantId": "abc.onmicrosoft.com",
       "Organization": "abc.onmicrosoft.com",
       "PartnerAccount": "admin@partner.pl",
-      "Gdap": true
+      "Gdap": true,
+      "SharePointUrl": "https://abc.sharepoint.com",
+      "PnPClientId": "",
+      "Services": [
+        "Graph",
+        "Exchange"
+      ],
+      "Notes": "",
+      "LastUsed": ""
     }
   ],
   "UpdateRepository": "borubarczyk/HelpdeskToolsProject_Scaffold",
@@ -62,6 +70,9 @@
   "AutomationOrganization": "",
   "ReportSender": "",
   "DefenderClientId": "",
+  "DebugLogging": false,
+  "ShowSystemMailboxes": false,
+  "SkippedModulePaths": [],
   "ConfigVersion": 2,
   "LoginTimeoutMinutes": 5,
   "AutoLockMinutes": 15,

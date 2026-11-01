@@ -57,7 +57,7 @@ Układ jak w Domain Ops: ciemny motyw, Segoe UI, ikony Segoe Fluent Icons / MDL2
 - **Paleta poleceń (`Ctrl+K`)**: szybkie przejście do dowolnego modułu po nazwie lub opisie, ulubione i ostatnio otwierane moduły, polecenia z wpisanym tekstem (np. «Wizytówka użytkownika: jan», «Diagnoza logowania: jan@firma.pl», «Historia obiektu: …», «Szukaj w dzienniku: …»), przełączenie tenantu, podsumowanie do zgłoszenia, aktualizacja. Gwiazdka przy module (prawy przycisk w nawigacji) - ulubione.
 - **Zapamiętany układ**: ulubione i ostatnie moduły, ostatni moduł w każdej przestrzeni, ukryte kolumny, położenie i rozmiar okna, wysokość dziennika. **Zapisane widoki** (przycisk nad tabelą): filtr tekstowy, filtry kolumn i ukryte kolumny pod nazwą, do przywrócenia jednym kliknięciem.
 - **Operacje w tle**: zapytania Microsoft 365 wykonują się w osobnym wątku - okno reaguje, wiersze pojawiają się na bieżąco, a **«Przerwij»** na pasku stanu (albo `Esc`) kończy zapytanie z zachowaniem pobranych wyników. Po długiej operacji (domyślnie 20 s), gdy okno nie jest aktywne - **powiadomienie Windows** i miganie paska zadań.
-- **Profile tenantów (GDAP)**: zapisane tenanty klientów - połączenie Microsoft 365 i Exchange jednym kliknięciem i przełączanie klientów (przycisk Microsoft 365 > «Przełącz tenant…», Ctrl+K > «Przełącz tenant»). Profil proponowany po połączeniu z tenantem klienta; edycja: Ustawienia > Microsoft 365 i Exchange > «Profile tenantów…».
+- **Profile tenantów (GDAP)**: zapisane tenanty klientów i własne (dziesiątki firm) - Pulpit > **«Profile tenantów»**: lista z wyszukiwaniem i filtrami, dwuklik łączy wybrane usługi (Microsoft 365 / Graph, Exchange, SharePoint), edycja, duplikat, usunięcie, **import i eksport CSV** (szablon w module). Profil zawiera: tenant (domena lub ID), GDAP, organizację Exchange i konto partnera, adres SharePoint i **Client ID aplikacji PnP w tenancie klienta**, usługi domyślne i notatki - bez haseł. Szybkie łączenie: przyciski w nagłówku (ostatnio używane profile + «Inny profil…» z wyszukiwaniem), Ctrl+K > «Przełącz tenant» albo «Połącz z tenantem: <tekst>». Profil proponowany po połączeniu z tenantem klienta.
 - **Podsumowanie do zgłoszenia**: przycisk «Do zgłoszenia» w dzienniku - tekst do ticketu z operacji zmieniających wykonanych w tej sesji (filtr po obiekcie), kopiowanie albo wysyłka na kanał Teams.
 - **Lista obiektów** (lewa kolumna): wyszukiwanie, pola wyboru (wiele obiektów naraz), «Zaznacz widoczne / odwróć / odznacz» oraz **«Zaznacz z listy»** - wklejone identyfikatory lub plik CSV/TXT. Dawne «Akcje masowe» działają teraz w każdym module: zaznacz kilka obiektów i wykonaj akcję. Lista wczytuje się sama po połączeniu z usługą.
 - **Nawigacja modułów** (środkowa kolumna) pogrupowana w kategorie.
@@ -177,7 +177,7 @@ Plik `%APPDATA%\HelpdeskTools\config.json` (brakujące klucze są uzupełniane a
   "NotifyLongOperationsSeconds": 20,
   "TeamsWebhookProtected": "",
   "TeamsNotify": [ "Offboarding", "Jobs", "Checklists" ],
-  "TenantProfiles": [ { "Name": "Klient ABC", "TenantId": "abc.onmicrosoft.com", "Organization": "abc.onmicrosoft.com", "PartnerAccount": "admin@partner.pl", "Gdap": true } ],
+  "TenantProfiles": [ { "Name": "Klient ABC", "TenantId": "abc.onmicrosoft.com", "Organization": "abc.onmicrosoft.com", "PartnerAccount": "admin@partner.pl", "Gdap": true, "SharePointUrl": "https://abc.sharepoint.com", "PnPClientId": "", "Services": [ "Graph", "Exchange" ], "Notes": "", "LastUsed": "" } ],
   "UpdateRepository": "borubarczyk/HelpdeskToolsProject_Scaffold",
   "UpdateBranch": "main",
   "UpdateTokenProtected": "",
@@ -202,6 +202,7 @@ Modules/
   Security.psm1                PIN programu (skrót PBKDF2)
   Mfa.psm1                     MFA: TOTP (RFC 6238), Base32, konta w Mfa.json (DPAPI), uprawnienia kont
   QrCode.psm1                  Kod QR (ISO/IEC 18004) bez zewnętrznych bibliotek - link otpauth:// przy włączaniu MFA
+  TenantProfiles.psm1          Profile tenantów: normalizacja, walidacja, wyszukiwanie, scalanie, import i eksport CSV
   UiState.psm1                 Zapamiętany układ: ulubione, ostatnie moduły, kolumny, widoki filtrów, okno
   ColumnFilters.psm1           Filtry kolumn tabeli wyników (logika autofiltru)
   Reports.psm1                 Raporty HTML z tabel wyników, wizytówka użytkownika

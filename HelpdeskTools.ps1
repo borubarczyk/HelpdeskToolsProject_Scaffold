@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.4.0"
+$Global:AppVersion = "3.5.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -95,6 +95,7 @@ $moduleNames = @(
     "Security",
     "Mfa",
     "QrCode",
+    "TenantProfiles",
     "UiState",
     "ColumnFilters",
     "Reports",
