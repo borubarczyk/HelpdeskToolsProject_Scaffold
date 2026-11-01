@@ -254,7 +254,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.mfa' 
             @{ 'Kod TAP' = $tap.temporaryAccessPass; Szczegóły = "Ważny $($form.Minutes) min od $($tap.startDateTime)" }
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Usuń metodę' -Icon 'E74D' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Usuń metody' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
         $rows = @($rows | Where-Object { $_.__method -and $_.__method.Removable })
         if ($rows.Count -eq 0) { Show-HTWarning 'Zaznaczone metody nie mogą być usunięte (np. hasło).'; return }
@@ -612,7 +612,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.deleted' 
             'Konto usunięte (kosz 30 dni)'
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć konto' -Icon 'E777' -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć konto' -Icon 'E777' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie konta' -Rows $rows -Confirm 'Przywrócić zaznaczone konta?' -Action { param($r) Restore-HTM365DeletedUser -Id $r.Id | Out-Null } `
             -Refresh { param($m) Invoke-HTQuery -Module $m -Name 'Usunięci użytkownicy' -ScriptBlock { Get-HTM365DeletedUsers } }
@@ -881,7 +881,7 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.compare' -Title
             }
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Uzupełnij brakujące grupy (drugie konto)' -Icon 'E902' -Action {
+    Add-HTRowAction -Module $m -Text 'Uzupełnij brakujące grupy (drugie konto)' -Icon 'E902' -Danger -Action {
         param($m, $rows)
         $a = $m.Data.A
         $b = $m.Data.B
@@ -949,11 +949,11 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
         param($m)
         Invoke-HTQuery -Module $m -Name 'Błędy licencji grupowych' -Background -ScriptBlock { param($a) Get-HTGroupLicenseErrors }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Ponów przypisanie licencji' -Icon 'E72C' -Action {
+    Add-HTRowAction -Module $m -Text 'Ponów przypisanie licencji' -Icon 'E72C' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Ponowne przetworzenie licencji' -Rows $rows -Label { param($r) $r.UPN } -Action { param($r) Invoke-HTLicenseReprocess -UserId $r.Id; 'Zlecono ponowne przetworzenie' }
     }
-    Add-HTRowAction -Module $m -Text 'Ustaw lokalizację użycia…' -Icon 'E909' -Action {
+    Add-HTRowAction -Module $m -Text 'Ustaw lokalizację użycia…' -Icon 'E909' -Danger -Action {
         param($m, $rows)
         $loc = Show-InputBox -Title 'Lokalizacja użycia' -Prompt 'Dwuliterowy kod kraju (np. PL) dla zaznaczonych kont:' -DefaultText $(if ($Global:DefaultUsageLocation) { $Global:DefaultUsageLocation } else { 'PL' }) -Icon 'E909'
         if (-not $loc -or $loc -notmatch '^[A-Za-z]{2}$') { return }
@@ -979,13 +979,25 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.recl
     } | Out-Null
     Add-HTRowAction -Module $m -Text 'Usuń licencje bezpośrednie' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
-        Invoke-HTRowAction -Module $m -Name 'Usunięcie licencji' -Rows $rows -Danger -Confirm 'Usunąć bezpośrednio przypisane licencje zaznaczonych kont? Przed usunięciem licencji skrzynkę warto przekonwertować na współdzieloną (dane skrzynki bez licencji są usuwane po 30 dniach).' -Label { param($r) $r.UPN } -Action {
+        $rows = @($rows | Where-Object { $_.Id })
+        $none = @($rows | Where-Object { -not @($_.__direct).Count })
+        $rows = @($rows | Where-Object { @($_.__direct).Count })
+        if ($none.Count) { Write-Log -Message "Usunięcie licencji - pominięto konta tylko z licencjami z grup: $(@($none | ForEach-Object { $_.UPN }) -join ', ')" -Type 'Info' }
+        if ($rows.Count -eq 0) { Show-HTWarning 'Zaznaczone konta mają tylko licencje z grup - usuń je przez członkostwo w grupie.'; return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie licencji' -Rows $rows -Danger -Confirm 'Usunąć bezpośrednio przypisane licencje zaznaczonych kont? Licencje z grup zostają (usuwa się je przez członkostwo). Przed usunięciem licencji skrzynkę warto przekonwertować na współdzieloną (dane skrzynki bez licencji są usuwane po 30 dniach).' `
+            -Summary @("Usuwane: licencje bezpośrednie wymienione przy kontach", "Liczba licencji: $(@($rows | ForEach-Object { @($_.__direct) }).Count)") `
+            -Label { param($r) "$($r.UPN) - $(@($r.__directNames) -join ', ')" } -Refresh { param($m) Invoke-HTModulePrimary $m } -Action {
             param($r)
+            $names = @{}
             $ids = @($r.__direct)
-            if (-not $ids.Count) { return 'Brak licencji bezpośrednich (tylko z grup)' }
-            Set-HTM365UserLicense -Id $r.Id -RemoveSkuIds $ids
-            Register-HTUndo -Operation 'Usunięcie licencji' -Object $r.UPN -Kind 'License' -Data @{ UserId = $r.Id; SkuIds = $ids }
-            "Usunięto licencji: $($ids.Count)"
+            $labels = @($r.__directNames)
+            for ($i = 0; $i -lt $ids.Count; $i++) { $names[$ids[$i]] = $(if ($i -lt $labels.Count) { $labels[$i] } else { $ids[$i] }) }
+            $result = Remove-HTM365DirectLicenses -Id $r.Id -SkuIds $ids -Names $names
+            if (@($result.Removed).Count) { Register-HTUndo -Operation 'Usunięcie licencji' -Object $r.UPN -Kind 'License' -Data @{ UserId = $r.Id; SkuIds = @($result.Removed) } }
+            $removedText = @($result.Removed | ForEach-Object { $names[$_] }) -join ', '
+            $failedText = @($result.Failed | ForEach-Object { "$($_.Name): $($_.Error)" }) -join '; '
+            if (-not @($result.Removed).Count) { throw "Nie usunięto żadnej licencji. $failedText" }
+            if ($failedText) { "Usunięto: $removedText. Nie usunięto: $failedText" } else { "Usunięto: $removedText" }
         }
     }
 }
@@ -1003,13 +1015,13 @@ Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title '
         if ((Test-HTChecked $m.C.Activity) -and -not (Assert-HTGraphScopes -Scopes @('Reports.Read.All') -Feature 'Aktywność zespołów')) { return }
         Invoke-HTQuery -Module $m -Name 'Zespoły Teams' -Background -Arguments @{ Issues = (Test-HTChecked $m.C.Issues); Activity = (Test-HTChecked $m.C.Activity) } -ScriptBlock { param($a) Get-HTTeamsOverview -OnlyIssues:$a.Issues -NoActivity:(-not $a.Activity) }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Dodaj właściciela…' -Icon 'E8FA' -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj właściciela…' -Icon 'E8FA' -Danger -Action {
         param($m, $rows)
         $owner = Select-HTM365User -Title 'Nowy właściciel' -Prompt "Właściciel dla zespołów: $($rows.Count)."
         if (-not $owner) { return }
         Invoke-HTRowAction -Module $m -Name 'Dodanie właściciela zespołu' -Summary "Nowy właściciel: $(Get-HTM365Label $owner)" -Rows $rows -Label { param($r) $r.Zespół } -Action { param($r) Add-HTTeamOwner -GroupId $r.Id -UserId $owner.Id; "Właściciel: $(Get-HTM365Label $owner)" }
     }
-    Add-HTRowAction -Module $m -Text 'Archiwizuj zespół' -Icon 'E7B8' -Action {
+    Add-HTRowAction -Module $m -Text 'Archiwizuj zespół' -Icon 'E7B8' -Danger -Action {
         param($m, $rows)
         if (-not (Assert-HTGraphScopes -Scopes @('TeamSettings.ReadWrite.All') -Feature 'Archiwizacja zespołów')) { return }
         Invoke-HTRowAction -Module $m -Name 'Archiwizacja zespołu' -Rows $rows -Confirm 'Zarchiwizować wybrane zespoły? Zespół stanie się tylko do odczytu (można go przywrócić).' -Label { param($r) $r.Zespół } -Action {
@@ -1019,7 +1031,7 @@ Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title '
             'Zarchiwizowano'
         }
     }
-    Add-HTRowAction -Module $m -Text 'Przywróć z archiwum' -Icon 'E777' -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć z archiwum' -Icon 'E777' -Danger -Action {
         param($m, $rows)
         if (-not (Assert-HTGraphScopes -Scopes @('TeamSettings.ReadWrite.All') -Feature 'Archiwizacja zespołów')) { return }
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie zespołu' -Rows $rows -Label { param($r) $r.Zespół } -Action { param($r) Set-HTTeamArchived -TeamId $r.Id -Archived $false; 'Przywrócono' }

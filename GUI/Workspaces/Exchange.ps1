@@ -332,7 +332,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.rules' -Tit
         param($m)
         Invoke-HTTargetQuery -Module $m -Name 'Reguły skrzynki' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTInboxRules -Identity $t.PrimarySmtpAddress }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Wyłącz regułę' -Icon 'E711' -Action {
+    Add-HTRowAction -Module $m -Text 'Wyłącz regułę' -Icon 'E711' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Wyłączenie reguły' -Rows @($rows | Where-Object { $_.RuleIdentity }) -Label { param($r) "$($r.Obiekt): $($r.Name)" } `
             -Action { param($r) Disable-HTInboxRule -Mailbox $r.__target.PrimarySmtpAddress -Identity $r.RuleIdentity } -Refresh { param($m) Invoke-HTModulePrimary $m }
@@ -389,7 +389,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
         Invoke-HTRowAction -Module $m -Name 'Usunięcie adresu' -Rows @($rows | Where-Object { $_.Wartość }) -Confirm 'Usunąć zaznaczone adresy?' -Label { param($r) "$($r.Obiekt): $($r.Adres)" } `
             -Action { param($r) Remove-HTMailboxAddress -Identity $r.__target.PrimarySmtpAddress -Value $r.Wartość } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Ustaw jako adres główny' -Icon 'E8FB' -Action {
+    Add-HTRowAction -Module $m -Text 'Ustaw jako adres główny' -Icon 'E8FB' -Danger -Action {
         param($m, $rows)
         $r = @($rows | Where-Object { $_.Typ -eq 'SMTP' -and -not $_.Główny })[0]
         if (-not $r) { Show-HTWarning 'Zaznacz dodatkowy adres SMTP (alias), który ma zostać adresem głównym.'; return }
@@ -418,7 +418,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         try { $members = @(Get-HTDistributionGroupMembers -Identity $g.Identity) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków" -Data $members -ExportName "czlonkowie_$($g.Nazwa)"
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj zaznaczone skrzynki do grupy' -Icon 'E710' -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj zaznaczone skrzynki do grupy' -Icon 'E710' -Danger -Action {
         param($m, $rows)
         $mailboxes = @(Get-HTTargets -Module $m)
         if ($mailboxes.Count -eq 0) { return }
@@ -436,7 +436,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
                 -Action { param($r) Remove-HTDistributionGroupMember -Group $g.Identity -Member $r.PrimarySmtpAddress }
         }
     }
-    Add-HTRowAction -Module $m -Text 'Ustawienia grupy…' -Icon 'E713' -Action {
+    Add-HTRowAction -Module $m -Text 'Ustawienia grupy…' -Icon 'E713' -Danger -Action {
         param($m, $rows)
         $groups = @($rows | Where-Object { $_.Identity })
         if ($groups.Count -eq 0) { return }
@@ -454,7 +454,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
         Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy' -Rows $groups -NoConfirm -Label { param($r) $r.Nazwa } -Action { param($r) Invoke-HTMailboxSettingPlan -Identity $r.Identity -Plan $plan } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Danger -Action {
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
         if (-not $g) { return }
@@ -504,11 +504,11 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.quarant
         try { $text = Get-HTQuarantinePreview -Identity $r.Identity } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTTextDialog -Title "Kwarantanna: $($r.Temat)" -Subtitle $r.Nadawca -Text $text
     }
-    Add-HTRowAction -Module $m -Text 'Zwolnij do odbiorców' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Zwolnij do odbiorców' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Zwolnienie z kwarantanny' -Rows $rows -Confirm 'Zwolnić zaznaczone wiadomości do wszystkich odbiorców?' -Label { param($r) "$($r.Nadawca): $($r.Temat)" } -Action { param($r) Invoke-HTQuarantineRelease -Identity $r.Identity }
     }
-    Add-HTRowAction -Module $m -Text 'Zwolnij i zezwól nadawcy' -Icon 'E8FB' -Action {
+    Add-HTRowAction -Module $m -Text 'Zwolnij i zezwól nadawcy' -Icon 'E8FB' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Zwolnienie i zezwolenie' -Rows $rows -Confirm 'Zwolnić wiadomości i dodać nadawców do listy dozwolonych?' -Label { param($r) "$($r.Nadawca): $($r.Temat)" } -Action { param($r) Invoke-HTQuarantineRelease -Identity $r.Identity -AllowSender }
     }
@@ -531,7 +531,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.recover
         $subject = $m.C.Subject.Text.Trim()
         Invoke-HTTargetQuery -Module $m -Name 'Elementy do odzyskania' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTRecoverableItems -Identity $t.PrimarySmtpAddress -Days $days -SubjectContains $subject }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie elementów' -Rows @($rows | Where-Object { $_.EntryID }) -Confirm 'Przywrócić zaznaczone elementy do pierwotnych folderów?' -Label { param($r) "$($r.Skrzynka): $($r.Temat)" } `
             -Action { param($r) Restore-HTRecoverableItem -Identity $r.Skrzynka -EntryID $r.EntryID }
@@ -638,14 +638,14 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.access
             'Odebrano'
         } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Wyłącz automapowanie (Outlook)' -Icon 'E8F0' -Action {
+    Add-HTRowAction -Module $m -Text 'Wyłącz automapowanie (Outlook)' -Icon 'E8F0' -Danger -Action {
         param($m, $rows)
         $full = @($rows | Where-Object { $_.__type -eq 'FullAccess' })
         if (-not $full.Count) { Show-HTWarning 'Zaznacz wiersze «Pełny dostęp».'; return }
         Invoke-HTRowAction -Module $m -Name 'Wyłączenie automapowania' -Rows $full -Confirm 'Wyłączyć automatyczne dodawanie skrzynki w Outlooku? Pełny dostęp zostanie odebrany i nadany ponownie bez automapowania (Outlook usunie skrzynkę z listy po kilku godzinach - można ją dodać ręcznie).' `
             -Label { param($r) "$($r.__target.PrimarySmtpAddress) - $($r.Użytkownik)" } -Action { param($r) Set-HTMailboxAutoMapping -Identity $r.__target.PrimarySmtpAddress -User $r.Użytkownik -Enabled $false; 'Pełny dostęp bez automapowania' }
     }
-    Add-HTRowAction -Module $m -Text 'Włącz automapowanie' -Icon 'E8F0' -Action {
+    Add-HTRowAction -Module $m -Text 'Włącz automapowanie' -Icon 'E8F0' -Danger -Action {
         param($m, $rows)
         $full = @($rows | Where-Object { $_.__type -eq 'FullAccess' })
         if (-not $full.Count) { Show-HTWarning 'Zaznacz wiersze «Pełny dostęp».'; return }
@@ -719,7 +719,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.t
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pobierz reguły' -Icon 'E72C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Reguły transportu' -ScriptBlock { Get-HTTransportRules } } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Centrum administracyjne Exchange' -Icon 'E8A7' -OnClick { param($m) Start-Process 'https://admin.exchange.microsoft.com/#/transportrules' } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Włącz regułę' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Włącz regułę' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Włączenie reguły transportu' -Rows $rows -Confirm 'Włączyć zaznaczone reguły?' -Label { param($r) $r.Reguła } -Action { param($r) Set-HTTransportRuleState -Identity $r.Id -Enabled $true; 'Włączono' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
@@ -1157,7 +1157,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków • filtr: $($g.Filtr)" -Data $members -ExportName "czlonkowie_$($g.Nazwa)"
     }
-    Add-HTRowAction -Module $m -Text 'Zmień filtr…' -Icon 'E70F' -Action {
+    Add-HTRowAction -Module $m -Text 'Zmień filtr…' -Icon 'E70F' -Danger -Action {
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
         if (-not $g) { return }
@@ -1195,7 +1195,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.con
             'Utworzono'
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Edytuj…' -Icon 'E70F' -Action {
+    Add-HTRowAction -Module $m -Text 'Edytuj…' -Icon 'E70F' -Danger -Action {
         param($m, $rows)
         $c = @($rows | Where-Object { $_.Identity })[0]
         if (-not $c) { return }
@@ -1215,11 +1215,11 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.con
         if ($changed.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
         Invoke-HTRowAction -Module $m -Name 'Zmiana kontaktu' -Summary @(ConvertTo-HTChangeSummary -Settings $changed -Labels @{ DisplayName = 'Nazwa'; Email = 'Adres e-mail'; Company = 'Firma'; Title = 'Stanowisko'; Phone = 'Telefon' }) -Rows @($c) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactDetails @params; 'Zapisano' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -Action {
+    Add-HTRowAction -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Ukrycie kontaktu w GAL' -Summary 'Kontakt ukryty w książce adresowej (GAL): tak' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $true; 'Ukryty' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -Action {
+    Add-HTRowAction -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Pokazanie kontaktu w GAL' -Summary 'Kontakt ukryty w książce adresowej (GAL): nie' -Rows @($rows | Where-Object { $_.Identity }) -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTMailContactHidden -Identity $r.Identity -Hidden $false; 'Widoczny' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
@@ -1256,7 +1256,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.folder
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Uprawnienia: $($f.Folder)" -Description $f.Skrzynka -Data $perms -ExportName 'uprawnienia_folderu' -Icon 'E8D7'
     }
-    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Action {
+    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -Action {
         param($m, $rows)
         $folders = @($rows | Where-Object { $_.__path })
         if ($folders.Count -eq 0) { return }

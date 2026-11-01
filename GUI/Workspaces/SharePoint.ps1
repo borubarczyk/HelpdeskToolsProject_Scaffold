@@ -97,7 +97,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.perms
         Invoke-HTRowAction -Module $m -Name 'Odebranie uprawnień' -Rows @($rows | Where-Object { $_.__assignment }) -Danger -Confirm 'Odebrać zaznaczone uprawnienia?' -Label { param($r) "$($r.Obiekt): $($r.Podmiot) ($($r.Uprawnienia))" } `
             -Action { param($r) Revoke-HTSPPermission -Node $r.__target -Assignment $r.__assignment } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Zmień poziom uprawnień…' -Icon 'E70F' -Action {
+    Add-HTRowAction -Module $m -Text 'Zmień poziom uprawnień…' -Icon 'E70F' -Danger -Action {
         param($m, $rows)
         $sel = @($rows | Where-Object { $_.__assignment })
         if ($sel.Count -eq 0) { return }
@@ -169,7 +169,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.recyc
         $by = $m.C.By.Text.Trim()
         Invoke-HTQuery -Module $m -Name 'Kosz witryny' -ScriptBlock { Get-HTSPRecycleBinItems -Days $days -DeletedBy $by }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie z kosza' -Rows $rows -Confirm 'Przywrócić zaznaczone elementy do pierwotnej lokalizacji?' -Label { param($r) "$($r.Lokalizacja)/$($r.Nazwa)" } `
             -Action { param($r) Restore-HTSPRecycleBinItem -Id $r.Id } -Refresh { param($m) Invoke-HTModulePrimary $m }
@@ -213,7 +213,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
         $members = @(Get-HTSPGroupMembers -Group $g.Nazwa)
         Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków" -Data $members -ExportName "sp_$($g.Nazwa)"
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Danger -Action {
         param($m, $rows)
         $g = @($rows)[0]
         $text = Show-InputBox -Title "Dodaj do: $($g.Nazwa)" -Prompt 'Adresy e-mail lub loginy (jeden w linii):' -Multiline -Icon 'E8FA'
@@ -229,7 +229,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
         if ($selected.Count -eq 0) { return }
         Invoke-HTRowAction -Module $m -Name "Usunięcie z $($g.Nazwa)" -Rows $selected -Danger -Confirm 'Usunąć wybranych członków z grupy?' -Label { param($r) $r.Title } -Action { param($r) Remove-HTSPGroupMember -Group $g.Nazwa -LoginName $r.LoginName }
     }
-    Add-HTRowAction -Module $m -Text 'Uprawnienia grupy do witryny…' -Icon 'E8D7' -Action {
+    Add-HTRowAction -Module $m -Text 'Uprawnienia grupy do witryny…' -Icon 'E8D7' -Danger -Action {
         param($m, $rows)
         $groups = @($rows | Where-Object { $_.Nazwa -and $_.Id })
         if ($groups.Count -eq 0) { return }
@@ -241,7 +241,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
         $remove = $form.Action -eq 'Odbierz poziom'
         Invoke-HTRowAction -Module $m -Name 'Uprawnienia grupy do witryny' -Rows $groups -Label { param($r) $r.Nazwa } -Action { param($r) Set-HTSPGroupWebRole -Group $r.Nazwa -Role $form.Role -Remove:$remove; "$(if ($remove) { 'Odebrano' } else { 'Nadano' }): $($form.Role)" }
     }
-    Add-HTRowAction -Module $m -Text 'Ustawienia grupy…' -Icon 'E713' -Action {
+    Add-HTRowAction -Module $m -Text 'Ustawienia grupy…' -Icon 'E713' -Danger -Action {
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Nazwa -and $_.Id })[0]
         if (-not $g) { return }
@@ -882,7 +882,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.check
             $files
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Zaewidencjonuj' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Zaewidencjonuj' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Zaewidencjonowanie pliku' -Rows @($rows | Where-Object { $_.__kind -eq 'CheckedOut' }) -Confirm 'Zaewidencjonować zaznaczone pliki (zmiany osoby, która je wyewidencjonowała, zostaną zapisane jako nowa wersja)?' -Label { param($r) $r.__url } `
             -Action { param($r) Submit-HTSPFileCheckIn -Url $r.__url; 'Zaewidencjonowano' } -Refresh { param($m) Invoke-HTModulePrimary $m }
@@ -892,7 +892,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.check
         Invoke-HTRowAction -Module $m -Name 'Odrzucenie wyewidencjonowania' -Rows @($rows | Where-Object { $_.__kind -eq 'CheckedOut' }) -Danger -Confirm 'Odrzucić wyewidencjonowanie? Niezaewidencjonowane zmiany zostaną utracone - plik wróci do ostatniej wersji.' -Label { param($r) $r.__url } `
             -Action { param($r) Undo-HTSPFileCheckOut -Url $r.__url; 'Odrzucono' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Przejmij plik (bez wersji)' -Icon 'E8FB' -Action {
+    Add-HTRowAction -Module $m -Text 'Przejmij plik (bez wersji)' -Icon 'E8FB' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przejęcie pliku' -Rows @($rows | Where-Object { $_.__kind -eq 'NoVersion' }) -Confirm 'Przejąć zaznaczone pliki? Potem możesz je zaewidencjonować, aby zobaczyli je inni.' -Label { param($r) $r.__url } `
             -Action { param($r) Invoke-HTSPCheckOutTakeover -ListTitle $r.__list -Url $r.__url; 'Przejęto - teraz zaewidencjonuj' } -Refresh { param($m) Invoke-HTModulePrimary $m }

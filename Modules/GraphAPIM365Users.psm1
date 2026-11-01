@@ -250,6 +250,29 @@ function Set-HTM365UserLicense {
     Invoke-HTGraphRequest -Uri "users/$Id/assignLicense" -Method POST -Body $body | Out-Null
 }
 
+function Remove-HTM365DirectLicenses {
+    <#
+        Usuwa licencje bezpośrednie konta po jednej - błąd jednej licencji (np. «User does not have a corresponding
+        license» dla licencji z grupy lub samodzielnej rejestracji) nie blokuje pozostałych.
+        Zwraca @{ Removed = @(skuId); Failed = @(@{ SkuId; Name; Error }) }. -Names: skuId -> nazwa do komunikatów.
+    #>
+    param ([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][string[]]$SkuIds, [hashtable]$Names = @{})
+    $removed = New-Object System.Collections.Generic.List[string]
+    $failed = New-Object System.Collections.Generic.List[object]
+    foreach ($sku in @($SkuIds | Where-Object { $_ } | Select-Object -Unique)) {
+        try {
+            Set-HTM365UserLicense -Id $Id -RemoveSkuIds @($sku)
+            $removed.Add($sku)
+        }
+        catch {
+            $message = [string]$_.Exception.Message
+            if ($message -match 'does not have a corresponding license') { $message = 'licencja nie jest przypisana bezpośrednio (np. z grupy) - usuń konto z grupy' }
+            $failed.Add([PSCustomObject]@{ SkuId = $sku; Name = $(if ($Names.ContainsKey($sku)) { $Names[$sku] } else { $sku }); Error = $message })
+        }
+    }
+    return [PSCustomObject]@{ Removed = $removed.ToArray(); Failed = $failed.ToArray() }
+}
+
 # Ujednolicony obiekt grupy
 function ConvertTo-HTM365GroupObject {
     param ([Parameter(Mandatory)][object]$Group)
@@ -1033,7 +1056,9 @@ function Get-HTReclaimableLicenses {
         $inactive = if ($null -eq $idle) { $null -eq $created -or $created -ge $Days } else { $idle -ge $Days }
         if ($u.accountEnabled -and -not $inactive) { continue }
         $states = @($u.licenseAssignmentStates | Where-Object { $_ })
-        $direct = @($states | Where-Object { -not $_.assignedByGroup } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
+        # Bezpośrednie = przypisane do konta (assignedLicenses) i mające stan bez grupy
+        $assigned = @($u.assignedLicenses | ForEach-Object { "$($_.skuId)" })
+        $direct = @($states | Where-Object { -not $_.assignedByGroup -and $assigned -contains "$($_.skuId)" } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
         $byGroup = @($states | Where-Object { $_.assignedByGroup } | ForEach-Object { "$($_.skuId)" } | Select-Object -Unique)
         [PSCustomObject]@{
             Nazwa                = $u.displayName
@@ -1043,9 +1068,12 @@ function Get-HTReclaimableLicenses {
             'Ostatnie logowanie' = $last
             Licencje             = (@($u.assignedLicenses | ForEach-Object { Get-HTSkuFriendlyName ($skuNames["$($_.skuId)"] ?? "$($_.skuId)") }) -join ', ')
             Przypisanie          = $(if ($byGroup.Count -and $direct.Count) { 'bezpośrednie i z grup' } elseif ($byGroup.Count) { 'z grup' } else { 'bezpośrednie' })
+            # Licencje, które usunie «Usuń licencje bezpośrednie» (z grup zostają - usuwa się je przez członkostwo)
+            'Do usunięcia'       = (@($direct | ForEach-Object { Get-HTSkuFriendlyName ($skuNames[$_] ?? $_) }) -join ', ')
             Dział                = $u.department
             Id                   = $u.id
             __direct             = $direct
+            __directNames        = @($direct | ForEach-Object { Get-HTSkuFriendlyName ($skuNames[$_] ?? $_) })
             __flag               = if (-not $u.accountEnabled) { 'crit' } else { 'warn' }
         }
     }

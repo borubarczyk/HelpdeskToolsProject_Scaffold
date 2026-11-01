@@ -48,7 +48,7 @@ Register-HTModule -Workspace 'Security' -Category 'Entra ID' -Key 'sec.risky' -T
         $data = @(foreach ($r in @($rows | Select-Object -First 10)) { Get-HTRiskDetections -UserId $r.Id -Days 30 })
         Show-HTDataViewer -Title 'Wykrycia ryzyka' -Data $data -Description 'Zdarzenia Entra ID Protection (np. nietypowa lokalizacja, wyciek poświadczeń, anonimowy adres IP).' -ExportName 'wykrycia_ryzyka' -Icon 'E7BA'
     }
-    Add-HTRowAction -Module $m -Text 'Odrzuć ryzyko (fałszywy alarm)' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Odrzuć ryzyko (fałszywy alarm)' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Odrzucenie ryzyka' -Rows $rows -Confirm 'Odrzucić ryzyko zaznaczonych kont (zweryfikowane - to był właściciel konta)?' -Label { param($r) $r.UPN } -Action { param($r) Set-HTRiskyUserState -UserIds @($r.Id) -Action Dismiss; 'Odrzucono' } -Refresh $m.Data.Refresh
     }
@@ -183,11 +183,11 @@ Register-HTModule -Workspace 'Security' -Category 'Defender' -Key 'sec.alerts' -
         if (-not (Assert-HTGraphScopes -Scopes @('SecurityAlert.ReadWrite.All') -Feature 'Alerty Microsoft Defender')) { return }
         & $m.Data.Refresh $m
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Oznacz: w toku' -Icon 'E916' -Action {
+    Add-HTRowAction -Module $m -Text 'Oznacz: w toku' -Icon 'E916' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Alert w toku' -Rows $rows -Label { param($r) $r.Alert } -Action { param($r) Set-HTDefenderAlertStatus -AlertId $r.Id -Status inProgress; 'W toku' } -Refresh $m.Data.Refresh
     }
-    Add-HTRowAction -Module $m -Text 'Rozwiąż alert…' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Rozwiąż alert…' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         $form = Show-HTFormDialog -Title 'Rozwiązanie alertów' -Description "Alerty: $($rows.Count)" -Icon 'E73E' -OkText 'Rozwiąż' -Fields @(
             @{ Name = 'Classification'; Label = 'Klasyfikacja'; Type = 'Combo'; Options = @('truePositive', 'falsePositive', 'informationalExpectedActivity', 'unknown') }
@@ -224,11 +224,11 @@ Register-HTModule -Workspace 'Security' -Category 'Defender' -Key 'sec.incidents
         if (-not (Assert-HTGraphScopes -Scopes @('SecurityIncident.ReadWrite.All') -Feature 'Incydenty Microsoft Defender')) { return }
         & $m.Data.Refresh $m
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Oznacz: w toku' -Icon 'E916' -Action {
+    Add-HTRowAction -Module $m -Text 'Oznacz: w toku' -Icon 'E916' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Incydent w toku' -Rows $rows -Label { param($r) $r.Incydent } -Action { param($r) Set-HTDefenderIncidentStatus -IncidentId $r.Id -Status inProgress; 'W toku' } -Refresh $m.Data.Refresh
     }
-    Add-HTRowAction -Module $m -Text 'Rozwiąż incydent…' -Icon 'E73E' -Action {
+    Add-HTRowAction -Module $m -Text 'Rozwiąż incydent…' -Icon 'E73E' -Danger -Action {
         param($m, $rows)
         $form = Show-HTFormDialog -Title 'Rozwiązanie incydentów' -Description "Incydenty: $($rows.Count)" -Icon 'E73E' -OkText 'Rozwiąż' -Fields @(
             @{ Name = 'Classification'; Label = 'Klasyfikacja'; Type = 'Combo'; Options = @('truePositive', 'falsePositive', 'informationalExpectedActivity', 'unknown') }

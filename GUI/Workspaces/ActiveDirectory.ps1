@@ -415,7 +415,7 @@ function Register-HTADUserReport {
             Update-HTTargetCount $p
             Show-HTToast 'Zaznaczono konta na liście - wybierz akcję (np. Stan konta).' 'ok'
         }
-        Add-HTRowAction -Module $m -Text 'Odblokuj' -Icon 'E785' -Action {
+        Add-HTRowAction -Module $m -Text 'Odblokuj' -Icon 'E785' -Danger -Action {
             param($m, $rows)
             Invoke-HTRowAction -Module $m -Name 'Odblokowanie konta' -Rows $rows -Label { param($r) $r.Login } -Action { param($r) Set-HTADAccountState -Identity $r.ObjectGUID -State Unlock }
         }

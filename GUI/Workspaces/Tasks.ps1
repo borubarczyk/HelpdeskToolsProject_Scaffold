@@ -107,7 +107,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
         Update-HTJobsView -Module $m
     } | Out-Null
     $m.OnShow = { param($m) Update-HTJobsView -Module $m }
-    Add-HTRowAction -Module $m -Text 'Wykonaj teraz' -Icon 'E768' -Action {
+    Add-HTRowAction -Module $m -Text 'Wykonaj teraz' -Icon 'E768' -Danger -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Wykonanie zadania' -Rows @($rows | Where-Object { $_.__job.Status -in 'Zaplanowane', 'Oczekuje na połączenie', 'Błąd' }) -Confirm 'Wykonać zaznaczone zadania teraz?' -Label { param($r) "$($r.Zadanie): $($r.Obiekt)" } -Action { param($r) Invoke-HTJobNow -Job $r.__job } -Refresh { param($m) Update-HTJobsView -Module $m }
     }
