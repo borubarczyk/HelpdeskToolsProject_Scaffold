@@ -130,4 +130,58 @@ Describe "Moduły w OneDrive (pliki tylko w chmurze)" {
         }
         finally { $env:PSModulePath = $saved }
     }
+    It "zapamiętuje pominięty folder w konfiguracji i pomija go ponownie, gdy wróci do PSModulePath" {
+        Import-HTTestModule -Name "Config"
+        $sep = [System.IO.Path]::PathSeparator
+        $saved = $env:PSModulePath
+        $savedConfig = $Global:HTConfig
+        try {
+            $Global:HTConfig = (Merge-HTConfig -Config $null).Config
+            $global:HTSkippedModulePaths = @()
+            $one = Join-Path $TestDrive 'OneDrive2\Documents\PowerShell\Modules'
+            $other = Join-Path $TestDrive 'Program Files2\PowerShell\Modules'
+            $env:PSModulePath = @($one, $other) -join $sep
+            @(Repair-HTModulePath -Path $one -NoDetection).Count | Should -Be 1
+            @(Get-HTSavedSkippedModulePaths) | Should -Be @($one)
+            # Install-Module / nowy proces PowerShell dopisuje folder z powrotem
+            $global:HTSkippedModulePaths = @()
+            $env:PSModulePath = @($one, $other) -join $sep
+            @(Restore-HTSkippedModulePaths) | Should -Be @($one)
+            $env:PSModulePath | Should -Be $other
+            # Bez zmian, gdy folderu nie ma w PSModulePath
+            @(Restore-HTSkippedModulePaths).Count | Should -Be 0
+            Clear-HTSkippedModulePaths
+            @(Get-HTSavedSkippedModulePaths).Count | Should -Be 0
+        }
+        finally {
+            $env:PSModulePath = $saved
+            $Global:HTConfig = $savedConfig
+            $global:HTSkippedModulePaths = @()
+        }
+    }
+}
+
+Describe "Biblioteki załadowane w procesie" {
+    It "zwraca biblioteki domyślnego kontekstu, bez bibliotek z izolowanego kontekstu modułu" {
+        $alc = [System.Runtime.Loader.AssemblyLoadContext]::new("HTTestIsolated", $true)
+        try {
+            $isolated = $alc.LoadFromAssemblyPath($script:MsalLib)
+            $isolated.GetName().Version | Should -Be ([version]"4.70.0.0")
+            $loaded = @(Get-HTLoadedAssemblies)
+            @($loaded | Where-Object { $_.Name -eq "System.Management.Automation" }).Count | Should -Be 1
+            @($loaded | Where-Object { $_.Location -eq $script:MsalLib }).Count | Should -Be 0
+        }
+        finally { $alc.Unload() }
+    }
+    It "przy kilku wersjach biblioteki porównuje z najnowszą" {
+        $dir = Join-Path $script:Root "ConflictModule2"
+        New-TestAssembly -Directory $dir -Name "HT.Auth2" -Version "1.0.0.0" -References $script:MsalLib `
+            -Code 'namespace HTAuth2 { public static class A { public static int Use() { return HTMsal.M.Value(); } } }' | Out-Null
+        $loaded = @(
+            [PSCustomObject]@{ Name = "Microsoft.Identity.Client"; Version = [version]"4.90.0.0"; Location = "C:\Modules\Graph\Microsoft.Identity.Client.dll" }
+            [PSCustomObject]@{ Name = "Microsoft.Identity.Client"; Version = [version]"4.60.0.0"; Location = "C:\Modules\Exo\Microsoft.Identity.Client.dll" }
+        )
+        $r = Test-HTModuleCompatibility -ModuleBase $dir -RuntimeDirectory (Join-Path $script:Root "runtimeNew") -LoadedAssemblies $loaded
+        $r.LoadedIssues.Count | Should -Be 0
+    }
 }

@@ -181,3 +181,96 @@ Describe "Logowanie w przeglądarce" {
     }
     AfterAll { Remove-Item function:global:Connect-ExchangeOnline, function:global:Set-MgGraphOption -ErrorAction SilentlyContinue }
 }
+
+Describe "Błędy Microsoft Graph" {
+    BeforeAll {
+        $script:graphError = {
+            param([string]$Body)
+            $er = [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('Response status code does not indicate success: BadRequest (Bad Request).'), 'InvokeGraphHttpResponseException', 'InvalidOperation', $null)
+            $er.ErrorDetails = [System.Management.Automation.ErrorDetails]::new($Body)
+            $er
+        }
+    }
+
+    It "odczytuje kod i komunikat z odpowiedzi HTTP zapisanej w ErrorDetails" {
+        $body = "GET https://graph.microsoft.com/v1.0/sites?`$search=*`nHTTP/1.1 400 Bad Request`nContent-Type: application/json`n`n{`"error`":{`"code`":`"invalidRequest`",`"message`":`"Syntax error: character '*' is not valid`"}}"
+        Get-HTGraphErrorDetail -ErrorRecord (& $script:graphError $body) | Should -Be "invalidRequest: Syntax error: character '*' is not valid"
+    }
+
+    It "rozpakowuje komunikat zagnieżdżony jako JSON" {
+        $body = '{"error":{"code":"BadRequest","message":"{\"error\":{\"message\":\"Region is required\"}}"}}'
+        Get-HTGraphErrorDetail -ErrorRecord (& $script:graphError $body) | Should -Be "BadRequest: Region is required"
+    }
+
+    It "zwraca pusty tekst bez JSON-a błędu" {
+        Get-HTGraphErrorDetail -ErrorRecord (& $script:graphError "HTTP/1.1 500") | Should -Be ""
+        Get-HTGraphErrorDetail -ErrorRecord $null | Should -Be ""
+    }
+
+    It "dopisuje przyczynę do komunikatu wyjątku Invoke-HTGraphRequest" {
+        $global:HTTestGraphError = & $script:graphError '{"error":{"code":"Request_ResourceNotFound","message":"Resource does not exist."}}'
+        Mock -ModuleName ModulesConnection Invoke-MgGraphRequest { throw $global:HTTestGraphError }
+        $message = $null
+        try { Invoke-HTGraphRequest -Uri "users/x" } catch { $message = $_.Exception.Message }
+        $message | Should -Match "BadRequest \(Bad Request\)\. Request_ResourceNotFound: Resource does not exist\."
+        Remove-Variable -Name HTTestGraphError -Scope Global -ErrorAction SilentlyContinue
+    }
+}
+
+Describe "Wyszukiwanie witryn SharePoint" {
+    BeforeAll {
+        Import-HTTestModule -Name "GraphAPISharePoint"
+    }
+
+    It "buduje zapytanie KQL <Expected> dla <Search>" -TestCases @(
+        @{ Search = '*'; Expected = '(contentclass:STS_Site OR contentclass:STS_Web)' }
+        @{ Search = ''; Expected = '(contentclass:STS_Site OR contentclass:STS_Web)' }
+        @{ Search = 'Dział kadr'; Expected = '(Dział* kadr*) AND (contentclass:STS_Site OR contentclass:STS_Web)' }
+        @{ Search = 'a "b" title:c OR and'; Expected = '(a* b* title* c* and*) AND (contentclass:STS_Site OR contentclass:STS_Web)' }
+    ) {
+        param($Search, $Expected)
+        ConvertTo-HTSiteSearchQuery -Search $Search | Should -BeExactly $Expected
+    }
+
+    It "pobiera witryny przez Microsoft Search API (POST), stronami, bez OneDrive i duplikatów" {
+        Mock -ModuleName GraphAPISharePoint Invoke-HTGraphRequest {
+            $hits = if ($Body.requests[0].from -eq 0) {
+                @(
+                    [PSCustomObject]@{ resource = [PSCustomObject]@{ id = 's1'; displayName = 'Kadry'; webUrl = 'https://firma.sharepoint.com/sites/Kadry' } }
+                    [PSCustomObject]@{ resource = [PSCustomObject]@{ id = 'p1'; name = 'Jan'; webUrl = 'https://firma-my.sharepoint.com/personal/jan_firma_pl' } }
+                )
+            }
+            else {
+                @(
+                    [PSCustomObject]@{ resource = [PSCustomObject]@{ id = 's2'; webUrl = 'https://firma.sharepoint.com/sites/Dzia%C5%82%20IT/'; description = 'Opis IT' } }
+                    [PSCustomObject]@{ resource = [PSCustomObject]@{ id = 's1'; displayName = 'Kadry'; webUrl = 'https://firma.sharepoint.com/sites/kadry/' } }
+                )
+            }
+            @([PSCustomObject]@{ hitsContainers = @([PSCustomObject]@{ hits = $hits; moreResultsAvailable = ($Body.requests[0].from -eq 0) }) })
+        }
+        $sites = @(Find-HTSPSites -Search '*')
+        $sites.Count | Should -Be 2
+        $sites[0].Nazwa | Should -Be 'Dział IT'
+        $sites[0].Opis | Should -Be 'Opis IT'
+        $sites[1].Nazwa | Should -Be 'Kadry'
+        Should -Invoke -ModuleName GraphAPISharePoint Invoke-HTGraphRequest -Times 2 -Exactly -ParameterFilter {
+            $Uri -eq 'search/query' -and $Method -eq 'POST' -and $Body.requests[0].entityTypes -contains 'site' -and $Body.requests[0].query.queryString -like '*contentclass:STS_Site*'
+        }
+        Should -Invoke -ModuleName GraphAPISharePoint Invoke-HTGraphRequest -Times 0 -Exactly -ParameterFilter { $Uri -like 'sites?*search=*' }
+    }
+
+    It "przy logowaniu aplikacji używa sites/getAllSites i filtruje po nazwie" {
+        Mock -ModuleName GraphAPISharePoint Get-MgContext { [PSCustomObject]@{ AuthType = 'AppOnly' } }
+        Mock -ModuleName GraphAPISharePoint Invoke-HTGraphRequest {
+            @(
+                [PSCustomObject]@{ id = 'a'; displayName = 'Projekty'; webUrl = 'https://firma.sharepoint.com/sites/Projekty' }
+                [PSCustomObject]@{ id = 'b'; displayName = 'Kadry'; webUrl = 'https://firma.sharepoint.com/sites/Kadry' }
+                [PSCustomObject]@{ id = 'c'; name = 'Jan'; webUrl = 'https://firma-my.sharepoint.com/personal/jan'; isPersonalSite = $true }
+            )
+        }
+        $sites = @(Find-HTSPSites -Search 'proj')
+        $sites.Count | Should -Be 1
+        $sites[0].Id | Should -Be 'a'
+        Should -Invoke -ModuleName GraphAPISharePoint Invoke-HTGraphRequest -Times 1 -Exactly -ParameterFilter { $Uri -eq 'sites/getAllSites' -and $All }
+    }
+}

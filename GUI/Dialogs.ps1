@@ -212,7 +212,7 @@ function Show-HTSettingsDialog {
             )
         }
         @{ Type = 'Header'; Label = 'SharePoint'; Icon = 'E8F1'; Hint = 'Połączenie PnP PowerShell.' }
-        @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url' }
+        @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url'; Hint = 'Adres witryny, np. https://firma.sharepoint.com/sites/Dzial (nie domena firma.onmicrosoft.com).' }
         @{ Name = 'LastUsedClientID'; Label = 'Client ID aplikacji PnP'; Default = "$($cfg.LastUsedClientID)"; Validation = 'Guid' }
         @{ Name = 'LogClientIDForPnP'; Label = 'Zapamiętuj ostatnio użyty Client ID'; Type = 'Check'; Default = [bool]$cfg.LogClientIDForPnP }
         @{ Type = 'Header'; Label = 'Teams i e-mail'; Icon = 'E8F2'; Hint = 'Powiadomienia na kanale Teams i skrzynka nadawcy raportów.' }
@@ -267,6 +267,7 @@ function Show-HTSettingsDialog {
         $value = $result[$key]
         if ($key -eq 'GraphScopes') { $value = @(Split-HTInputList -Text $value) }
         if ($key -eq 'LastUsedClientID' -and -not $value) { $value = $null }
+        if ($key -eq 'DefaultSharepointSite' -and $value) { $value = (Resolve-HTSharePointUrl -Url $value).Url }
         $cfg.$key = $value
     }
     Set-HTConfig -Config $cfg -Path $Global:ConfigPath

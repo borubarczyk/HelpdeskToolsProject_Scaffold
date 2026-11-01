@@ -178,6 +178,14 @@ Register-HTPaletteAction -Text 'Generator haseł' -Icon 'E8D7' -Description 'Ctr
 Register-HTPaletteAction -Text 'Ustawienia' -Icon 'E713' -Keywords 'konfiguracja opcje settings' -Action { param($q) if (Show-HTSettingsDialog) { Show-HTToast 'Zapisano ustawienia.' 'ok' } }
 Register-HTPaletteAction -Text 'Aktualizuj program' -Icon 'E895' -Description 'Sprawdzenie nowej wersji w repozytorium' -Keywords 'aktualizacja update wersja' -Action { param($q) Invoke-HTUpdateInteractive }
 Register-HTPaletteAction -Text 'Narzędzia' -Icon 'E90F' -Description 'Profile tenantów, aktualizacja, podpisywanie skryptów, skrót' -Keywords 'podpis skrót certyfikat' -Action { param($q) Show-HTToolsMenu }
+Register-HTPaletteAction -Text 'Używaj modułów z OneDrive' -Icon 'E753' -Description 'Przestań pomijać folder modułów PowerShell w OneDrive (po naprawie OneDrive)' -Keywords 'onedrive moduły psmodulepath' -Action {
+    param($q)
+    $paths = @(@($global:HTSkippedModulePaths) + @(Get-HTSavedSkippedModulePaths) | Where-Object { $_ } | Select-Object -Unique)
+    if ($paths.Count -eq 0) { Show-HTToast 'Program nie pomija żadnego folderu modułów.' 'info'; return }
+    if (-not (Show-HTConfirm -Title 'Moduły PowerShell w OneDrive' -ConfirmText 'Używaj' -Message "Program przestanie pomijać folder modułów w OneDrive od następnego uruchomienia:`n$($paths -join "`n")`n`nZrób to dopiero, gdy OneDrive działa, a folder jest dostępny na tym urządzeniu.")) { return }
+    Clear-HTSkippedModulePaths
+    Show-HTToast 'Zapisano - folder będzie używany po ponownym uruchomieniu programu.' 'ok' 6
+}
 Register-HTPaletteAction -Text 'Dziennik programu' -Icon 'E81C' -Description 'Ctrl+L' -Keywords 'log logi dziennik' -Action { param($q) Set-HTLogVisible $true }
 Register-HTPaletteAction -Text 'Szukaj w dzienniku' -Icon 'E81C' -Description 'Wpisy dziennika z wpisanym tekstem (bieżąca sesja)' -NeedsQuery -Action {
     param($q)

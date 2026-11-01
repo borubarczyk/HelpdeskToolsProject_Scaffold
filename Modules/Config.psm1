@@ -72,6 +72,8 @@ function Get-HTDefaultConfig {
         ReportSender              = ""
         # Microsoft Defender for Endpoint (izolacja urządzeń) - rejestracja aplikacji z uprawnieniami WindowsDefenderATP
         DefenderClientId          = ""
+        # Foldery modułów PowerShell w OneDrive pomijane, gdy pliki są tylko w chmurze, a OneDrive nie działa
+        SkippedModulePaths        = @()
         ConfigVersion             = $script:ConfigVersion
     }
 }
@@ -264,6 +266,11 @@ function Apply-HTConfig {
     if ($Global:LoginTimeoutMinutes -lt 1 -or $Global:LoginTimeoutMinutes -gt 60) { $Global:LoginTimeoutMinutes = 5 }
     if ($Global:AutoLockMinutes -lt 0 -or $Global:AutoLockMinutes -gt 480) { $Global:AutoLockMinutes = 15 }
     if ($Global:NotifyLongOperationsSeconds -lt 0 -or $Global:NotifyLongOperationsSeconds -gt 3600) { $Global:NotifyLongOperationsSeconds = 20 }
+
+    # Foldery modułów z OneDrive pominięte w poprzednich sesjach (nowy proces PowerShell dopisuje je z powrotem)
+    if (Get-Command -Name Restore-HTSkippedModulePaths -ErrorAction SilentlyContinue) {
+        try { Restore-HTSkippedModulePaths | Out-Null } catch { Write-Log -Message "Pomijanie folderów modułów: $($_.Exception.Message)" -Type "Warn" }
+    }
 
     Write-Log -Message "Zastosowano konfigurację (e-mail: '$($Global:PasswordEmailAdress)', hasła słowne: $($Global:PasswordUseWordBased), domyślna witryna SharePoint: $($Global:DefaultSharepointSite))." -Type "Info"
 

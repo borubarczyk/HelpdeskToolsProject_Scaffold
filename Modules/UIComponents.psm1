@@ -1318,7 +1318,7 @@ function Show-HTFormDialog {
         @'
 <Grid Height="{0}">
   <Grid.ColumnDefinitions>
-    <ColumnDefinition Width="210"/>
+    <ColumnDefinition Width="236"/>
     <ColumnDefinition Width="*"/>
   </Grid.ColumnDefinitions>
   <Border BorderBrush="#242B36" BorderThickness="0,0,1,0" Padding="0,0,10,0" Margin="0,0,20,0">
@@ -1358,18 +1358,26 @@ function Show-HTFormDialog {
         $rb.GroupName = $navGroup
         $rb.Tag = $page
         $rb.IsChecked = ($pages.Count -eq 1)
-        $row = New-Object System.Windows.Controls.StackPanel
-        $row.Orientation = 'Horizontal'
+        # Siatka zamiast poziomego StackPanel - tekst dostaje szerokość kolumny i zawija się zamiast ucinać
+        $row = New-Object System.Windows.Controls.Grid
+        $iconColumn = New-Object System.Windows.Controls.ColumnDefinition
+        $iconColumn.Width = [System.Windows.GridLength]::Auto
+        [void]$row.ColumnDefinitions.Add($iconColumn)
+        [void]$row.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
         $glyph = New-HTGlyphBlock -Code $(if ($PageIcon) { $PageIcon } else { 'E713' }) -Size 14
         $glyph.Margin = '2,0,11,0'
         $glyph.Width = 18
+        $glyph.VerticalAlignment = 'Center'
         [void]$row.Children.Add($glyph)
         $text = New-Object System.Windows.Controls.TextBlock
         $text.Text = $PageTitle
-        $text.TextTrimming = 'CharacterEllipsis'
+        $text.TextWrapping = 'Wrap'
         $text.VerticalAlignment = 'Center'
+        [System.Windows.Controls.Grid]::SetColumn($text, 1)
         [void]$row.Children.Add($text)
         $rb.Content = $row
+        $rb.HorizontalContentAlignment = 'Stretch'
+        $rb.ToolTip = $PageTitle
         $rb.add_Checked($script:FormEvents.Section)
         [void]$w.FindName('fmNav').Children.Add($rb)
         $heading = New-HTDialogText -Text $PageTitle -Color '#FFFFFF' -Size 15
@@ -2215,7 +2223,9 @@ function Update-ConnectionButtonText {
     na odpowiedź z karty). Wywołanie Connect-* blokuje wątek okna, dlatego na czas logowania w osobnym wątku
     działa małe okno «Trwa logowanie» z przyciskiem «Anuluj» i limitem czasu. Anulowanie wysyła do oczekującego
     nasłuchu MSAL odpowiedź z błędem access_denied - Connect-* kończy się błędem zamiast czekać w nieskończoność
-    (np. gdy karta przeglądarki została przypadkiem zamknięta).
+    (np. gdy karta przeglądarki została przypadkiem zamknięta). MSAL nasłuchuje przez HttpListener, czyli usługę
+    http.sys - port należy wtedy do procesu System (PID 4), nie do programu. Gdy anulowanie nie zadziała, okno
+    pozwala spróbować ponownie albo zamknąć program (wątek okna jest zablokowany i nie da się go inaczej odzyskać).
 #>
 $script:LoginWatchdogScript = {
     param($State)
@@ -2241,6 +2251,8 @@ $script:LoginWatchdogScript = {
       <ProgressBar Name="bar" Height="6" Margin="0,16,0,0" IsIndeterminate="True" Foreground="#4C7DF0" Background="#262D39" BorderThickness="0"/>
       <TextBlock Name="time" Foreground="#5E6779" FontSize="12" Margin="0,6,0,0"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <Button Name="kill" Content="Zamknij program" Padding="16,6" MinWidth="140" Margin="0,0,10,0" Visibility="Collapsed" Background="#262D39" Foreground="#E4E8EF" BorderBrush="#3A4252"
+                ToolTip="Kończy program - logowanie zablokowało okno programu. Po zamknięciu uruchom program ponownie."/>
         <Button Name="cancel" Content="Anuluj logowanie" Padding="16,6" MinWidth="140" Background="#3A1F25" Foreground="#FF8A95" BorderBrush="#5A2A33"/>
       </StackPanel>
     </StackPanel>
@@ -2253,39 +2265,62 @@ $script:LoginWatchdogScript = {
     $State.Dispatcher = $w.Dispatcher
     $started = Get-Date
 
+    $cancelButton = $w.FindName('cancel')
+    $killButton = $w.FindName('kill')
+    $info = $w.FindName('info')
+
+    # Nowe porty nasłuchu od początku logowania: programu albo http.sys (PID 4), na pętli zwrotnej lub wszystkich adresach
+    $findPorts = {
+        try {
+            return @(Get-NetTCPConnection -OwningProcess @($State.ProcessId, 4) -State Listen -ErrorAction Stop |
+                    Where-Object { $_.LocalAddress -in '127.0.0.1', '::1', '0.0.0.0', '::' -and $State.BasePorts -notcontains [int]$_.LocalPort } |
+                    ForEach-Object { [int]$_.LocalPort } | Select-Object -Unique)
+        }
+        catch { return @() }
+    }
+
+    # Anulowanie nie przerwało logowania - ponowna próba albo zamknięcie programu
+    $showEscape = {
+        $State.EscapeShown = $true
+        $info.Text = if ($State.CancelSent -gt 0) {
+            'Program wysłał anulowanie, ale logowanie nadal trwa. Spróbuj ponownie albo zamknij program i uruchom go jeszcze raz (okno programu jest zablokowane do końca logowania).'
+        }
+        else {
+            'Nie znaleziono oczekującego logowania w przeglądarce. Jeśli karta logowania jest otwarta - dokończ logowanie. Jeśli nie - spróbuj ponownie albo zamknij program i uruchom go jeszcze raz (okno programu jest zablokowane do końca logowania).'
+        }
+        $cancelButton.Content = 'Spróbuj ponownie'
+        $cancelButton.IsEnabled = $true
+        $killButton.Visibility = 'Visible'
+    }
+
     $sendCancel = {
         param([string]$Reason)
-        if ($State.Cancelled) { return }
-        $State.Cancelled = $true
-        $State.Reason = $Reason
-        $w.FindName('cancel').IsEnabled = $false
-        $w.FindName('info').Text = 'Anulowanie logowania…'
-        # Nowe porty nasłuchu tego procesu na pętli zwrotnej = oczekujący nasłuch MSAL na odpowiedź z przeglądarki
-        $ports = @()
+        if ($State.Sending) { return }
+        $State.Sending = $true
         try {
-            $ports = @(Get-NetTCPConnection -OwningProcess $State.ProcessId -State Listen -ErrorAction Stop |
-                    Where-Object { $_.LocalAddress -in '127.0.0.1', '::1' -and $State.BasePorts -notcontains $_.LocalPort } |
-                    ForEach-Object { $_.LocalPort } | Select-Object -Unique)
-        }
-        catch { $ports = @() }
-        $sent = 0
-        foreach ($port in $ports) {
-            foreach ($hostName in '127.0.0.1', 'localhost') {
-                try {
-                    Invoke-WebRequest -Uri "http://$($hostName):$port/?error=access_denied&error_description=Login+cancelled+in+Helpdesk+Tools" -TimeoutSec 4 -UseBasicParsing -ErrorAction Stop | Out-Null
-                    $sent++
-                    break
-                }
-                catch {
-                    # Odpowiedź z błędem HTTP też oznacza, że nasłuch odebrał żądanie
-                    if ($_.Exception.Response) { $sent++; break }
+            $State.Cancelled = $true
+            if (-not $State.Reason) { $State.Reason = $Reason }
+            $State.EscapeShown = $false
+            $cancelButton.IsEnabled = $false
+            $info.Text = 'Anulowanie logowania…'
+            $sent = 0
+            foreach ($port in @(& $findPorts)) {
+                # Najpierw «localhost» - http.sys odrzuca żądanie z inną nazwą hosta niż zarejestrowana przez MSAL (400)
+                foreach ($hostName in 'localhost', '127.0.0.1') {
+                    try {
+                        Invoke-WebRequest -Uri "http://$($hostName):$port/?error=access_denied&error_description=Login+cancelled+in+Helpdesk+Tools" -TimeoutSec 4 -UseBasicParsing -ErrorAction Stop | Out-Null
+                        $sent++
+                        break
+                    }
+                    catch { Write-Verbose "Port $($port) ($hostName): $($_.Exception.Message)" }
                 }
             }
+            $State.CancelSent += $sent
+            $State.CancelAt = Get-Date
+            if ($sent -eq 0) { & $showEscape }
+            else { $info.Text = 'Wysłano anulowanie - czekam na zakończenie logowania…' }
         }
-        $State.CancelSent = $sent
-        if ($sent -eq 0) {
-            $w.FindName('info').Text = 'Nie znaleziono oczekującego logowania w przeglądarce. Jeśli otwarte jest okno logowania Microsoft, zamknij je - program wróci do pracy.'
-        }
+        finally { $State.Sending = $false }
     }
 
     $timer = New-Object System.Windows.Threading.DispatcherTimer
@@ -2294,15 +2329,23 @@ $script:LoginWatchdogScript = {
             if ($State.Done) { $timer.Stop(); $State.Closing = $true; $w.Close(); return }
             $left = [int]($State.TimeoutSeconds - ((Get-Date) - $started).TotalSeconds)
             if ($left -le 0 -and -not $State.Cancelled) { & $sendCancel 'timeout' }
+            # Anulowanie wysłane, a logowanie po 15 s nadal trwa - pokaż wyjście awaryjne
+            if ($State.Cancelled -and -not $State.EscapeShown -and -not $State.Sending -and $State.CancelAt -and ((Get-Date) - $State.CancelAt).TotalSeconds -ge 15) { & $showEscape }
             $w.FindName('time').Text = if ($State.Cancelled) { '' } else { 'Automatyczne anulowanie za {0}:{1:00}' -f [Math]::Floor([Math]::Max(0, $left) / 60), ([Math]::Max(0, $left) % 60) }
         })
-    $w.FindName('cancel').add_Click({ & $sendCancel 'user' })
-    # Zamknięcie okienka (X) = anulowanie - inaczej nie byłoby jak przerwać oczekiwania
+    $cancelButton.add_Click({ & $sendCancel 'user' })
+    $killButton.add_Click({
+            $answer = [System.Windows.MessageBox]::Show($w, "Zamknąć program?`n`nLogowanie zablokowało okno programu i nie da się go przerwać inaczej. Niezapisane wyniki zostaną utracone. Po zamknięciu uruchom program ponownie.", 'Helpdesk Tools', 'YesNo', 'Warning')
+            if ("$answer" -ne 'Yes') { return }
+            $State.Killed = $true
+            try { [System.Diagnostics.Process]::GetProcessById([int]$State.ProcessId).Kill() } catch { $info.Text = "Nie udało się zamknąć programu: $($_.Exception.Message). Zamknij go w Menedżerze zadań." }
+        })
+    # Zamknięcie okienka (X) = anulowanie (albo ponowna próba) - inaczej nie byłoby jak przerwać oczekiwania
     $w.add_Closing({
             param($s, $e)
             if ($State.Done -or $State.Closing) { return }
             $e.Cancel = $true
-            & $sendCancel 'user'
+            if (-not $State.Sending) { & $sendCancel 'user' }
         })
     $timer.Start()
     [void]$w.ShowDialog()
@@ -2310,11 +2353,13 @@ $script:LoginWatchdogScript = {
 
 function Start-HTLoginWatchdog {
     param([string]$Title, [int]$TimeoutSeconds = 300)
+    # Porty nasłuchu programu i http.sys (PID 4) sprzed logowania - nowy port po starcie logowania to nasłuch MSAL
     $base = @()
-    try { $base = @(Get-NetTCPConnection -OwningProcess $PID -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalPort }) } catch { $base = @() }
+    try { $base = @(Get-NetTCPConnection -OwningProcess @($PID, 4) -State Listen -ErrorAction Stop | ForEach-Object { [int]$_.LocalPort } | Select-Object -Unique) } catch { $base = @() }
     $state = [hashtable]::Synchronized(@{
             Title = $Title; TimeoutSeconds = [Math]::Max(30, $TimeoutSeconds); ProcessId = $PID; BasePorts = $base
-            Done = $false; Closing = $false; Cancelled = $false; Reason = ''; CancelSent = 0; Window = $null; Dispatcher = $null
+            Done = $false; Closing = $false; Cancelled = $false; Reason = ''; CancelSent = 0; CancelAt = $null; Sending = $false
+            EscapeShown = $false; Killed = $false; Window = $null; Dispatcher = $null
         })
     try {
         $rs = [runspacefactory]::CreateRunspace()
