@@ -141,6 +141,12 @@ try {
 }
 catch { $failures.Add("Lista edytowalna: $($_.Exception.Message)") }
 
+# Nowe przestrzenie: Organizacja (bez listy po lewej) i Grupy i zespoły (lista grup) z modułami przeniesionymi z Exchange i M365
+foreach ($expected in @(@{ Ws = 'Organization'; Keys = @('org.newgroup', 'm365.new', 'exo.newmailbox', 'exo.transport', 'm365.reclaim') }, @{ Ws = 'Groups'; Keys = @('grp.members', 'grp.owners', 'grp.manage', 'm365.teams', 'exo.dyn') })) {
+    if (-not $HT_UI.Workspaces.Contains($expected.Ws)) { $failures.Add("Brak przestrzeni $($expected.Ws)."); continue }
+    foreach ($k in $expected.Keys) { if ((Get-HTModuleDefinition $k).Workspace -ne $expected.Ws) { $failures.Add("Moduł $k nie jest w przestrzeni $($expected.Ws).") } }
+}
+
 $palette = @(Get-HTPaletteItems -Query 'licencje')
 if ($palette.Count -eq 0) { $failures.Add('Paleta poleceń: brak wyników dla «licencje».') }
 if (@(Get-HTPaletteItems -Query '').Count -eq 0) { $failures.Add('Paleta poleceń: brak poleceń bez zapytania.') }

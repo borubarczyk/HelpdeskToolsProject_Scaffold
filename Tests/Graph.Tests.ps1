@@ -385,3 +385,36 @@ Describe "Nowe grupy Microsoft 365 i zabezpieczeń" {
         Get-HTSPGroupClaim ([PSCustomObject]@{ Id = 'g-2'; Type = 'Zabezpieczeń' }) | Should -Be 'c:0t.c|tenant|g-2'
     }
 }
+
+Describe "Grupy jako obiekty" {
+    It "rozpoznaje członków: użytkownik, gość, grupa, urządzenie; zablokowane wyszarzone" {
+        $u = ConvertTo-HTM365DirectoryObjectRow ([PSCustomObject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; displayName = 'Jan'; userPrincipalName = 'jan@firma.pl'; userType = 'Member'; accountEnabled = $false })
+        $u.Rodzaj | Should -Be 'Użytkownik'
+        $u.Adres | Should -Be 'jan@firma.pl'
+        $u.__flag | Should -Be 'muted'
+        (ConvertTo-HTM365DirectoryObjectRow ([PSCustomObject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'g'; displayName = 'Gość'; mail = 'x@zew.pl'; userType = 'Guest'; accountEnabled = $true })).Rodzaj | Should -Be 'Gość'
+        (ConvertTo-HTM365DirectoryObjectRow ([PSCustomObject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g2'; displayName = 'Zagnieżdżona' })).Rodzaj | Should -Be 'Grupa'
+        (ConvertTo-HTM365DirectoryObjectRow ([PSCustomObject]@{ '@odata.type' = '#microsoft.graph.device'; id = 'd'; displayName = 'PC-1' })).Rodzaj | Should -Be 'Urządzenie'
+    }
+    It "zmiany grupy: tylko różniące się pola, widoczność tylko dla Microsoft 365, opis nieprzekazany - bez zmian" {
+        $g = [PSCustomObject]@{ DisplayName = 'Projekt'; Description = 'Opis'; Type = 'Microsoft 365'; Visibility = 'Private' }
+        $c = Get-HTM365GroupChanges -Group $g -DisplayName 'Projekt X' -Visibility 'Public'
+        $c.displayName | Should -Be 'Projekt X'
+        $c.visibility | Should -Be 'Public'
+        $c.Contains('description') | Should -BeFalse
+        (Get-HTM365GroupChanges -Group $g -DisplayName 'Projekt' -Description '').Contains('description') | Should -BeTrue
+        $sec = [PSCustomObject]@{ DisplayName = 'SG'; Description = ''; Type = 'Zabezpieczeń'; Visibility = '' }
+        (Get-HTM365GroupChanges -Group $sec -DisplayName 'SG' -Visibility 'Public').Count | Should -Be 0
+    }
+    It "właścicieli grup pocztowych i z AD nie zmienia się przez Graph" {
+        Test-HTM365GroupOwnersEditable ([PSCustomObject]@{ Type = 'Microsoft 365'; Synced = $false }) | Should -BeTrue
+        Test-HTM365GroupOwnersEditable ([PSCustomObject]@{ Type = 'Dystrybucyjna'; Synced = $false }) | Should -BeFalse
+        Test-HTM365GroupOwnersEditable ([PSCustomObject]@{ Type = 'Zabezpieczeń'; Synced = $true }) | Should -BeFalse
+    }
+    It "rozpoznaje zespół Teams i dane grupy" {
+        $g = ConvertTo-HTM365GroupObject ([PSCustomObject]@{ id = 'g'; displayName = 'Zespół'; groupTypes = @('Unified'); mailEnabled = $true; securityEnabled = $false; resourceProvisioningOptions = @('Team'); visibility = 'Private'; mailNickname = 'zespol' })
+        $g.IsTeam | Should -BeTrue
+        $g.Type | Should -Be 'Microsoft 365'
+        $g.Visibility | Should -Be 'Private'
+    }
+}

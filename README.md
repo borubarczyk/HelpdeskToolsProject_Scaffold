@@ -86,6 +86,21 @@ Układ jak w Domain Ops: ciemny motyw, Segoe UI, ikony Segoe Fluent Icons / MDL2
 ### Pulpit
 Kafelki ze wszystkich połączonych usług i lista problemów; **moduły i środowisko** (weryfikacja pakietów, instalacja zgodnych wersji, foldery dziennika i eksportu); **dziennik programu** (wpisy z wybranego dnia: poziom, konto MFA, komunikat - z filtrami kolumn i eksportem do raportu HTML); **licencje** (nazwy «po ludzku»: najpopularniejsze po polsku, pozostałe z **oficjalnej listy Microsoft** - pobieranej z download.microsoft.com raz na 30 dni do `%LOCALAPPDATA%\HelpdeskTools\LicenseNames.json`, przycisk «Odśwież nazwy licencji»; kolumna **«Co zawiera»** - np. «poczta Exchange, SharePoint i OneDrive, Teams, aplikacje Office na komputer» - i pełna lista planów usług; wolne/wyczerpane, lista użytkowników z licencją), **kondycja usług Microsoft 365** z otwartymi incydentami, **centrum wiadomości** (zapowiedzi zmian z terminami).
 
+### Organizacja
+Wszystko, co nie dotyczy zaznaczonego konta ani skrzynki - bez listy obiektów po lewej:
+- **Tworzenie**: nowy użytkownik (z profilami tworzenia kont), masowe tworzenie kont (CSV), nowa skrzynka współdzielona / sala, **nowa grupa dowolnego rodzaju** (zabezpieczeń albo Microsoft 365, dystrybucyjna, dynamiczna z kreatorem reguł, grupa SharePoint witryny).
+- **Poczta (Exchange)**: reguły transportu, dozwoleni i zablokowani nadawcy, kontakty zewnętrzne.
+- **Licencje**: licencje do odzyskania, błędy licencji grupowych.
+- **Raporty**: przekierowania zewnętrzne, nieaktywne skrzynki, skrzynki współdzielone a licencje, kontrola konfiguracji Exchange.
+
+### Grupy i zespoły
+Wszystkie grupy Microsoft 365 / Entra ID na liście po lewej (Microsoft 365, zabezpieczeń, pocztowe; kropka - rodzaj, szara - z AD; wyszukiwanie po nazwie, adresie i opisie):
+- **Członkowie** zaznaczonych grup (użytkownicy, goście, grupy zagnieżdżone, urządzenia), dodawanie kont z listy Microsoft 365 (zielone), usuwanie (prawy przycisk; z cofnięciem). Grupy pocztowe - przez Exchange; dynamiczne i z AD - pomijane z wyjaśnieniem.
+- **Właściciele**: lista (grupa bez właściciela - ostrzeżenie), dodawanie i usuwanie.
+- **Szczegóły**: rodzaj, adres i alias, opis, widoczność, data utworzenia, zespół Teams, reguła grupy dynamicznej, liczba członków i właściciele.
+- **Nowe grupy i edycja**: nowa grupa zabezpieczeń / Microsoft 365, zmiana nazwy, opisu i widoczności, usunięcie (wpisanie USUŃ); **usunięte grupy** Microsoft 365 z ostatnich 30 dni - przywrócenie albo trwałe usunięcie.
+- **Zespoły Teams** (wszystkie zespoły z właścicielami, gośćmi, archiwizacją i aktywnością), **grupy dynamiczne Exchange** (kreator reguł z testem), **grupy do uporządkowania** (bez właściciela, bez członków).
+
 ### Microsoft 365
 - Konto: szczegóły, dane kontaktowe (także hurtowo), **przełożony**, urządzenia użytkownika, **wizytówka (raport HTML: konto, MFA, grupy, skrzynka, urządzenia, logowania)**, **porównanie dwóch kont** (grupy, licencje, role, aplikacje - z uzupełnieniem brakujących grup).
 - Bezpieczeństwo: blokada logowania z unieważnieniem sesji, reset hasła (losowe / podane), metody MFA (usuwanie, telefon, Temporary Access Pass), **historia logowań** (IP, lokalizacja, dostęp warunkowy), **diagnoza logowania** («nie mogę się zalogować»: konto, hasło, MFA, ryzyko, dostęp warunkowy, wyjaśnienie kodów błędów 50053, 50074, 53003…), **zasady dostępu warunkowego obejmujące konto**, **zgody aplikacji konta** (z cofaniem).
