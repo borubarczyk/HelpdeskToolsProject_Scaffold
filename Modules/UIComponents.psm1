@@ -1124,6 +1124,7 @@ function Show-HTConfirm {
     <#
         Pytanie z (opcjonalną) listą obiektów, których dotyczy operacja. Zwraca $true/$false.
         -TypeToConfirm: operacja nieodwracalna - użytkownik musi przepisać podany tekst.
+        -Details: co zostanie zrobione (osobna karta nad listą obiektów), -ItemsHeader: nagłówek listy obiektów.
     #>
     param(
         [Parameter(Mandatory)][string]$Message,
@@ -1131,12 +1132,22 @@ function Show-HTConfirm {
         [string[]]$Items = @(),
         [string]$ConfirmText = 'Wykonaj',
         [string]$TypeToConfirm = '',
+        [string[]]$Details = @(),
+        [string]$DetailsHeader = 'Co zostanie zrobione',
+        [string]$ItemsHeader = '',
         [switch]$Warning,
         [switch]$Danger
     )
     $body = @'
 <StackPanel>
   <TextBlock x:Name="cfText" TextWrapping="Wrap" Foreground="#C9D0DC" LineHeight="19"/>
+  <TextBlock x:Name="cfDetailsHeader" Foreground="#8CB0FF" FontSize="12.5" FontWeight="SemiBold" Margin="0,14,0,5" Visibility="Collapsed"/>
+  <Border x:Name="cfDetailsHost" Style="{StaticResource Card}" Padding="12,8" Visibility="Collapsed">
+    <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+      <TextBlock x:Name="cfDetails" Foreground="#E4E8EF" FontSize="12.5" LineHeight="19" TextWrapping="Wrap"/>
+    </ScrollViewer>
+  </Border>
+  <TextBlock x:Name="cfListHeader" Foreground="#8CB0FF" FontSize="12.5" FontWeight="SemiBold" Margin="0,14,0,5" Visibility="Collapsed"/>
   <Border x:Name="cfListHost" Style="{StaticResource Card}" Padding="12,8" Margin="0,14,0,0" Visibility="Collapsed">
     <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
       <TextBlock x:Name="cfList" Foreground="#AEB6C4" FontSize="12.5" LineHeight="19" TextWrapping="Wrap"/>
@@ -1149,7 +1160,7 @@ function Show-HTConfirm {
 </StackPanel>
 '@
     $tone = if ($Danger) { 'crit' } elseif ($Warning) { 'warn' } else { 'info' }
-    $w = New-HTDialog -Title $Title -Body $body -Tone $tone -Icon $(if (-not $Danger -and -not $Warning) { 'E9CE' } else { '' }) -OkText $ConfirmText -Danger:$Danger -Width 520 -Validate {
+    $w = New-HTDialog -Title $Title -Body $body -Tone $tone -Icon $(if (-not $Danger -and -not $Warning) { 'E9CE' } else { '' }) -OkText $ConfirmText -Danger:$Danger -Width $(if (@($Details).Count) { 580 } else { 520 }) -Validate {
         param($w)
         $expected = $w.Tag.TypeToConfirm
         if ($expected -and $w.FindName('cfType').Text.Trim() -ne $expected) {
@@ -1160,12 +1171,24 @@ function Show-HTConfirm {
     }
     $w.Tag.TypeToConfirm = $TypeToConfirm
     $w.FindName('cfText').Text = $Message
+    $Details = @($Details | Where-Object { "$_".Trim() })
+    if ($Details.Count -gt 0) {
+        $w.FindName('cfDetailsHeader').Text = $DetailsHeader
+        $w.FindName('cfDetailsHeader').Visibility = 'Visible'
+        $w.FindName('cfDetails').Text = ($Details | ForEach-Object { "•  $_" }) -join "`n"
+        $w.FindName('cfDetailsHost').Visibility = 'Visible'
+    }
     if ($Items.Count -gt 0) {
         $shown = @($Items | Select-Object -First 30)
         $text = ($shown | ForEach-Object { "•  $_" }) -join "`n"
         if ($Items.Count -gt $shown.Count) { $text += "`n… i $($Items.Count - $shown.Count) więcej" }
         $w.FindName('cfList').Text = $text
         $w.FindName('cfListHost').Visibility = 'Visible'
+        if ($ItemsHeader) {
+            $w.FindName('cfListHeader').Text = $ItemsHeader
+            $w.FindName('cfListHeader').Visibility = 'Visible'
+            $w.FindName('cfListHost').Margin = '0'
+        }
     }
     if ($TypeToConfirm) {
         $w.FindName('cfTypeLabel').Text = "Operacja jest nieodwracalna. Aby kontynuować, wpisz: $TypeToConfirm"
@@ -1229,6 +1252,11 @@ function Show-InputBox {
 }
 
 $script:FormEvents = @{
+    Dependency   = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        if ($w -and $w.Tag -is [hashtable] -and $w.Tag.Controls) { Update-HTFormDependents -Controls $w.Tag.Controls }
+    }
     NumericInput = {
         param($s, $e)
         if ($e.Text -notmatch '^\d+$') { $e.Handled = $true }
@@ -1257,6 +1285,8 @@ $script:FormEvents = @{
 function Get-HTFormFieldError {
     # Komunikat o błędzie pola formularza albo pusty tekst (pole poprawne)
     param([Parameter(Mandatory)][hashtable]$Entry)
+    # Pole ukryte warunkiem ShowWhen nie jest sprawdzane
+    if ($Entry.Hidden) { return '' }
     $f = $Entry.Field
     $value = Get-HTFormControlValue -Entry $Entry
     $label = [string]$f.Label
@@ -1300,7 +1330,8 @@ function Show-HTFormDialog {
     <#
         Formularz w oknie. -Fields: tablica hashtabel:
           @{ Name; Label; Type = Text|Password|Multiline|Combo|Check|Date|Number|Info|Header|Buttons; Default; Options;
-             Required; Validation; Editable; Optional; DateOnly; Min; Max; Placeholder; Hint }
+             Required; Validation; Editable; Optional; DateOnly; Min; Max; Placeholder; Hint;
+             ShowWhen = @{ Field = 'Tryb'; Values = @('Scheduled') } - pole widoczne tylko przy tych wartościach innego pola }
         Buttons: @{ Type = 'Buttons'; Buttons = @(@{ Text; Icon; OnClick = { param($w) } }) } - przyciski w treści formularza.
         -Sections: każdy Header zaczyna sekcję (lista sekcji po lewej, Icon - ikona sekcji, Hint - opis sekcji);
         okno ma stałą wysokość (-MaxHeight), a błąd walidacji przełącza na sekcję z błędnym polem.
@@ -1445,11 +1476,13 @@ function Show-HTFormDialog {
             $first = $false
             continue
         }
+        $fieldElements = New-Object System.Collections.Generic.List[object]
         if ($type -ne 'Check') {
             $caption = [string]$f.Label + $(if ($f.Required) { ' *' } else { '' })
             $lbl = New-HTDialogText -Text $caption -Color '#8791A5' -Size 12
             $lbl.Margin = $(if ($first) { '0,0,0,5' } else { '0,12,0,5' })
             [void]$stack.Children.Add($lbl)
+            $fieldElements.Add($lbl)
         }
         $ctl = $null
         switch ($type) {
@@ -1510,15 +1543,35 @@ function Show-HTFormDialog {
         if ($f.Placeholder -and $ctl -is [System.Windows.Controls.TextBox]) { $ctl.Tag = [string]$f.Placeholder }
         if ($f.ToolTip) { $ctl.ToolTip = [string]$f.ToolTip }
         [void]$stack.Children.Add($ctl)
+        $fieldElements.Add($ctl)
         if ($f.Hint) {
             $hint = New-HTDialogText -Text ([string]$f.Hint) -Color '#6B7487' -Size 11.5
             $hint.Margin = '1,5,0,0'
             [void]$stack.Children.Add($hint)
+            $fieldElements.Add($hint)
         }
-        $controls[[string]$f.Name] = @{ Type = $type; Control = $ctl; Field = $f; Nav = $nav }
+        $controls[[string]$f.Name] = @{ Type = $type; Control = $ctl; Field = $f; Nav = $nav; Elements = $fieldElements.ToArray(); Hidden = $false }
         $first = $false
     }
     $w.Tag.Controls = $controls
+    # Pola zależne (ShowWhen): widoczne tylko przy wybranych wartościach innego pola
+    $hasDependents = $false
+    foreach ($entry in @($controls.Values)) {
+        $condition = $entry.Field.ShowWhen
+        if (-not $condition -or -not $controls.Contains([string]$condition.Field)) { continue }
+        $source = $controls[[string]$condition.Field]
+        $entry.ShowWhen = @{ Source = $source; Values = @($condition.Values | ForEach-Object { [string]$_ }) }
+        if (-not $source.Watched) {
+            $source.Watched = $true
+            switch ($source.Type) {
+                'Combo' { $source.Control.add_SelectionChanged($script:FormEvents.Dependency); if ($source.Control.IsEditable) { $source.Control.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]$script:FormEvents.Dependency) } }
+                'Check' { $source.Control.add_Checked($script:FormEvents.Dependency); $source.Control.add_Unchecked($script:FormEvents.Dependency) }
+                default { if ($source.Control -is [System.Windows.Controls.TextBox]) { $source.Control.add_TextChanged($script:FormEvents.Dependency) } }
+            }
+        }
+        $hasDependents = $true
+    }
+    if ($hasDependents) { Update-HTFormDependents -Controls $controls }
     foreach ($b in @((New-HTFormButtons -Buttons $ExtraButtons).Children)) {
         [void]$b.Parent.Children.Remove($b)
         [void]$w.FindName('dlgExtra').Children.Add($b)
@@ -1534,7 +1587,44 @@ function Show-HTFormDialog {
 
     $result = [ordered]@{}
     foreach ($name in $controls.Keys) { $result[$name] = Get-HTFormControlValue -Entry $controls[$name] }
+    Add-HTFormSummary -Controls $controls
     return $result
+}
+
+$script:FormSummaryLimit = 16
+
+function Add-HTFormSummary {
+    # Zapamiętuje wartości zatwierdzonego formularza dla potwierdzenia zmiany w tej samej akcji (Invoke-HTUiAction)
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Controls)
+    $summary = $script:UI.FormSummary
+    if ($null -eq $summary) { return }
+    foreach ($entry in @($Controls.Values)) {
+        if ($entry.Hidden) { continue }
+        $line = ''
+        try { $line = ConvertTo-HTFormSummaryLine -Field $entry.Field -Type $entry.Type -Value (Get-HTFormControlValue -Entry $entry) } catch { $line = '' }
+        if ($line) { $summary.Add($line) }
+    }
+}
+
+function Get-HTPendingFormSummary {
+    # Ustawienia z formularzy zatwierdzonych w bieżącej akcji (najwyżej $script:FormSummaryLimit wierszy)
+    $summary = $script:UI.FormSummary
+    if ($null -eq $summary -or $summary.Count -eq 0) { return @() }
+    $lines = @($summary.ToArray() | Select-Object -Unique)
+    if ($lines.Count -le $script:FormSummaryLimit) { return $lines }
+    return @($lines | Select-Object -First $script:FormSummaryLimit) + "… i $($lines.Count - $script:FormSummaryLimit) więcej ustawień"
+}
+
+function Update-HTFormDependents {
+    # Widoczność pól zależnych (ShowWhen) według bieżących wartości pól źródłowych
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Controls)
+    foreach ($entry in @($Controls.Values)) {
+        if (-not $entry.ShowWhen) { continue }
+        $value = Get-HTFormControlValue -Entry $entry.ShowWhen.Source
+        $visible = $entry.ShowWhen.Values -contains [string]$value
+        $entry.Hidden = -not $visible
+        foreach ($element in @($entry.Elements)) { $element.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' } }
+    }
 }
 
 function Get-HTFormControlValue {
@@ -2314,9 +2404,10 @@ $script:LoginWatchdogScript = {
             'Program wysłał anulowanie, ale logowanie nadal trwa. Spróbuj ponownie albo zamknij program i uruchom go jeszcze raz (okno programu jest zablokowane do końca logowania).'
         }
         else {
-            'Nie znaleziono oczekującego logowania w przeglądarce. Jeśli karta logowania jest otwarta - dokończ logowanie. Jeśli nie - spróbuj ponownie albo zamknij program i uruchom go jeszcze raz (okno programu jest zablokowane do końca logowania).'
+            'Program nie czeka już na odpowiedź przeglądarki (karta logowania jest zakończona - np. «You are signed in» - albo nie została otwarta), a moduł nadal nie zakończył łączenia. Jeśli karta logowania jest otwarta - dokończ logowanie. Jeśli przeglądarka pokazuje, że zalogowano, a program dalej czeka - zamknij program i uruchom go ponownie.'
         }
-        $cancelButton.Content = 'Spróbuj ponownie'
+        $info.Text += "`n`nSprawdzono: $((Get-Date).ToString('HH:mm:ss')) (próba $($State.Attempts))."
+        $cancelButton.Content = 'Sprawdź ponownie'
         $cancelButton.IsEnabled = $true
         $killButton.Visibility = 'Visible'
     }
@@ -2325,6 +2416,7 @@ $script:LoginWatchdogScript = {
         param([string]$Reason)
         if ($State.Sending) { return }
         $State.Sending = $true
+        $State.Attempts = [int]$State.Attempts + 1
         try {
             $State.Cancelled = $true
             if (-not $State.Reason) { $State.Reason = $Reason }
@@ -2417,6 +2509,21 @@ function Stop-HTLoginWatchdog {
     catch { Write-Verbose "Okno logowania: $_" }
 }
 
+function Invoke-HTWithoutSyncContext {
+    <#
+        Wykonuje blok bez SynchronizationContext wątku okna (WPF). Polecenia modułów Microsoft 365 wywołujące kod
+        asynchroniczny synchronicznie (.GetAwaiter().GetResult()) nie zakleszczają wtedy wątku okna - dalszy ciąg
+        zadania wykonuje się w puli wątków zamiast czekać na zablokowany wątek okna.
+    #>
+    # Nietypowe nazwy zmiennych - bloki zdefiniowane w tym module widzą zmienne wywołującego (dynamiczny zasięg)
+    param([Parameter(Mandatory, Position = 0)][scriptblock]$HTSyncBlock)
+    $htSyncPrevious = [System.Threading.SynchronizationContext]::Current
+    if ($null -eq $htSyncPrevious) { return (& $HTSyncBlock) }
+    [System.Threading.SynchronizationContext]::SetSynchronizationContext($null)
+    try { & $HTSyncBlock }
+    finally { [System.Threading.SynchronizationContext]::SetSynchronizationContext($htSyncPrevious) }
+}
+
 function Invoke-HTInteractiveLogin {
     <#
         Wykonuje blok logowania (Connect-*) z oknem «Trwa logowanie» (Anuluj + limit czasu).
@@ -2430,7 +2537,9 @@ function Invoke-HTInteractiveLogin {
     Write-HTDebug { "Logowanie $($Title): start, limit $TimeoutSeconds s, porty nasłuchu przed logowaniem (program i http.sys): $(@($watch.BasePorts).Count)" }
     $started = Get-Date
     try {
-        & $ScriptBlock
+        # Bez kontekstu synchronizacji okna: moduły (np. PnP) czekają synchronicznie na kod asynchroniczny, którego
+        # dalszy ciąg trafiłby do zablokowanego wątku okna - przeglądarka kończy logowanie, a program wisi (zakleszczenie)
+        Invoke-HTWithoutSyncContext $ScriptBlock
         Write-HTDebug { "Logowanie $($Title): zakończone po $([int]((Get-Date) - $started).TotalSeconds) s" }
     }
     catch {
@@ -2495,8 +2604,21 @@ function Invoke-HTControlHandler {
 
 function Invoke-HTUiAction {
     param([hashtable]$Module, [scriptblock]$Action, $Source = $null)
+    # Akcja najwyższego poziomu zbiera wartości zatwierdzonych formularzy - potwierdzenie zmiany pokazuje, co zostanie ustawione
+    $outer = -not $script:UI.ActionDepth
+    if ($outer) {
+        $script:UI.FormSummary = New-Object System.Collections.Generic.List[string]
+        $script:UI.CommandWarnings = New-Object System.Collections.Generic.List[string]
+    }
+    $script:UI.ActionDepth = [int]$script:UI.ActionDepth + 1
     try {
-        $null = & $Action $Module $Source
+        # Bez kontekstu synchronizacji okna - polecenia Graph/Exchange/PnP nie zakleszczą wątku okna (Invoke-HTWithoutSyncContext).
+        # Ostrzeżenia poleceń (np. Exchange: «Events from Email… deprecated») trafiają do dziennika zamiast tylko do konsoli.
+        $null = Invoke-HTWithoutSyncContext {
+            & $Action $Module $Source 3>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.WarningRecord] -and $null -ne $script:UI.CommandWarnings) { $script:UI.CommandWarnings.Add([string]$_.Message) }
+            }
+        }
     }
     catch {
         # Moduł zablokowany dla konta MFA (Show-HTModule) - wpis w dzienniku już jest, wystarczy powiadomienie
@@ -2504,6 +2626,18 @@ function Invoke-HTUiAction {
         Write-Log -Message "Błąd: $($_.Exception.Message)" -Type 'Error'
         Write-HTDebug { "Stos błędu ($($_.Exception.GetType().FullName)):`n$($_.ScriptStackTrace)" }
         Show-HTError 'Operacja nie powiodła się.' $_
+    }
+    finally {
+        $script:UI.ActionDepth = [Math]::Max(0, [int]$script:UI.ActionDepth - 1)
+        if ($outer) {
+            $script:UI.FormSummary = $null
+            $warnings = $script:UI.CommandWarnings
+            $script:UI.CommandWarnings = $null
+            if ($warnings -and $warnings.Count) {
+                $where = if ($Module -and $Module.Title) { [string]$Module.Title } else { 'polecenie' }
+                foreach ($line in @(Group-HTWarningMessages -Messages $warnings.ToArray())) { Write-Log -Message "Ostrzeżenie ($where): $line" -Type 'Warn' }
+            }
+        }
     }
 }
 #endregion
@@ -2559,6 +2693,14 @@ function Get-HTModuleDefinition([string]$Key) {
 }
 
 $script:NavEvents = @{
+    CategoryClick  = {
+        param($s, $e)
+        try {
+            $collapsed = @($s.Tag.Items | Where-Object { $_.Visibility -eq 'Visible' }).Count -gt 0
+            Set-HTNavCategoryState -Header $s -Collapsed $collapsed
+        }
+        catch { Write-Log -Message "Nawigacja: $($_.Exception.Message)" -Type 'Warn' }
+    }
     WorkspaceClick = {
         param($s, $e)
         try { Show-HTWorkspace -Key ([string]$s.Tag) }
@@ -2620,13 +2762,36 @@ function Initialize-HTNavigation {
         foreach ($order in @($ws.Categories)) { if ($order -and @($defs | Where-Object { $_.Category -eq $order }).Count -gt 0) { [void]$categories.Add($order) } }
         foreach ($d in $defs) { if (-not $categories.Contains($d.Category)) { [void]$categories.Add($d.Category) } }
         foreach ($cat in $categories) {
-            $header = New-Object System.Windows.Controls.TextBlock
-            $header.Style = Get-HTThemeResource 'NavHeader'
-            $header.Text = $cat.ToUpperInvariant()
+            # Nagłówek kategorii zwija i rozwija jej moduły (stan zapamiętany w UiState.json)
+            $collapseKey = "$($ws.Key)|$cat"
+            $collapsed = Test-HTNavCategoryCollapsed $collapseKey
+            $header = New-Object System.Windows.Controls.Grid
+            $header.Background = [System.Windows.Media.Brushes]::Transparent
+            $header.Cursor = [System.Windows.Input.Cursors]::Hand
+            $header.ToolTip = 'Kliknij, aby zwinąć lub rozwinąć kategorię'
+            [void]$header.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+            $chevronColumn = New-Object System.Windows.Controls.ColumnDefinition
+            $chevronColumn.Width = [System.Windows.GridLength]::Auto
+            [void]$header.ColumnDefinitions.Add($chevronColumn)
+            $title = New-Object System.Windows.Controls.TextBlock
+            $title.Style = Get-HTThemeResource 'NavHeader'
+            $title.Text = $cat.ToUpperInvariant()
+            [void]$header.Children.Add($title)
+            $chevron = New-HTGlyphBlock -Code $(if ($collapsed) { 'E76C' } else { 'E70D' }) -Size 9 -Color '#5E6779'
+            $chevron.Margin = '0,14,10,5'
+            $chevron.VerticalAlignment = 'Center'
+            [System.Windows.Controls.Grid]::SetColumn($chevron, 1)
+            [void]$header.Children.Add($chevron)
+            $items = New-Object System.Collections.Generic.List[object]
+            $header.Tag = @{ Key = $collapseKey; Items = $items; Chevron = $chevron }
+            $header.add_MouseLeftButtonUp($script:NavEvents.CategoryClick)
             [void]$panel.Children.Add($header)
             foreach ($d in @($defs | Where-Object { $_.Category -eq $cat })) {
                 $item = New-HTNavItem -Definition $d -Workspace $ws.Key
                 $ws.NavItems[$d.Key] = $item
+                $item.Visibility = if ($collapsed) { 'Collapsed' } else { 'Visible' }
+                $items.Add($item)
+                $script:NavCategoryOf[$d.Key] = $header
                 [void]$panel.Children.Add($item)
             }
         }
@@ -2674,6 +2839,23 @@ function New-HTNavItem {
 }
 
 $script:NavStars = @{}
+# Moduł -> nagłówek jego kategorii (rozwinięcie kategorii przy przejściu do modułu z palety lub ulubionych)
+$script:NavCategoryOf = @{}
+
+function Set-HTNavCategoryState {
+    param([Parameter(Mandatory)]$Header, [bool]$Collapsed)
+    $tag = $Header.Tag
+    foreach ($item in $tag.Items) { $item.Visibility = if ($Collapsed) { 'Collapsed' } else { 'Visible' } }
+    $tag.Chevron.Text = Get-HTGlyph $(if ($Collapsed) { 'E76C' } else { 'E70D' })
+    Set-HTNavCategoryCollapsed -Key $tag.Key -Collapsed $Collapsed
+}
+
+function Show-HTNavItem {
+    # Rozwija zwiniętą kategorię, w której jest moduł
+    param([string]$Key)
+    $header = $script:NavCategoryOf[$Key]
+    if ($header -and @($header.Tag.Items | Where-Object { $_.Visibility -ne 'Visible' }).Count) { Set-HTNavCategoryState -Header $header -Collapsed $false }
+}
 
 function Update-HTNavFavorites {
     foreach ($key in @($script:NavStars.Keys)) { $script:NavStars[$key].Visibility = if (Test-HTFavoriteModule $key) { 'Visible' } else { 'Collapsed' } }
@@ -2750,6 +2932,7 @@ function Show-HTModule {
     try { Add-HTRecentModule -Key $Key -Workspace $definition.Workspace } catch { Write-Verbose $_ }
     $nav = $ws.NavItems[$Key]
     if ($nav -and $nav.IsChecked -ne $true) { $nav.IsChecked = $true }
+    if ($nav -and $nav.Visibility -ne 'Visible') { Show-HTNavItem -Key $Key }
     if ($m.OnShow) { Invoke-HTUiAction -Module $m -Action $m.OnShow }
 }
 
@@ -3300,6 +3483,13 @@ $script:ModuleViewXaml = @'
           <TextBlock x:Name="busyText" Text="Trwa operacja…" Foreground="#8CC0FF" FontSize="12" VerticalAlignment="Center" MaxWidth="360" TextTrimming="CharacterEllipsis"/>
         </StackPanel>
       </Border>
+      <Button x:Name="btnBusyStop" Style="{StaticResource DangerButton}" MinHeight="26" Padding="10,2" Margin="8,0,0,0" Visibility="Collapsed" VerticalAlignment="Center"
+              ToolTip="Przerwij (Esc): zapytanie w tle od razu, operację na wielu obiektach - po bieżącym obiekcie. Wyniki zostaną w tabeli.">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE71A;" FontSize="11" Margin="0,0,7,0" VerticalAlignment="Center"/>
+          <TextBlock Text="Przerwij" FontSize="12" VerticalAlignment="Center"/>
+        </StackPanel>
+      </Button>
       <Button x:Name="btnCollapse" Style="{StaticResource GhostButton}" Padding="8,4" MinHeight="28" ToolTip="Zwiń / rozwiń panel parametrów"/>
     </StackPanel>
   </Grid>
@@ -3435,7 +3625,7 @@ function New-HTModuleView {
     param([Parameter(Mandatory)][hashtable]$Module)
     $root = New-HTUiElement $script:ModuleViewXaml
     $Module.Root = $root
-    foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
+    foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'btnBusyStop', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
         'btnViews', 'btnColumns', 'btnEmptyCols', 'btnDetail', 'btnCopy', 'btnMail', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
         'detailPane', 'detailText', 'btnDetailCopy', 'btnCollapse') {
         $Module.View_[$n] = $root.FindName($n)
@@ -3453,6 +3643,7 @@ function New-HTModuleView {
     if ($Module.Description) { $desc.Text = $Module.Description } else { $desc.Visibility = 'Collapsed' }
 
     $v = $Module.View_
+    $v.btnBusyStop.add_Click({ Stop-HTBackground })
     $v.btnDetail.Content = New-HTIconContent -Text '' -Icon 'E8A1'
     $v.btnColumns.Content = New-HTIconContent -Text '' -Icon 'E8FD'
     $v.btnEmptyCols.Content = New-HTIconContent -Text '' -Icon 'ED1A'
@@ -3709,6 +3900,11 @@ function Add-HTButton {
     Register-HTControlHandler -Control $b -EventName 'Click' -Module $Module -Action $OnClick
     [void]$Module.Buttons.Add($b)
     if ($Primary -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
+    # Przyciski zmian (czerwone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
+    if ($Danger) {
+        if (-not $Module['ChangeButtons']) { $Module['ChangeButtons'] = New-Object System.Collections.Generic.List[hashtable] }
+        $Module['ChangeButtons'].Add(@{ Button = $b; Text = $Text; Icon = $Icon })
+    }
     [void]$Parent.Children.Add($b)
     return $b
 }
@@ -3718,6 +3914,85 @@ function Add-HTRowAction {
     param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][scriptblock]$Action, [string]$Icon = 'E76C', [switch]$Danger)
     [void]$Module.RowActions.Add(@{ Text = $Text; Action = $Action; Icon = $Icon; Danger = [bool]$Danger })
 }
+
+#region Akcje na obiektach w wynikach (np. blokada konta z raportu nieaktywnych użytkowników)
+<#
+    Rodzaj obiektu rozpoznawany w wierszach wyników dowolnego modułu: -Resolve { param($row) } zwraca identyfikator
+    (np. UPN) albo $null. Akcje rodzaju (Register-HTObjectAction) są w podmenu «<Tytuł> (N)» menu prawego przycisku.
+    -Workspaces: tylko w tych przestrzeniach (puste - wszędzie).
+#>
+$script:ObjectKinds = New-Object System.Collections.Generic.List[hashtable]
+
+function Register-HTObjectKind {
+    param([Parameter(Mandatory)][string]$Kind, [Parameter(Mandatory)][string]$Title, [string]$Icon = 'E77B', [Parameter(Mandatory)][scriptblock]$Resolve, [string]$Service = '', [string[]]$Workspaces = @())
+    $existing = @($script:ObjectKinds | Where-Object { $_.Kind -eq $Kind })[0]
+    if ($existing) { [void]$script:ObjectKinds.Remove($existing) }
+    $script:ObjectKinds.Add(@{ Kind = $Kind; Title = $Title; Icon = $Icon; Resolve = $Resolve; Service = $Service; Workspaces = @($Workspaces); Actions = (New-Object System.Collections.Generic.List[hashtable]) })
+}
+
+function Register-HTObjectAction {
+    <#
+        Akcja rodzaju obiektu: -Action { param($Id, $Row) } zwraca opis wyniku. Zmiany: -Danger (czerwone) i -Confirm
+        (pytanie z listą obiektów). -View: podgląd jednego obiektu (bez potwierdzenia i historii operacji).
+    #>
+    param([Parameter(Mandatory)][string]$Kind, [Parameter(Mandatory)][string]$Text, [string]$Icon = 'E76C', [Parameter(Mandatory)][scriptblock]$Action, [switch]$Danger, [string]$Confirm = '', [string]$Name = '', [switch]$View)
+    $definition = @($script:ObjectKinds | Where-Object { $_.Kind -eq $Kind })[0]
+    if (-not $definition) { throw "Nieznany rodzaj obiektu: $Kind" }
+    $definition.Actions.Add(@{ Text = $Text; Icon = $Icon; Action = $Action; Danger = [bool]$Danger; Confirm = $Confirm; Name = $(if ($Name) { $Name } else { $Text.TrimEnd('…') }); View = [bool]$View })
+}
+
+function Get-HTObjectActionTargets {
+    # Rozpoznane obiekty zaznaczonych wierszy: @{ Id; Row; Label }, bez powtórzeń identyfikatora
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][hashtable]$Kind)
+    $seen = @{}
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @(Get-HTResultSelection -Module $Module)) {
+        if (-not $row) { continue }
+        $id = $null
+        try { $id = [string](& $Kind.Resolve $row) } catch { $id = $null }
+        if (-not $id -or $seen.ContainsKey($id.ToLowerInvariant())) { continue }
+        $seen[$id.ToLowerInvariant()] = $true
+        $list.Add([PSCustomObject]@{ Id = $id; Row = $row; Label = $id })
+    }
+    return $list.ToArray()
+}
+
+function Get-HTObjectActionMenus {
+    # Podmenu akcji dla rodzajów obiektów rozpoznanych w zaznaczonych wierszach
+    param([Parameter(Mandatory)][hashtable]$Module)
+    foreach ($kind in $script:ObjectKinds) {
+        if ($kind.Actions.Count -eq 0) { continue }
+        if ($kind.Workspaces.Count -and $kind.Workspaces -notcontains [string]$Module.Workspace) { continue }
+        $targets = @(Get-HTObjectActionTargets -Module $Module -Kind $kind)
+        if ($targets.Count -eq 0) { continue }
+        $parent = New-HTMenuItem -Text "$($kind.Title) ($($targets.Count))" -Icon $kind.Icon -Module $Module
+        foreach ($a in $kind.Actions) {
+            $enabled = -not $a.View -or $targets.Count -ge 1
+            [void]$parent.Items.Add((New-HTMenuItem -Text $a.Text -Icon $a.Icon -Danger:$a.Danger -Module $Module -Enabled $enabled -Data @{ Kind = $kind; Definition = $a } -Action {
+                        param($m, $s)
+                        Invoke-HTObjectAction -Module $m -Kind $s.Tag.Data.Kind -Definition $s.Tag.Data.Definition
+                    }))
+        }
+        $parent
+    }
+}
+
+function Invoke-HTObjectAction {
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][hashtable]$Kind, [Parameter(Mandatory)][hashtable]$Definition)
+    $targets = @(Get-HTObjectActionTargets -Module $Module -Kind $Kind)
+    if ($targets.Count -eq 0) { Show-HTWarning 'Zaznacz wiersze z obiektami w tabeli wyników.'; return }
+    if ($Kind.Service -and -not (Assert-HTConnection -Service $Kind.Service)) { return }
+    if ($Definition.View) {
+        $first = $targets[0]
+        $null = & $Definition.Action $first.Id $first.Row
+        return
+    }
+    # Blok akcji i identyfikator przekazane w obiekcie (bez odwołań do zmiennych tej funkcji z wnętrza bloku)
+    $items = @($targets | ForEach-Object { [PSCustomObject]@{ Id = $_.Id; Row = $_.Row; Label = $_.Label; Run = $Definition.Action } })
+    Invoke-HTRowAction -Module $Module -Name $Definition.Name -Rows $items -Danger:$Definition.Danger -Confirm $Definition.Confirm -Service $Kind.Service `
+        -Label { param($r) $r.Label } -Action { param($r) & $r.Run $r.Id $r.Row }
+}
+#endregion
 
 function Update-HTGridMenu {
     # Menu kontekstowe budowane przy otwarciu: nagłówek - menu kolumny; wiersze - akcje modułu, kopiowanie, eksport, szybki filtr
@@ -3736,6 +4011,19 @@ function Update-HTGridMenu {
                     $null = & $s.Tag.Data $m $rows
                 }))
     }
+    # Zmiany modułu (czerwone przyciski) dla obiektów z zaznaczonych wierszy (wyniki «Sprawdź stan» / «Pokaż…»)
+    $rowTargets = if ($hasRows) { @(Get-HTSelectedResultTargets -Module $Module) } else { @() }
+    if ($rowTargets.Count -and $Module['ChangeButtons']) {
+        foreach ($cb in @($Module['ChangeButtons'] | Where-Object { $_ -and $_.Button.IsEnabled -and $_.Button.IsVisible })) {
+            [void]$menu.Items.Add((New-HTMenuItem -Text "$($cb.Text) - zaznaczone ($($rowTargets.Count))" -Icon $cb.Icon -Danger -Module $Module -Data $cb.Button -Action {
+                        param($m, $s)
+                        $button = $s.Tag.Data
+                        $button.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $button)))
+                    }))
+        }
+    }
+    # Akcje na rozpoznanych obiektach (konto, skrzynka, urządzenie) - z dowolnego raportu i wyniku
+    if ($hasRows) { foreach ($objectMenu in @(Get-HTObjectActionMenus -Module $Module)) { [void]$menu.Items.Add($objectMenu) } }
     if ($menu.Items.Count -gt 0) { [void]$menu.Items.Add((New-HTMenuSeparator)) }
     [void]$menu.Items.Add((New-HTMenuItem -Text 'Szczegóły wiersza' -Icon 'E8A1' -Module $Module -Enabled $hasRows -Action {
                 param($m)
@@ -4102,31 +4390,55 @@ function Show-HTRowDetails {
         $box.FontSize = $Size
         $box.Padding = '0'
         $box.Margin = '0'
+        # Styl pola tekstowego ma wysokość min. 30 i tekst wyśrodkowany - w tabeli tekst od góry, równo z etykietą
+        $box.MinHeight = 0
+        $box.VerticalContentAlignment = 'Top'
+        $box.VerticalAlignment = 'Top'
         [System.Windows.Controls.TextBlock]::SetLineHeight($box, [Math]::Round($Size * 1.45))
         return $box
     }
     if ($fields.Short.Count) {
+        # Tabela: kolumna nazw pól, linie między wierszami i naprzemienne tło - widać, gdzie kończy się każda wartość
         $grid = New-Object System.Windows.Controls.Grid
         $c1 = New-Object System.Windows.Controls.ColumnDefinition
         $c1.Width = [System.Windows.GridLength]::Auto
-        $c1.MaxWidth = 240
+        $c1.MaxWidth = 260
         [void]$grid.ColumnDefinitions.Add($c1)
         [void]$grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
         $r = 0
         foreach ($f in $fields.Short) {
             [void]$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
-            $label = New-HTDialogText -Text $f.Name -Color '#8791A5' -Size 12.5
-            $label.Margin = '0,3,16,3'
+            $last = ($r -eq $fields.Short.Count - 1)
+            $band = New-Object System.Windows.Controls.Border
+            $band.Background = Get-HTBrush $(if ($r % 2) { '#151B24' } else { '#11161D' })
+            $band.BorderBrush = Get-HTBrush '#232A36'
+            $band.BorderThickness = $(if ($last) { '0' } else { '0,0,0,1' })
+            [System.Windows.Controls.Grid]::SetRow($band, $r)
+            [System.Windows.Controls.Grid]::SetColumnSpan($band, 2)
+            [void]$grid.Children.Add($band)
+            $divider = New-Object System.Windows.Controls.Border
+            $divider.BorderBrush = Get-HTBrush '#232A36'
+            $divider.BorderThickness = '0,0,1,0'
+            [System.Windows.Controls.Grid]::SetRow($divider, $r)
+            [void]$grid.Children.Add($divider)
+            $label = & $newValueBox $f.Name 13 '#8F99AD'
+            $label.Margin = '12,7,14,7'
             [System.Windows.Controls.Grid]::SetRow($label, $r)
             [void]$grid.Children.Add($label)
             $value = & $newValueBox $f.Text 13 '#E4E8EF'
-            $value.Margin = '0,3,0,3'
+            $value.Margin = '14,7,12,7'
             [System.Windows.Controls.Grid]::SetRow($value, $r)
             [System.Windows.Controls.Grid]::SetColumn($value, 1)
             [void]$grid.Children.Add($value)
             $r++
         }
-        [void]$hostPanel.Children.Add($grid)
+        $frame = New-Object System.Windows.Controls.Border
+        $frame.BorderBrush = Get-HTBrush '#262D39'
+        $frame.BorderThickness = 1
+        $frame.CornerRadius = 8
+        $frame.Padding = 1
+        $frame.Child = $grid
+        [void]$hostPanel.Children.Add($frame)
     }
     foreach ($f in $fields.Long) {
         $header = New-HTDialogText -Text $f.Name -Color $(if ($f.Body) { '#8CB0FF' } else { '#C9D0DC' }) -Size $(if ($f.Body) { 15 } else { 13.5 })
@@ -4170,7 +4482,9 @@ function Invoke-HTTargetAction {
     <#
         Wykonuje operację dla każdego obiektu docelowego i dopisuje wiersze wyników (Obiekt, Status, Szczegóły).
         -Action { param($t) } zwraca tekst szczegółów, hashtablę z dodatkowymi kolumnami albo obiekt.
-        -Confirm: tekst pytania (lista obiektów jest dołączana automatycznie).
+        Przed zmianą zawsze potwierdzenie: co zostanie zrobione i na których obiektach (Confirm-HTChange).
+        -Confirm: tekst pytania; -Summary: opis zmian (domyślnie wartości formularza zatwierdzonego w tej akcji);
+        -NoConfirm: tylko dla operacji bez zmian (odczyt, pobieranie) albo gdy potwierdzenie z listą obiektów już było.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Module,
@@ -4179,6 +4493,8 @@ function Invoke-HTTargetAction {
         [object[]]$Targets,
         [scriptblock]$Label,
         [string]$Confirm = '',
+        [string[]]$Summary = @(),
+        [switch]$NoConfirm,
         [switch]$Danger,
         [string]$TypeToConfirm = '',
         [switch]$KeepResults,
@@ -4187,17 +4503,28 @@ function Invoke-HTTargetAction {
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
     if (-not (Assert-HTWriteAllowed -Operation $Name)) { return }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
-    if (-not $Targets) { $Targets = @(Get-HTTargets -Module $Module) }
+    # Zasada trzech etapów: zakres (lista po lewej) -> sprawdzenie stanu (wyniki) -> zmiana. Zaznaczone wiersze wyników
+    # wskazują obiekty do zmiany; bez zaznaczenia - obiekty wybrane na liście po lewej.
+    $source = ''
+    if (-not $Targets) {
+        $fromSelection = @(Get-HTSelectedResultTargets -Module $Module)
+        if ($fromSelection.Count) { $Targets = $fromSelection; $source = 'wiersze zaznaczone w wynikach' }
+        else { $Targets = @(Get-HTTargets -Module $Module); $source = 'zaznaczone na liście' }
+    }
+    $Targets = @($Targets | Where-Object { $null -ne $_ })
     if ($Targets.Count -eq 0) { return }
     if (-not $Label) { $Label = { param($t) Get-HTTargetLabel $t } }
     $labels = @($Targets | ForEach-Object { [string](& $Label $_) })
-    if ($Confirm -and -not (Show-HTConfirm -Message $Confirm -Title $Name -Items $labels -Danger:$Danger -Warning:(-not $Danger) -TypeToConfirm $TypeToConfirm -ConfirmText $(if ($Danger) { 'Wykonaj' } else { 'Wykonaj' }))) { return }
+    if (-not $NoConfirm -and -not (Confirm-HTChange -Name $Name -Labels $labels -Confirm $Confirm -Summary $Summary -Source $source -Danger:$Danger -TypeToConfirm $TypeToConfirm)) { return }
     if (-not $KeepResults) { Reset-HTResults -Module $Module }
     Set-HTBusy -Busy $true -Text "$Name…"
+    Start-HTStoppable
     $ok = 0
     $failed = 0
+    $stoppedAt = -1
     try {
         for ($i = 0; $i -lt $Targets.Count; $i++) {
+            if (Test-HTStopRequested) { $stoppedAt = $i; break }
             $t = $Targets[$i]
             Set-HTProgress -Value ($i + 1) -Maximum $Targets.Count -Text "$Name [$($i + 1)/$($Targets.Count)] $($labels[$i])"
             $row = [ordered]@{ Obiekt = $labels[$i]; Status = 'OK' }
@@ -4220,12 +4547,43 @@ function Invoke-HTTargetAction {
             $row['__target'] = $t
             Add-HTResultRows -Module $Module -Objects @([PSCustomObject]$row)
         }
+        # Przerwano: pozostałe obiekty w wynikach jako «Pominięto» - widać, czego nie zmieniono
+        if ($stoppedAt -ge 0) {
+            $skipped = @(for ($j = $stoppedAt; $j -lt $Targets.Count; $j++) { [PSCustomObject][ordered]@{ Obiekt = $labels[$j]; Status = 'Pominięto'; Szczegóły = 'Przerwano przez użytkownika'; __target = $Targets[$j]; __flag = 'muted' } })
+            Add-HTResultRows -Module $Module -Objects $skipped
+            Write-Log -Message "Przerwano: $Name - wykonano dla $stoppedAt z $($Targets.Count) obiekt., pominięto: $($skipped.Count) ($(@($labels | Select-Object -Skip $stoppedAt -First 10) -join ', ')$(if ($skipped.Count -gt 10) { ' …' }))" -Type 'Warn'
+        }
     }
     finally {
-        Set-HTBusy -Busy $false -Text "$Name - zakończono: $ok OK, błędy: $failed"
+        Stop-HTStoppable
+        Set-HTBusy -Busy $false -Text $(if ($stoppedAt -ge 0) { "$Name - przerwano: $ok OK, błędy: $failed, pominięto: $($Targets.Count - $stoppedAt)" } else { "$Name - zakończono: $ok OK, błędy: $failed" })
     }
+    if ($stoppedAt -ge 0) { Show-HTToast "$Name - przerwano. Wykonano: $ok, błędy: $failed, pominięto: $($Targets.Count - $stoppedAt)." 'warn'; return }
     $tone = if ($failed -gt 0) { 'warn' } else { 'ok' }
     Show-HTToast "$Name - wykonano: $ok, błędy: $failed." $tone
+}
+
+function Confirm-HTChange {
+    <#
+        Potwierdzenie przed każdą zmianą: co zostanie zrobione i na których obiektach. Zwraca $true/$false;
+        decyzja trafia do dziennika (wraz z ustawieniami, bez haseł).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Labels,
+        [string]$Confirm = '',
+        [string[]]$Summary = @(),
+        [string]$Source = '',
+        [switch]$Danger,
+        [string]$TypeToConfirm = ''
+    )
+    if (@($Summary | Where-Object { "$_".Trim() }).Count -eq 0) { $Summary = @(Get-HTPendingFormSummary) }
+    $c = Get-HTChangeConfirmation -Name $Name -Labels $Labels -Confirm $Confirm -Summary $Summary -Source $Source
+    $answer = Show-HTConfirm -Message $c.Message -Title $Name -Details $c.Details -Items $Labels -ItemsHeader $c.ItemsHeader `
+        -Danger:$Danger -Warning:(-not $Danger) -TypeToConfirm $TypeToConfirm -ConfirmText $c.ConfirmText
+    if ($answer) { Write-Log -Message "Zatwierdzono: $($c.LogText)" -Type 'Info' }
+    else { Write-Log -Message "Anulowano: $($c.LogText)" -Type 'Info' }
+    return [bool]$answer
 }
 
 function Get-HTTargetLabel {
@@ -4908,9 +5266,12 @@ function Invoke-HTTargetQuery {
     $showObject = $AlwaysShowObject -or $Targets.Count -gt 1
     Reset-HTResults -Module $Module
     Set-HTBusy -Busy $true -Text "$Name…"
+    if ($Targets.Count -gt 1) { Start-HTStoppable }
     $failed = 0
+    $stoppedAt = -1
     try {
         for ($i = 0; $i -lt $Targets.Count; $i++) {
+            if ($Targets.Count -gt 1 -and (Test-HTStopRequested)) { $stoppedAt = $i; break }
             $t = $Targets[$i]
             $caption = [string](& $Label $t)
             if ($Targets.Count -gt 1) { Set-HTProgress -Value ($i + 1) -Maximum $Targets.Count -Text "$Name [$($i + 1)/$($Targets.Count)] $caption" }
@@ -4937,10 +5298,29 @@ function Invoke-HTTargetQuery {
         }
     }
     finally {
+        if ($Targets.Count -gt 1) { Stop-HTStoppable }
         $count = $Module.Table.Rows.Count
-        Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($failed) { ", błędy: $failed" })"
+        $stopText = if ($stoppedAt -ge 0) { ", przerwano po $stoppedAt z $($Targets.Count) obiekt." } else { '' }
+        Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($failed) { ", błędy: $failed" })$stopText"
     }
-    Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($failed) { ", błędy: $failed" })" -Type $(if ($failed) { 'Warn' } else { 'Info' })
+    $stopText = if ($stoppedAt -ge 0) { " - przerwano po $stoppedAt z $($Targets.Count) obiekt." } else { '' }
+    Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($failed) { ", błędy: $failed" })$stopText" -Type $(if ($failed -or $stoppedAt -ge 0) { 'Warn' } else { 'Info' })
+}
+
+function Get-HTSelectedResultTargets {
+    # Obiekty docelowe zaznaczonych wierszy wyników (__target), bez powtórzeń - do zmian po sprawdzeniu stanu
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not $Module.Grid -or $Module.Grid.SelectedItems.Count -eq 0) { return @() }
+    $seen = New-Object System.Collections.Generic.List[object]
+    foreach ($o in @(Get-HTResultSelection -Module $Module)) {
+        if (-not $o -or -not $o.PSObject.Properties['__target']) { continue }
+        $t = $o.__target
+        if ($null -eq $t) { continue }
+        $already = $false
+        foreach ($s in $seen) { if ([object]::ReferenceEquals($s, $t)) { $already = $true; break } }
+        if (-not $already) { $seen.Add($t) }
+    }
+    return $seen.ToArray()
 }
 
 function Get-HTRowTarget {
@@ -4952,7 +5332,7 @@ function Get-HTRowTarget {
 function Invoke-HTRowAction {
     <#
         Operacja dla zaznaczonych wierszy wyników (menu kontekstowe): -Action { param($row) } zwraca opis wyniku.
-        Po zakończeniu opcjonalnie odświeża widok (-Refresh { param($m) }).
+        Po zakończeniu opcjonalnie odświeża widok (-Refresh { param($m) }). Potwierdzenie jak w Invoke-HTTargetAction.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Module,
@@ -4961,6 +5341,8 @@ function Invoke-HTRowAction {
         [Parameter(Mandatory)][scriptblock]$Action,
         [scriptblock]$Label,
         [string]$Confirm = '',
+        [string[]]$Summary = @(),
+        [switch]$NoConfirm,
         [switch]$Danger,
         [string]$TypeToConfirm = '',
         [scriptblock]$Refresh,
@@ -4973,12 +5355,15 @@ function Invoke-HTRowAction {
     if ($Rows.Count -eq 0) { return }
     if (-not $Label) { $Label = { param($r) foreach ($n in 'Nazwa', 'Obiekt', 'Adres', 'UPN', 'Użytkownik', 'Temat', 'Grupa', 'Rola', 'Wartość') { $v = Get-HTObjectValue $r $n; if ($v) { return [string]$v } }; return [string]$r } }
     $labels = @($Rows | ForEach-Object { [string](& $Label $_) })
-    if ($Confirm -and -not (Show-HTConfirm -Message $Confirm -Title $Name -Items $labels -Danger:$Danger -Warning:(-not $Danger) -TypeToConfirm $TypeToConfirm)) { return }
+    if (-not $NoConfirm -and -not (Confirm-HTChange -Name $Name -Labels $labels -Confirm $Confirm -Summary $Summary -Danger:$Danger -TypeToConfirm $TypeToConfirm)) { return }
     Set-HTBusy -Busy $true -Text "$Name…"
+    if ($Rows.Count -gt 1) { Start-HTStoppable }
     $ok = 0
     $errors = New-Object System.Collections.Generic.List[string]
+    $stoppedAt = -1
     try {
         for ($i = 0; $i -lt $Rows.Count; $i++) {
+            if ($Rows.Count -gt 1 -and (Test-HTStopRequested)) { $stoppedAt = $i; break }
             if ($Rows.Count -gt 1) { Set-HTProgress -Value ($i + 1) -Maximum $Rows.Count -Text "$Name [$($i + 1)/$($Rows.Count)] $($labels[$i])" }
             try {
                 $detail = & $Action $Rows[$i]
@@ -4994,8 +5379,18 @@ function Invoke-HTRowAction {
             }
         }
     }
-    finally { Set-HTBusy -Busy $false -Text "$Name - wykonano: $ok, błędy: $($errors.Count)" }
-    if ($errors.Count -gt 0) { Show-HTWarning -Title $Name -Text ("Wykonano: $ok, błędy: $($errors.Count)`n`n" + (($errors | Select-Object -First 30) -join "`n")) }
+    finally {
+        if ($Rows.Count -gt 1) { Stop-HTStoppable }
+        Set-HTBusy -Busy $false -Text "$Name - wykonano: $ok, błędy: $($errors.Count)$(if ($stoppedAt -ge 0) { ", przerwano - pominięto: $($Rows.Count - $stoppedAt)" })"
+    }
+    $stopNote = ''
+    if ($stoppedAt -ge 0) {
+        $skipped = @($labels | Select-Object -Skip $stoppedAt)
+        $stopNote = "`n`nPrzerwano - pominięto ($($skipped.Count)): $(@($skipped | Select-Object -First 15) -join ', ')$(if ($skipped.Count -gt 15) { ' …' })"
+        Write-Log -Message "Przerwano: $Name - wykonano: $ok, pominięto: $($skipped.Count) ($(@($skipped | Select-Object -First 10) -join ', ')$(if ($skipped.Count -gt 10) { ' …' }))" -Type 'Warn'
+    }
+    if ($errors.Count -gt 0) { Show-HTWarning -Title $Name -Text ("Wykonano: $ok, błędy: $($errors.Count)`n`n" + (($errors | Select-Object -First 30) -join "`n") + $stopNote) }
+    elseif ($stoppedAt -ge 0) { Show-HTToast "$Name - przerwano. Wykonano: $ok, pominięto: $($Rows.Count - $stoppedAt)." 'warn' }
     else { Show-HTToast "$Name - wykonano: $ok." 'ok' }
     if ($Refresh -and $ok -gt 0) { Invoke-HTUiAction -Module $Module -Action $Refresh }
 }
@@ -6293,12 +6688,41 @@ function Write-HTForwardedLog {
 }
 
 function Set-HTCancelVisible([bool]$Visible) {
+    # «Przerwij» na pasku stanu i obok wskaźnika pracy w nagłówku modułu
+    $state = if ($Visible) { 'Visible' } else { 'Collapsed' }
     $b = $script:UI.Controls['btnCancelOps']
-    if ($b) { $b.Visibility = if ($Visible) { 'Visible' } else { 'Collapsed' } }
+    if ($b) { $b.Visibility = $state }
+    $m = $script:UI.ActiveModule
+    if ($m -and $m.View_ -and $m.View_['btnBusyStop']) { $m.View_.btnBusyStop.Visibility = $state }
+}
+
+function Start-HTStoppable {
+    # Operacja na wielu obiektach w wątku okna: «Przerwij» (albo Esc) zatrzymuje ją po bieżącym obiekcie
+    $script:UI.StoppableDepth = [int]$script:UI.StoppableDepth + 1
+    if ($script:UI.StoppableDepth -eq 1) { $script:UI.StopRequested = $false }
+    Set-HTCancelVisible $true
+}
+
+function Stop-HTStoppable {
+    $script:UI.StoppableDepth = [Math]::Max(0, [int]$script:UI.StoppableDepth - 1)
+    if ($script:UI.StoppableDepth -eq 0) {
+        $script:UI.StopRequested = $false
+        if (-not $script:Background.Current) { Set-HTCancelVisible $false }
+    }
+}
+
+function Test-HTStopRequested {
+    # Czy użytkownik kliknął «Przerwij» w trakcie operacji na wielu obiektach
+    return ([bool]$script:UI.StopRequested -and [int]$script:UI.StoppableDepth -gt 0)
 }
 
 function Stop-HTBackground {
-    # «Przerwij» na pasku stanu: zatrzymanie bieżącego zapytania w tle
+    # «Przerwij» (pasek stanu, nagłówek modułu, Esc): zapytanie w tle - od razu; operacja na wielu obiektach - po bieżącym obiekcie
+    if ([int]$script:UI.StoppableDepth -gt 0 -and -not $script:UI.StopRequested) {
+        $script:UI.StopRequested = $true
+        Write-Log -Message 'Przerywanie operacji - zatrzyma się po bieżącym obiekcie…' -Type 'Info'
+        Set-HTStatus -Text 'Przerywanie… (po bieżącym obiekcie)'
+    }
     $ps = $script:Background.Current
     if (-not $ps) { return }
     Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
@@ -6365,10 +6789,12 @@ function Invoke-HTBackground {
         . $drain
         if ("$($ps.InvocationStateInfo.State)" -eq 'Stopped') { throw (New-Object System.OperationCanceledException("Przerwano: $Name")) }
         foreach ($err in @($ps.Streams.Error)) { Write-Log -Message "$($Name): $($err.Exception.Message)" -Type 'Warn' }
+        # Ostrzeżenia poleceń z wątku w tle - do dziennika (bez powtórzeń)
+        foreach ($line in @(Group-HTWarningMessages -Messages @($ps.Streams.Warning | ForEach-Object { $_.Message }))) { Write-Log -Message "Ostrzeżenie ($Name): $line" -Type 'Warn' }
     }
     finally {
         $bg.Current = $previous
-        if (-not $previous) { Set-HTCancelVisible $false }
+        if (-not $previous -and -not [int]$script:UI.StoppableDepth) { Set-HTCancelVisible $false }
         $ps.Dispose()
     }
     if (-not $OnItem) { return $results.ToArray() }

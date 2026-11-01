@@ -116,10 +116,60 @@ Describe "Rename-HTIntuneDevice" {
 }
 
 Describe "Get-HTSkuFriendlyName" {
+    BeforeAll {
+        $Global:HTTestLicensePath = Join-Path $TestDrive 'brak\LicenseNames.json'
+        Mock -ModuleName GraphAPIM365Users Get-HTLicenseCatalogPath { $Global:HTTestLicensePath }
+        [void](Get-HTLicenseCatalog -Refresh -NoDownload)
+    }
     It "zwraca nazwę handlową znanej licencji i SKU dla nieznanej" {
         Get-HTSkuFriendlyName "SPB" | Should -Be "Microsoft 365 Business Premium"
         Get-HTSkuFriendlyName "NIEZNANA_SKU" | Should -Be "NIEZNANA_SKU"
         Get-HTSkuFriendlyName "" | Should -Be ""
+    }
+}
+
+Describe "Nazwy licencji z oficjalnej listy Microsoft" {
+    BeforeAll {
+        $Global:HTTestLicensePath = Join-Path $TestDrive 'licencje\LicenseNames.json'
+        Mock -ModuleName GraphAPIM365Users Get-HTLicenseCatalogPath { $Global:HTTestLicensePath }
+        $Global:HTTestLicenseRows = @(
+            [PSCustomObject]@{ Product_Display_Name = 'Microsoft 365 E5 Developer (without Windows and Audio Conferencing)'; String_Id = 'DEVELOPERPACK_E5'; GUID = 'c42b9cae-ea4f-4ab7-9717-81576235ccac'; Service_Plan_Name = 'EXCHANGE_S_ENTERPRISE'; Service_Plan_Id = 'efb87545-963c-4e0d-99df-69c6916d9eb0'; Service_Plans_Included_Friendly_Names = 'Exchange Online (Plan 2)' }
+            [PSCustomObject]@{ Product_Display_Name = 'Microsoft 365 E5 Developer (without Windows and Audio Conferencing)'; String_Id = 'DEVELOPERPACK_E5'; GUID = 'c42b9cae-ea4f-4ab7-9717-81576235ccac'; Service_Plan_Name = 'TEAMS1'; Service_Plan_Id = '57ff2da0-773e-42df-b2af-ffb7a2317929'; Service_Plans_Included_Friendly_Names = 'Microsoft Teams' }
+            [PSCustomObject]@{ Product_Display_Name = 'Rights Management Adhoc'; String_Id = 'RIGHTSMANAGEMENT_ADHOC'; GUID = '8c4ce438-32a7-4ac5-91a6-e22ae08d9c8b'; Service_Plan_Name = 'RMS_S_ADHOC'; Service_Plan_Id = '7a39d7dd-e456-4e09-842a-0204ee08187b'; Service_Plans_Included_Friendly_Names = 'Rights Management Adhoc' }
+            [PSCustomObject]@{ Product_Display_Name = ''; String_Id = ''; GUID = ''; Service_Plan_Name = ''; Service_Plan_Id = ''; Service_Plans_Included_Friendly_Names = '' }
+        )
+        # Pobranie listy: atrapa zapisuje CSV z ponad 50 licencjami (mniejszy plik program odrzuca jako błędny)
+        $Global:HTTestLicenseCsv = @($Global:HTTestLicenseRows) + @(1..60 | ForEach-Object { [PSCustomObject]@{ Product_Display_Name = "Produkt $_"; String_Id = "SKU_$_"; GUID = [guid]::NewGuid().ToString(); Service_Plan_Name = "PLAN_$_"; Service_Plan_Id = [guid]::NewGuid().ToString(); Service_Plans_Included_Friendly_Names = "Plan $_" } })
+        Mock -ModuleName GraphAPIM365Users Invoke-WebRequest { $Global:HTTestLicenseCsv | Export-Csv -LiteralPath $OutFile -NoTypeInformation -Encoding utf8 }
+    }
+    It "zamienia wiersze CSV na słowniki licencji i planów usług (pierwsza nazwa wygrywa, puste pomijane)" {
+        $c = ConvertFrom-HTLicenseCatalogCsv -Rows $Global:HTTestLicenseRows
+        $c.Products.Count | Should -Be 2
+        $c.Products['DEVELOPERPACK_E5'] | Should -Be 'Microsoft 365 E5 Developer (without Windows and Audio Conferencing)'
+        $c.Plans['TEAMS1'] | Should -Be 'Microsoft Teams'
+        $c.Plans.Count | Should -Be 3
+        $c.Updated | Should -Not -BeNullOrEmpty
+    }
+    It "pobiera listę, zapisuje plik i używa go do nazw: polska nazwa > lista Microsoft > kod SKU" {
+        $catalog = Get-HTLicenseCatalog -Refresh
+        $catalog.Products.Count | Should -Be 62
+        Test-Path -LiteralPath $Global:HTTestLicensePath | Should -BeTrue
+        Should -Invoke -ModuleName GraphAPIM365Users Invoke-WebRequest -Times 1 -Exactly
+        Get-HTSkuFriendlyName 'DEVELOPERPACK_E5' | Should -Be 'Microsoft 365 E5 Developer (bez Windows i Audio Conferencing)'
+        Get-HTSkuFriendlyName 'RIGHTSMANAGEMENT_ADHOC' | Should -Be 'Rights Management Adhoc'
+        Get-HTSkuFriendlyName 'SKU_7' | Should -Be 'Produkt 7'
+        Get-HTSkuFriendlyName 'CALKIEM_NOWA' | Should -Be 'CALKIEM_NOWA'
+        @(Get-HTServicePlanNames -ServicePlans @('TEAMS1', 'EXCHANGE_S_ENTERPRISE', 'NIEZNANY_PLAN')) | Should -Be @('Exchange Online (Plan 2)', 'Microsoft Teams', 'NIEZNANY_PLAN')
+    }
+    It "odczytuje zapisaną listę bez pobierania (świeża lista)" {
+        $catalog = Get-HTLicenseCatalog -Refresh -NoDownload
+        $catalog.Products['SKU_1'] | Should -Be 'Produkt 1'
+        Should -Invoke -ModuleName GraphAPIM365Users Invoke-WebRequest -Times 0 -Exactly
+    }
+    It "opisuje zawartość licencji z planów usług" {
+        Get-HTSkuDescription -ServicePlans @('TEAMS1', 'EXCHANGE_S_ENTERPRISE', 'SHAREPOINTENTERPRISE', 'OFFICESUBSCRIPTION', 'INTUNE_A', 'AAD_PREMIUM') | Should -Be 'poczta Exchange, SharePoint i OneDrive, Teams, aplikacje Office na komputer, Intune, Entra ID P1'
+        Get-HTSkuDescription -ServicePlans @('POWERAPPS_DEV', 'FLOW_DEV', 'DYN365_CDS_DEV_VIRAL') | Should -Be 'Power Apps, Power Automate, Dynamics 365'
+        Get-HTSkuDescription -ServicePlans @() | Should -Be ''
     }
 }
 

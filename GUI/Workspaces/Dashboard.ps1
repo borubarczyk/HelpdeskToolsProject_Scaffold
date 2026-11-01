@@ -40,8 +40,42 @@ Register-HTModule -Workspace 'Dashboard' -Category 'Przegląd' -Key 'dash.overvi
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Odśwież' -Icon 'E72C' -Primary -OnClick { param($m) Update-HTDashboard -Module $m } | Out-Null
     Add-HTLabel -Parent $row -Hint -Text 'Połącz usługi przyciskami w prawym górnym rogu - pulpit pokaże dane z każdej połączonej usługi.' | Out-Null
+    # Ulubione moduły - szybkie przejście z pulpitu (odświeżane przy każdym otwarciu pulpitu)
+    $m.C.Favorites = Add-HTToolbarRow -Module $m -Title 'Ulubione'
     $m.EmptyText = 'Brak danych'
-    $m.OnShow = { param($m) if (-not $m.Data.Updated) { Update-HTDashboard -Module $m } }
+    $m.OnShow = {
+        param($m)
+        Update-HTDashboardFavorites -Module $m
+        if (-not $m.Data.Updated) { Update-HTDashboard -Module $m }
+    }
+}
+
+function Update-HTDashboardFavorites {
+    # Przyciski ulubionych modułów na pulpicie (gwiazdka: prawy przycisk na module w nawigacji > «Dodaj do ulubionych»)
+    param([Parameter(Mandatory)][hashtable]$Module)
+    $panel = $Module.C.Favorites
+    if (-not $panel) { return }
+    $panel.Children.Clear()
+    $keys = @((Get-HTUiState).Favorites | Where-Object { $_ })
+    $added = 0
+    foreach ($key in $keys) {
+        $definition = Get-HTModuleDefinition $key
+        if (-not $definition -or -not (Test-HTModuleAllowed $key)) { continue }
+        $b = New-HTButton -Text $definition.Title -Icon $definition.Icon -ToolTip $(if ($definition.Description) { $definition.Description } else { $definition.Title })
+        $b.Margin = '0,0,8,6'
+        $b.Tag = $key
+        $b.add_Click({ param($s, $e) Invoke-HTUiAction -Module $null -Action { param($m, $k) Show-HTModule -Key $k } -Source ([string]$s.Tag) })
+        [void]$panel.Children.Add($b)
+        $added++
+    }
+    if ($added -eq 0) {
+        $hint = New-Object System.Windows.Controls.TextBlock
+        $hint.Text = 'Brak ulubionych - prawy przycisk na module w nawigacji > «Dodaj do ulubionych». Ulubione są też na początku palety Ctrl+K.'
+        $hint.Foreground = Get-HTBrush '#7B8496'
+        $hint.TextWrapping = 'Wrap'
+        $hint.Margin = '0,4,0,6'
+        [void]$panel.Children.Add($hint)
+    }
 }
 
 Register-HTModule -Workspace 'Dashboard' -Category 'Microsoft 365' -Key 'dash.licenses' -Title 'Licencje' -Icon 'E8EC' -Service 'Graph' `
@@ -50,21 +84,32 @@ Register-HTModule -Workspace 'Dashboard' -Category 'Microsoft 365' -Key 'dash.li
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pobierz licencje' -Icon 'E72C' -Primary -OnClick {
         param($m)
+        # Oficjalne nazwy licencji Microsoft (pobierane raz na 30 dni, potem z pliku)
+        [void](Get-HTLicenseCatalog)
         Invoke-HTQuery -Module $m -Name 'Licencje' -ScriptBlock {
             foreach ($sku in @(Get-HTSubscribedSkus -Force | Sort-Object SkuPartNumber)) {
                 [PSCustomObject]@{
                     Licencja    = Get-HTSkuFriendlyName $sku.SkuPartNumber
+                    'Co zawiera' = Get-HTSkuDescription -ServicePlans @($sku.ServicePlans)
                     SKU         = $sku.SkuPartNumber
                     Zakupione   = $sku.Enabled
                     Przypisane  = $sku.Consumed
                     Dostępne    = $sku.Available
                     Stan        = $sku.Status
                     SkuId       = "$($sku.SkuId)"
+                    'Plany usług' = (@(Get-HTServicePlanNames -ServicePlans @($sku.ServicePlans)) -join "`n")
                     __flag      = if ($sku.Status -ne 'Enabled') { 'muted' } elseif ($sku.Enabled -gt 0 -and $sku.Available -le 0) { 'warn' } else { '' }
                 }
             }
         }
     } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Odśwież nazwy licencji' -Icon 'E895' -ToolTip 'Pobierz aktualną listę nazw licencji Microsoft (download.microsoft.com)' -OnClick {
+        param($m)
+        Set-HTBusy -Busy $true -Text 'Pobieranie listy nazw licencji…'
+        try { $catalog = Get-HTLicenseCatalog -Refresh } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        if ($catalog) { Show-HTToast "Lista nazw licencji: $($catalog.Products.Count) pozycji." 'ok'; Invoke-HTModulePrimary $m }
+    } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Dwuklik na licencji - pełna lista planów usług. Nazwy z oficjalnej listy Microsoft, najpopularniejsze po polsku.' | Out-Null
     Add-HTRowAction -Module $m -Text 'Pokaż użytkowników z licencją' -Icon 'E716' -Action {
         param($m, $rows)
         $sku = @($rows)[0]

@@ -73,7 +73,7 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.edit' -Title 'D
             elseif ($new) { $changes[$k] = $new }
         }
         if ($changes.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
-        Invoke-HTTargetAction -Module $m -Name 'Zmiana danych kontaktowych' -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Zmiana danych kontaktowych' -Summary @(ConvertTo-HTChangeSummary -Settings $changes) -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
             Set-HTM365UserContact -Id $t.Id -Properties $changes
             "Zmieniono: $(@($changes.Keys) -join ', ')"
@@ -99,7 +99,7 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.manager' -Title
         if ($targets.Count -eq 0) { return }
         $manager = Select-HTM365User -Title 'Przełożony' -Prompt "Przełożony dla: $($targets.Count) kont."
         if (-not $manager) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Ustawienie przełożonego' -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Ustawienie przełożonego' -Summary "Przełożony: $(Get-HTM365Label $manager)" -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
             $previous = Get-HTM365UserManager -Id $t.Id
             Set-HTM365UserManager -Id $t.Id -ManagerId $manager.Id
@@ -135,7 +135,14 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.devices' -Title
 Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block' -Title 'Blokada i sesje' -Icon 'E72E' `
     -Description 'Blokada logowania (z unieważnieniem sesji), odblokowanie i wylogowanie ze wszystkich urządzeń - np. przy podejrzeniu przejęcia konta.' -Build {
     param($m)
-    $row = Add-HTToolbarRow -Module $m
+    # Etapy: konta z listy po lewej -> «Sprawdź stan» -> zmiana (czerwone przyciski) na wierszach zaznaczonych w wynikach
+    $row0 = Add-HTToolbarRow -Module $m -Title 'Stan'
+    Add-HTButton -Parent $row0 -Module $m -Text 'Sprawdź stan' -Icon 'E946' -Primary -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Stan kont' -Label { param($t) Get-HTM365Label $t } -Action { param($t) Get-HTM365AccountState -Id $t.Id }
+    } | Out-Null
+    Add-HTLabel -Parent $row0 -Hint -Text 'Logowanie, ostatnie logowanie, sesje i synchronizacja z AD (konto z AD zablokuj w AD - synchronizacja nadpisze zmianę). Zaznacz wiersze, aby zmienić tylko je.' | Out-Null
+    $row = Add-HTToolbarRow -Module $m -Title 'Zmiany'
     Add-HTButton -Parent $row -Module $m -Text 'Zablokuj logowanie' -Icon 'E72E' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Blokada logowania' -Danger -Confirm 'Zablokować logowanie i unieważnić wszystkie sesje wybranych kont?' -Label { param($t) Get-HTM365Label $t } -Action {
@@ -146,7 +153,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block
             'Logowanie zablokowane, sesje unieważnione'
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Odblokuj' -Icon 'E785' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Odblokuj' -Icon 'E785' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Odblokowanie logowania' -Confirm 'Odblokować logowanie wybranych kont?' -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
@@ -156,7 +163,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block
             'Logowanie odblokowane'
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Unieważnij sesje' -Icon 'E7E8' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Unieważnij sesje' -Icon 'E7E8' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Unieważnienie sesji' -Confirm 'Wylogować wybrane konta ze wszystkich aplikacji i urządzeń?' -Label { param($t) Get-HTM365Label $t } -Action { param($t) Revoke-HTM365UserSessions -Id $t.Id; 'Sesje unieważnione' }
     } | Out-Null
@@ -295,7 +302,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
         $names = @($selected | ForEach-Object { $_.Licencja }) -join ', '
         $short = @($selected | Where-Object { $_.Dostępne -lt $targets.Count })
         if ($short.Count -gt 0 -and -not (Show-HTConfirm -Warning -Title 'Za mało licencji' -Message "Niewystarczająca liczba wolnych licencji: $(@($short | ForEach-Object { "$($_.Licencja) ($($_.Dostępne))" }) -join ', '). Kontynuować?")) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Przypisanie licencji' -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action { param($t) Set-HTM365UserLicense -Id $t.Id -AddSkuIds $ids; "Przypisano: $names" }
+        Invoke-HTTargetAction -Module $m -Name 'Przypisanie licencji' -Summary "Licencje do przypisania: $names" -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action { param($t) Set-HTM365UserLicense -Id $t.Id -AddSkuIds $ids; "Przypisano: $names" }
     } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Usuń licencję…' -Icon 'E738' -OnClick {
         param($m)
@@ -342,7 +349,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
         $columns = @(@{ Text = 'Nazwa'; Property = 'DisplayName' }, @{ Text = 'Typ'; Property = 'Type' }, @{ Text = 'E-mail'; Property = 'Mail' }, @{ Text = 'Opis'; Property = 'Description' })
         $selected = @(Show-HTSelectionDialog -Title 'Dodaj do grup' -Prompt "Grupy dla $($targets.Count) kont (bez dynamicznych i synchronizowanych z AD)." -Items $groups -Columns $columns -MultiSelect -Icon 'E902')
         if ($selected.Count -eq 0) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Dodanie do grup' -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Dodanie do grup' -Summary "Grupy ($($selected.Count)): $(@($selected | ForEach-Object { $_.DisplayName }) -join ', ')" -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
             $done = foreach ($g in $selected) { Add-HTM365UserToGroup -Group $g -User $t; $g.DisplayName }
             "Dodano do: $(@($done) -join ', ')"
@@ -357,8 +364,8 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
         Set-HTBusy -Busy $true -Text 'Pobieranie grup wzorca…'
         try { $groups = @(Get-HTM365UserGroups -Id $source.Id | Where-Object { Test-HTM365GroupManageable -Group $_ }) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         if ($groups.Count -eq 0) { Show-HTMessage -Text 'Użytkownik wzorcowy nie należy do grup, którymi można zarządzać.'; return }
-        if (-not (Show-HTConfirm -Title 'Kopiowanie grup' -Message "Dodać $($targets.Count) kont do $($groups.Count) grup użytkownika $($source.DisplayName)?" -Items @($groups | ForEach-Object { $_.DisplayName }))) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Kopiowanie grup' -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Kopiowanie grup' -Confirm "Dodać konta do grup użytkownika wzorcowego $($source.DisplayName)?" `
+            -Summary @("Wzorzec: $(Get-HTM365Label $source)", "Grupy ($($groups.Count)): $(@($groups | ForEach-Object { $_.DisplayName }) -join ', ')") -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
             $current = @(Get-HTM365UserGroups -Id $t.Id | ForEach-Object { $_.Id })
             $added = 0
@@ -417,6 +424,8 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Tit
         $upn = "$login@$($form.Domain)"
         $template = if ($form.CopyGroups) { Select-HTM365User -Title 'Użytkownik wzorcowy' -Prompt 'Nowe konto otrzyma jego grupy.' } else { $null }
         $sku = if ($form.Sku -and $form.Sku -ne '(bez licencji)') { $skus[[array]::IndexOf($skuOptions, $form.Sku) - 1] } else { $null }
+        $extra = @(if ($template) { "Grupy z konta wzorcowego: $(Get-HTM365Label $template)" })
+        if (-not (Confirm-HTChange -Name 'Tworzenie użytkownika' -Labels @($upn) -Summary (@(Get-HTPendingFormSummary) + $extra) -Confirm "Utworzyć konto $($upn)? Hasło zostanie wygenerowane.")) { return }
         Invoke-HTQuery -Module $m -Name 'Tworzenie użytkownika' -KeepResults -ScriptBlock {
             $password = New-HTRandomPassword
             $user = New-HTM365User -DisplayName "$($form.Given) $($form.Surname)" -UserPrincipalName $upn -Password $password -GivenName $form.Given -Surname $form.Surname `
@@ -489,7 +498,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
         if ($o.Manager) { $steps += 'usunięcie przełożonego' }
         if ($o.Licenses) { $steps += 'usunięcie licencji' }
         if ($steps.Count -eq 0) { Show-HTWarning 'Wybierz co najmniej jeden krok.'; return }
-        if (-not (Show-HTConfirm -Danger -Title 'Offboarding' -Message "Kroki: $($steps -join ', ').`n`nKonta:" -Items @($targets | ForEach-Object { Get-HTM365Label $_ }) -TypeToConfirm 'OFFBOARDING')) { return }
+        if (-not (Confirm-HTChange -Danger -Name 'Offboarding' -Confirm 'Wykonać wybrane kroki dla kont?' -Summary $steps -Labels @($targets | ForEach-Object { Get-HTM365Label $_ }) -TypeToConfirm 'OFFBOARDING')) { return }
         $exo = [bool]$Global:ConnectedToExchange
         $adminConnection = $null
         if ($o.OneDrive) {
@@ -601,6 +610,56 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.deleted' 
         Invoke-HTRowAction -Module $m -Name 'Trwałe usunięcie' -Rows $rows -Danger -TypeToConfirm 'USUŃ' -Confirm 'Trwale usunąć zaznaczone konta? Operacji nie można cofnąć.' -Action { param($r) Remove-HTM365DeletedUser -Id $r.Id } `
             -Refresh { param($m) Invoke-HTQuery -Module $m -Name 'Usunięci użytkownicy' -ScriptBlock { Get-HTM365DeletedUsers } }
     }
+}
+#endregion
+
+#region Akcje na kontach z dowolnych wyników (prawy przycisk > «Konto Microsoft 365»)
+function ConvertTo-HTGraphUserKey {
+    # UPN gościa (z #EXT#) w adresie zapytania Graph
+    param([string]$Id)
+    return ($Id -replace '#', '%23')
+}
+
+Register-HTObjectKind -Kind 'M365User' -Title 'Konto Microsoft 365' -Icon 'E77B' -Service 'Graph' -Workspaces @('Dashboard', 'M365', 'Security', 'Exchange', 'Intune', 'Sites', 'SharePoint', 'Tasks') -Resolve {
+    param($o)
+    foreach ($n in 'UPN', 'UserPrincipalName', 'Konto', 'Użytkownik') {
+        $p = $o.PSObject.Properties[$n]
+        if ($p -and "$($p.Value)" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { return "$($p.Value)" }
+    }
+    $p = $o.PSObject.Properties['UserId']
+    if ($p -and "$($p.Value)" -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { return "$($p.Value)" }
+    return $null
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Szczegóły konta' -Icon 'E8A1' -View -Action {
+    param($Id, $Row)
+    Set-HTBusy -Busy $true -Text "Szczegóły konta $Id…"
+    try { $rows = @(ConvertTo-HTDetailRows -Data (Get-HTM365UserDetail -Id (ConvertTo-HTGraphUserKey $Id))) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    Show-HTDataViewer -Title "Konto: $Id" -Data $rows -ExportName "konto_$Id" -Icon 'E77B'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Stan konta (logowanie, sesje)' -Icon 'E946' -View -Action {
+    param($Id, $Row)
+    Set-HTBusy -Busy $true -Text "Stan konta $Id…"
+    try { $state = Get-HTM365AccountState -Id (ConvertTo-HTGraphUserKey $Id) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    Show-HTDataViewer -Title "Stan konta: $Id" -Data @($state) -ExportName "stan_$Id" -Icon 'E946'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Zablokuj logowanie' -Icon 'E72E' -Danger -Name 'Blokada logowania' -Confirm 'Zablokować logowanie i unieważnić wszystkie sesje zaznaczonych kont?' -Action {
+    param($Id, $Row)
+    $key = ConvertTo-HTGraphUserKey $Id
+    Set-HTM365UserEnabled -Id $key -Enabled $false -RevokeSessions $true
+    Register-HTUndo -Operation 'Blokada logowania' -Object $Id -Kind 'UserEnabled' -Data @{ UserId = $key; Enabled = $true }
+    'Logowanie zablokowane, sesje unieważnione'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Odblokuj logowanie' -Icon 'E785' -Danger -Name 'Odblokowanie logowania' -Confirm 'Odblokować logowanie zaznaczonych kont?' -Action {
+    param($Id, $Row)
+    $key = ConvertTo-HTGraphUserKey $Id
+    Set-HTM365UserEnabled -Id $key -Enabled $true
+    Register-HTUndo -Operation 'Odblokowanie logowania' -Object $Id -Kind 'UserEnabled' -Data @{ UserId = $key; Enabled = $false }
+    'Logowanie odblokowane'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Unieważnij sesje' -Icon 'E7E8' -Danger -Name 'Unieważnienie sesji' -Confirm 'Wylogować zaznaczone konta ze wszystkich aplikacji i urządzeń?' -Action {
+    param($Id, $Row)
+    Revoke-HTM365UserSessions -Id (ConvertTo-HTGraphUserKey $Id)
+    'Sesje unieważnione'
 }
 #endregion
 
@@ -723,7 +782,7 @@ function New-HTUserCardFile {
     else { $sections['Skrzynka Exchange'] = [ordered]@{ Stan = 'Połącz z Exchange Online, aby dołączyć dane skrzynki.' } }
     try {
         $devices = @(Get-HTM365UserDevices -Id $User.Id)
-        $tables += @{ Title = 'Urządzenia (Intune i Entra ID)'; Columns = @('Źródło', 'Nazwa', 'System', 'Zgodność', 'Model', 'NumerSeryjny', 'OstatniaAktywność'); Rows = @($devices | ForEach-Object { ConvertTo-HTCardDictionary $_ }) }
+        $tables += @{ Title = 'Urządzenia (Intune i Entra ID)'; Columns = @('Źródło', 'Nazwa', 'System', 'Zgodność', 'Model', 'Numer seryjny', 'Ostatnia aktywność'); Rows = @($devices | ForEach-Object { ConvertTo-HTCardDictionary $_ }) }
         if (@($devices | Where-Object { $_.Zgodność -eq 'noncompliant' }).Count) { $chips += @{ Text = 'urządzenie niezgodne'; Tone = 'warn' } }
     }
     catch { Write-Log -Message "Wizytówka - urządzenia: $($_.Exception.Message)" -Type 'Warn' }
@@ -886,7 +945,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
         param($m, $rows)
         $loc = Show-InputBox -Title 'Lokalizacja użycia' -Prompt 'Dwuliterowy kod kraju (np. PL) dla zaznaczonych kont:' -DefaultText $(if ($Global:DefaultUsageLocation) { $Global:DefaultUsageLocation } else { 'PL' }) -Icon 'E909'
         if (-not $loc -or $loc -notmatch '^[A-Za-z]{2}$') { return }
-        Invoke-HTRowAction -Module $m -Name 'Lokalizacja użycia' -Rows $rows -Label { param($r) $r.UPN } -Action {
+        Invoke-HTRowAction -Module $m -Name 'Lokalizacja użycia' -Summary "Lokalizacja użycia: $($loc.ToUpperInvariant())" -Rows $rows -Label { param($r) $r.UPN } -Action {
             param($r)
             Invoke-HTGraphRequest -Uri "users/$($r.Id)" -Method PATCH -Body @{ usageLocation = $loc.ToUpperInvariant() } | Out-Null
             Invoke-HTLicenseReprocess -UserId $r.Id
@@ -936,7 +995,7 @@ Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title '
         param($m, $rows)
         $owner = Select-HTM365User -Title 'Nowy właściciel' -Prompt "Właściciel dla zespołów: $($rows.Count)."
         if (-not $owner) { return }
-        Invoke-HTRowAction -Module $m -Name 'Dodanie właściciela zespołu' -Rows $rows -Label { param($r) $r.Zespół } -Action { param($r) Add-HTTeamOwner -GroupId $r.Id -UserId $owner.Id; "Właściciel: $(Get-HTM365Label $owner)" }
+        Invoke-HTRowAction -Module $m -Name 'Dodanie właściciela zespołu' -Summary "Nowy właściciel: $(Get-HTM365Label $owner)" -Rows $rows -Label { param($r) $r.Zespół } -Action { param($r) Add-HTTeamOwner -GroupId $r.Id -UserId $owner.Id; "Właściciel: $(Get-HTM365Label $owner)" }
     }
     Add-HTRowAction -Module $m -Text 'Archiwizuj zespół' -Icon 'E7B8' -Action {
         param($m, $rows)
@@ -1004,7 +1063,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.bulk' -Ti
         $valid = @($m.Data.Bulk | Where-Object { $_.Valid })
         if (-not $valid.Count) { Show-HTWarning 'Najpierw wczytaj i sprawdź plik CSV (brak poprawnych wierszy).'; return }
         if (-not (Assert-HTWriteAllowed -Operation 'Masowe tworzenie kont')) { return }
-        if (-not (Show-HTConfirm -Title 'Masowe tworzenie kont' -ConfirmText 'Utwórz konta' -Message "Utworzyć kont: $($valid.Count)? Hasła zostaną wygenerowane (zmiana przy pierwszym logowaniu) i pokazane w kolumnie «Hasło» (przycisk «Pokaż poufne»)." -Items @($valid | ForEach-Object { $_.Upn }))) { return }
+        if (-not (Confirm-HTChange -Name 'Masowe tworzenie kont' -Confirm "Utworzyć kont: $($valid.Count)? Hasła zostaną wygenerowane (zmiana przy pierwszym logowaniu) i pokazane w kolumnie «Hasło» (przycisk «Pokaż poufne»)." -Labels @($valid | ForEach-Object { $_.Upn }))) { return }
         $groupCache = @{}
         $skuMap = @{}
         foreach ($s in @(Get-HTSubscribedSkus)) { $skuMap[$s.SkuPartNumber.ToUpperInvariant()] = "$($s.SkuId)" }
@@ -1087,10 +1146,12 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.onedrive'
         if (-not (Assert-HTWriteAllowed -Operation 'Dostęp do OneDrive')) { return }
         $grantTo = $m.C.GrantTo.Text.Trim()
         $days = Get-HTNum $m.C.Days
-        if (-not (Show-HTConfirm -Title 'OneDrive odchodzącego' -ConfirmText 'Nadaj dostęp' -Message "Nadać $(if ($grantTo) { $grantTo } else { 'przełożonym' }) rolę administratora OneDrive$(if ($days -gt 0) { " (odebranie za $days dni)" })? Wymaga roli SharePoint Administrator." -Items @($targets | ForEach-Object { Get-HTM365Label $_ }))) { return }
+        # Potwierdzenie przed połączeniem z centrum administracyjnym SharePoint (zmiany poniżej już bez pytania)
+        $summary = @("Administrator OneDrive: $(if ($grantTo) { $grantTo } else { 'przełożony każdego konta' })", "Odebranie dostępu: $(if ($days -gt 0) { "za $days dni" } else { 'nie (ręcznie)' })")
+        if (-not (Confirm-HTChange -Name 'Dostęp do OneDrive' -Labels @($targets | ForEach-Object { Get-HTM365Label $_ }) -Summary $summary -Confirm 'Nadać rolę administratora OneDrive kont odchodzących? Wymaga roli SharePoint Administrator.')) { return }
         try { $admin = Connect-HTPnPReturn -Url (Get-HTSharePointAdminUrl) }
         catch { Show-HTError 'Nie połączono z centrum administracyjnym SharePoint.' $_; return }
-        Invoke-HTTargetAction -Module $m -Name 'Dostęp do OneDrive' -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Dostęp do OneDrive' -NoConfirm -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
             $who = $grantTo
             if (-not $who) {

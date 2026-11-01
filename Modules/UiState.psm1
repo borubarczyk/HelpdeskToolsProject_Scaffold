@@ -79,6 +79,18 @@ function Set-HTFavoriteModule {
     Save-HTUiState
 }
 
+# Zwinięte kategorie nawigacji (klucz: przestrzeń|kategoria)
+function Test-HTNavCategoryCollapsed([string]$Key) { return (@((Get-HTUiState)['CollapsedCategories']) -contains $Key) }
+
+function Set-HTNavCategoryCollapsed {
+    param ([Parameter(Mandatory)][string]$Key, [bool]$Collapsed = $true)
+    $state = Get-HTUiState
+    $list = @(@($state['CollapsedCategories']) | Where-Object { $_ -and $_ -ne $Key })
+    if ($Collapsed) { $list += $Key }
+    $state['CollapsedCategories'] = $list
+    Save-HTUiState
+}
+
 function Add-HTRecentModule {
     # Moduł na początek listy ostatnio otwieranych (bez zapisu przy każdym otwarciu tego samego modułu)
     param ([Parameter(Mandatory)][string]$Key, [string]$Workspace = '')

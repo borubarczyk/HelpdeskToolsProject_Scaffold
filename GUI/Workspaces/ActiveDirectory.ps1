@@ -109,7 +109,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Konto' -Key 'adu.edit' -Title 
             }
         }
         if ($changes.Count -eq 0) { Show-HTToast 'Brak zmian.' 'info'; return }
-        Invoke-HTTargetAction -Module $m -Name 'Zmiana atrybutów' -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADUserAttributes -Identity $t.ObjectGUID -Attributes $changes; "Zmieniono: $(@($changes.Keys) -join ', ')" }
+        Invoke-HTTargetAction -Module $m -Name 'Zmiana atrybutów' -Summary @(ConvertTo-HTChangeSummary -Settings $changes) -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action { param($t) Set-HTADUserAttributes -Identity $t.ObjectGUID -Attributes $changes; "Zmieniono: $(@($changes.Keys) -join ', ')" }
     } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Profil i katalog domowy…' -Icon 'E8B7' -OnClick {
         param($m)
@@ -229,7 +229,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
         if ($targets.Count -eq 0) { return }
         $groups = @(Select-HTADGroups -Prompt "Grupy dla $($targets.Count) kont.")
         if ($groups.Count -eq 0) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Dodanie do grup' -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Dodanie do grup' -Summary "Grupy ($($groups.Count)): $(@($groups | ForEach-Object { $_.Name }) -join ', ')" -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action {
             param($t)
             foreach ($g in $groups) { Add-HTADGroupMember -Group $g.DistinguishedName -Members @([string]$t.ObjectGUID) }
             "Dodano do: $(@($groups | ForEach-Object { $_.Name }) -join ', ')"
@@ -241,6 +241,8 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
         if ($targets.Count -eq 0) { return }
         $source = Select-HTADUser -Title 'Konto wzorcowe' -Prompt 'Grupy tego konta zostaną skopiowane.'
         if (-not $source) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Kopiowanie grup')) { return }
+        if (-not (Confirm-HTChange -Name 'Kopiowanie grup' -Labels @($targets | ForEach-Object { Get-HTADLabel $_ }) -Summary "Wzorzec: $(Get-HTADLabel $source) - konta zostaną dodane do jego grup" -Confirm 'Dodać konta do grup konta wzorcowego?')) { return }
         Reset-HTResults -Module $m
         Invoke-HTQuery -Module $m -Name "Kopiowanie grup od $($source.SamAccountName)" -KeepResults -ScriptBlock {
             foreach ($t in $targets) {
@@ -283,6 +285,8 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.new' -T
         if ($form.Ou -and -not $ou) { return }
         $template = if ($form.Template) { Select-HTADUser -Title 'Konto wzorcowe' } else { $null }
         if (@(Get-ADUser -Filter "SamAccountName -eq '$($login.Replace("'", "''"))'" -ErrorAction SilentlyContinue).Count -gt 0) { Show-HTWarning "Login $login jest już zajęty."; return }
+        $extra = @(if ($ou) { "OU: $($ou.Name)" }; if ($template) { "Grupy z konta wzorcowego: $(Get-HTADLabel $template)" })
+        if (-not (Confirm-HTChange -Name 'Tworzenie konta AD' -Labels @($login) -Summary (@(Get-HTPendingFormSummary) + $extra) -Confirm "Utworzyć konto $($login)? Hasło zostanie wygenerowane.")) { return }
         Invoke-HTQuery -Module $m -Name 'Tworzenie konta AD' -KeepResults -ScriptBlock {
             $password = New-HTRandomPassword
             $user = New-HTADUser -GivenName $form.Given -Surname $form.Surname -SamAccountName $login -UserPrincipalName "$login@$($form.Suffix)" -Password $password `
@@ -319,8 +323,15 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.offboar
         foreach ($k in 'Disable', 'Password', 'Groups', 'Describe', 'Move') { $o[$k] = Test-HTChecked $m.C[$k] }
         $ou = if ($o.Move) { Select-HTADOrganizationalUnit -Title 'OU kont wyłączonych' } else { $null }
         if ($o.Move -and -not $ou) { return }
-        if (-not (Show-HTConfirm -Danger -Title 'Odejście pracownika' -Message 'Wykonać wybrane kroki dla kont:' -Items @($targets | ForEach-Object { Get-HTADLabel $_ }) -TypeToConfirm 'OFFBOARDING')) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Odejście pracownika' -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action {
+        $steps = @(
+            if ($o.Disable) { 'Wyłączenie konta' }
+            if ($o.Password) { 'Losowe hasło (zmiana przy logowaniu)' }
+            if ($o.Groups) { 'Usunięcie ze wszystkich grup' }
+            if ($o.Describe) { "Opis: Wyłączone $(Get-Date -Format 'yyyy-MM-dd')" }
+            if ($ou) { "Przeniesienie do OU: $($ou.Name)" }
+        )
+        if ($steps.Count -eq 0) { Show-HTWarning 'Zaznacz co najmniej jeden krok.'; return }
+        Invoke-HTTargetAction -Module $m -Name 'Odejście pracownika' -Danger -TypeToConfirm 'OFFBOARDING' -Confirm 'Wykonać wybrane kroki dla kont?' -Summary $steps -Targets $targets -Label { param($t) Get-HTADLabel $t } -Action {
             param($t)
             $done = @()
             $result = @{}
@@ -347,7 +358,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.sync' -
         $server = $m.C.Server.Text.Trim()
         if (-not $server) { Show-HTWarning 'Podaj nazwę serwera Entra Connect (można ją zapisać w Ustawieniach).'; return }
         $type = if ((Get-HTSegmentIndex $m.C.Type) -eq 1) { 'Initial' } else { 'Delta' }
-        if ($type -eq 'Initial' -and -not (Show-HTConfirm -Warning -Message 'Pełna synchronizacja może trwać długo. Kontynuować?')) { return }
+        if (-not (Confirm-HTChange -Name 'Synchronizacja Entra Connect' -Labels @($server) -Summary "Typ synchronizacji: $type" -Confirm $(if ($type -eq 'Initial') { 'Uruchomić pełną synchronizację? Może trwać długo.' } else { 'Uruchomić synchronizację zmian (delta)?' }))) { return }
         if ($server -ne $Global:AadSyncServer) { try { Set-HTConfigValue -Name 'AadSyncServer' -Value $server; $Global:AadSyncServer = $server } catch { Write-Verbose $_ } }
         Invoke-HTQuery -Module $m -Name 'Synchronizacja Entra Connect' -Service '' -KeepResults -ScriptBlock {
             $result = Start-HTEntraConnectSync -Server $server -PolicyType $type
@@ -436,7 +447,7 @@ Register-HTModule -Workspace 'ADComputers' -Category 'Komputer' -Key 'adc.ping' 
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Sprawdź' -Icon 'E703' -Primary -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Dostępność' -Service '' -Label { param($t) $t.Name } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Dostępność' -NoConfirm -Service '' -Label { param($t) $t.Name } -Action {
             param($t)
             $r = Test-HTComputerReachable -ComputerName $(if ($t.DNSHostName) { $t.DNSHostName } else { $t.Name })
             @{ Status = $(if ($r['Odpowiada na ping']) { 'OK' } else { 'Brak odpowiedzi' }); 'Adresy IP' = $r['Adresy IP (DNS)']; Ping = $r['Odpowiada na ping']; 'Opóźnienie (ms)' = $r['Opóźnienie (ms)'] }
@@ -499,7 +510,7 @@ Register-HTModule -Workspace 'ADComputers' -Category 'Zarządzanie' -Key 'adc.ma
     Add-HTButton -Parent $row -Module $m -Text 'Ustaw opis' -Icon 'E70F' -Primary -OnClick {
         param($m)
         $text = $m.C.Description.Text.Trim()
-        Invoke-HTTargetAction -Module $m -Name 'Opis komputera' -Label { param($t) $t.Name } -Action { param($t) Set-HTADComputerDescription -Identity $t.ObjectGUID -Description $text; Update-HTADPanelObject -Panel 'adcomputers' -Object $t -Changes @{ Description = $text }; 'Zapisano' }
+        Invoke-HTTargetAction -Module $m -Name 'Opis komputera' -Summary "Opis: $(if ($text) { $text } else { '(wyczyść)' })" -Label { param($t) $t.Name } -Action { param($t) Set-HTADComputerDescription -Identity $t.ObjectGUID -Description $text; Update-HTADPanelObject -Panel 'adcomputers' -Object $t -Changes @{ Description = $text }; 'Zapisano' }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Konto'
     Add-HTButton -Parent $row2 -Module $m -Text 'Włącz' -Icon 'E73E' -OnClick {
@@ -602,7 +613,7 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Grupa' -Key 'adg.members' -Ti
         foreach ($id in $ids) { try { $resolved += Resolve-HTADObject -Identity $id } catch { $missing += "$id - $($_.Exception.Message)" } }
         if ($missing.Count -gt 0 -and -not (Show-HTConfirm -Warning -Title 'Nie znaleziono' -Message 'Części obiektów nie znaleziono. Dodać pozostałe?' -Items $missing)) { return }
         if ($resolved.Count -eq 0) { return }
-        Invoke-HTTargetAction -Module $m -Name 'Dodanie członków' -Targets $targets -Label { param($t) $t.Name } -Action {
+        Invoke-HTTargetAction -Module $m -Name 'Dodanie członków' -Summary "Nowi członkowie ($($resolved.Count)): $(@($resolved | Select-Object -First 15 | ForEach-Object { $_.Name }) -join ', ')$(if ($resolved.Count -gt 15) { ' …' })" -Targets $targets -Label { param($t) $t.Name } -Action {
             param($t)
             Add-HTADGroupMember -Group $t.DistinguishedName -Members @($resolved | ForEach-Object { $_.DistinguishedName })
             "Dodano: $(@($resolved | ForEach-Object { $_.Name }) -join ', ')"
@@ -639,6 +650,7 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Zarządzanie' -Key 'adg.manag
         if (-not $form) { return }
         $ou = Select-HTADOrganizationalUnit -Title 'OU nowej grupy'
         if (-not $ou) { return }
+        if (-not (Confirm-HTChange -Name 'Tworzenie grupy' -Labels @([string]$form.Name) -Summary (@(Get-HTPendingFormSummary) + "OU: $($ou.Name)") -Confirm "Utworzyć grupę $($form.Name)?")) { return }
         Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -ScriptBlock {
             New-HTADGroup -Name $form.Name -Category $form.Category -Scope $form.Scope -Path $ou.DistinguishedName -Description $form.Description | Out-Null
             Write-Log -Message "Utworzono grupę AD: $($form.Name)" -Type 'Info&Notification'

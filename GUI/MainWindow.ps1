@@ -165,7 +165,7 @@ $script:MainXaml = @'
         <TextBlock x:Name="txtStatus" Grid.Column="1" Text="Gotowe" Margin="10,0,0,0" Foreground="#AEB6C4" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
         <ProgressBar x:Name="prgStatus" Grid.Column="2" Width="200" Margin="12,0" VerticalAlignment="Center" Visibility="Collapsed"/>
         <Button x:Name="btnCancelOps" Grid.Column="3" Style="{StaticResource DangerButton}" MinHeight="26" Padding="10,2" Visibility="Collapsed"
-                ToolTip="Przerwij bieżące zapytanie (wyniki pobrane do tej pory pozostaną w tabeli)">
+                ToolTip="Przerwij (Esc): zapytanie w tle od razu, operację na wielu obiektach - po bieżącym obiekcie. Wyniki zostaną w tabeli.">
           <StackPanel Orientation="Horizontal">
             <TextBlock Style="{StaticResource Glyph}" Text="&#xE71A;" FontSize="11" Margin="0,0,7,0"/>
             <TextBlock Text="Przerwij" FontSize="12" VerticalAlignment="Center"/>
@@ -280,7 +280,7 @@ $script:ShellEvents = @{
                 Show-HTCommandPalette
             }
             elseif ($key -eq [System.Windows.Input.Key]::Escape -and $mods -eq $none -and $HT_UI.BusyDepth -gt 0) {
-                # Esc w czasie zapytania w tle - przerwanie (jak przycisk «Przerwij»)
+                # Esc w czasie operacji - przerwanie (jak przycisk «Przerwij»): zapytanie w tle albo pętla po obiektach
                 Stop-HTBackground
             }
             elseif ($mods -eq $ctrl -and [int]$key -ge [int][System.Windows.Input.Key]::D1 -and [int]$key -le [int][System.Windows.Input.Key]::D9) {

@@ -171,13 +171,13 @@ Register-HTModule -Workspace 'Sites' -Category 'Zawartość' -Key 'sites.files' 
             $dialog.InitialDirectory = Get-HTExportDirectory
             if ($dialog.ShowDialog($HT_UI.Window) -ne $true) { return }
             $target = $dialog.FileName
-            Invoke-HTRowAction -Module $m -Name 'Pobieranie pliku' -Rows $files -Label { param($r) $r.Nazwa } -Action { param($r) Save-HTGraphDriveItem -DriveId $r.DriveId -ItemId $r.ItemId -Path $target | Out-Null }
+            Invoke-HTRowAction -Module $m -Name 'Pobieranie pliku' -NoConfirm -Rows $files -Label { param($r) $r.Nazwa } -Action { param($r) Save-HTGraphDriveItem -DriveId $r.DriveId -ItemId $r.ItemId -Path $target | Out-Null }
             Show-HTToast "Zapisano: $target" 'ok'
             return
         }
         $folder = Join-Path (Get-HTExportDirectory) ("Pobrane_{0:yyyyMMdd_HHmmss}" -f (Get-Date))
         New-Item -ItemType Directory -Path $folder -Force | Out-Null
-        Invoke-HTRowAction -Module $m -Name 'Pobieranie plików' -Rows $files -Label { param($r) $r.Nazwa } -Action { param($r) Save-HTGraphDriveItem -DriveId $r.DriveId -ItemId $r.ItemId -Path (Join-Path $folder $r.Nazwa) | Out-Null }
+        Invoke-HTRowAction -Module $m -Name 'Pobieranie plików' -NoConfirm -Rows $files -Label { param($r) $r.Nazwa } -Action { param($r) Save-HTGraphDriveItem -DriveId $r.DriveId -ItemId $r.ItemId -Path (Join-Path $folder $r.Nazwa) | Out-Null }
         Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $folder)
     }
     Add-HTRowAction -Module $m -Text 'Kopiuj link' -Icon 'E71B' -Action {
