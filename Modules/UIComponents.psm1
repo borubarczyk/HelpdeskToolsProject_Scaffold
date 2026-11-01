@@ -1773,7 +1773,9 @@ function New-HTDataTable {
         $table.Rows.Add($row)
     }
     $table.EndLoadData()
-    return $table
+    # Przecinek: PowerShell rozwija DataTable na wiersze (DataRow) przy zwracaniu z funkcji - wtedy
+    # [DataView]::new() dostawał tablicę wierszy i okna z listą (podgląd danych, wybór) kończyły się błędem «new»
+    return , $table
 }
 
 function Get-HTDefaultColumns {

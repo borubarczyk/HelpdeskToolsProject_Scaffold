@@ -83,6 +83,17 @@ foreach ($ws in @($HT_UI.Workspaces.Keys)) {
 foreach ($dialog in @(
         @{ Name = 'Ustawienia'; Open = { [void](Show-HTSettingsDialog) }; Expect = '[sekcje: 9]' }
         @{ Name = 'Paleta poleceń'; Open = { Show-HTCommandPalette }; Expect = '' }
+        # Okna z listą (DataTable z New-HTDataTable) - wcześniej błąd «new» przy niepustych danych
+        @{ Name = 'Podgląd danych'; Open = { Show-HTDataViewer -Title 'Podgląd danych' -Data @([PSCustomObject]@{ Pole = 'A'; Wartość = 1 }, [PSCustomObject]@{ Pole = 'B'; Wartość = 2 }) }; Expect = '' }
+        @{ Name = 'Wybór z listy'; Open = { [void](Show-HTSelectionDialog -Title 'Wybór z listy' -Items @([PSCustomObject]@{ DisplayName = 'Grupa A' }) -Columns @(@{ Text = 'Nazwa'; Property = 'DisplayName' })) }; Expect = '' }
+        @{ Name = 'Szczegóły wiersza'; Open = {
+                $m = $HT_UI.ActiveModule
+                Reset-HTResults -Module $m
+                Add-HTResultRows -Module $m -Objects @([PSCustomObject]@{ Obiekt = 'a@firma.pl'; Status = 'OK'; Szczegóły = "Pierwsza linia`nDruga linia" })
+                Show-HTRowDetails -Module $m -Row $m.View[0]
+            }; Expect = ''
+        }
+        @{ Name = 'Potwierdzenie zmiany'; Open = { [void](Confirm-HTChange -Name 'Potwierdzenie zmiany' -Labels @('a@firma.pl', 'b@firma.pl') -Summary @('Tryb: Enabled')) }; Expect = '' }
     )) {
     $errorsBefore = $Global:SmokeErrors.Count
     $dialogsBefore = $Global:SmokeDialogs.Count
