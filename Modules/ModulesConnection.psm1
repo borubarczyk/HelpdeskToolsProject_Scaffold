@@ -173,6 +173,19 @@ function Clear-HTSkippedModulePaths {
 }
 #endregion
 
+# Szczegółowy dziennik: stan środowiska (PowerShell, .NET, ścieżki modułów, OneDrive, wersje modułów Microsoft 365)
+function Write-HTEnvironmentDebug {
+    if (-not $Global:DebugLogging) { return }
+    Write-HTDebug "Środowisko: PowerShell $($PSVersionTable.PSVersion) ($PSHOME), .NET $([System.Environment]::Version), $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription), administrator: $(Test-HTIsAdministrator), kultura: $((Get-Culture).Name), wątek: $([System.Threading.Thread]::CurrentThread.GetApartmentState())"
+    Write-HTDebug "PSModulePath: $($env:PSModulePath -replace [regex]::Escape([string][System.IO.Path]::PathSeparator), ' | ')"
+    Write-HTDebug "OneDrive: $($env:OneDrive); proces OneDrive: $([bool](Get-Process -Name OneDrive -ErrorAction SilentlyContinue)); pomijane foldery modułów: $(@(@($global:HTSkippedModulePaths) + @(Get-HTSavedSkippedModulePaths) | Where-Object { $_ } | Select-Object -Unique) -join ' | ')"
+    foreach ($name in 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement', 'PnP.PowerShell') {
+        $installed = @(Get-Module -ListAvailable -Name $name -ErrorAction SilentlyContinue | Sort-Object Version -Descending | ForEach-Object { "$($_.Version) ($($_.ModuleBase))" })
+        $loaded = Get-Module -Name $name | Select-Object -First 1
+        Write-HTDebug "Moduł $($name): załadowany $(if ($loaded) { $loaded.Version } else { '-' }); zainstalowane: $(if ($installed) { $installed -join '; ' } else { 'brak' })"
+    }
+}
+
 # Funkcja do instalacji modułu, jeśli nie jest zainstalowany
 function Install-ModuleIfMissing {
     param (
@@ -268,9 +281,15 @@ function Get-HTGraphErrorDetail {
 # Invoke-MgGraphRequest z przyczyną błędu Graph dopisaną do komunikatu wyjątku (widoczną w oknie błędu i dzienniku)
 function Invoke-HTMgGraphRequest {
     param ([Parameter(Mandatory)][hashtable]$Params)
-    try { return (Invoke-MgGraphRequest @Params) }
+    $watch = if ($Global:DebugLogging) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
+    try {
+        $response = Invoke-MgGraphRequest @Params
+        if ($watch) { Write-HTDebug "Graph $($Params.Method) $($Params.Uri) - OK ($($watch.ElapsedMilliseconds) ms)" }
+        return $response
+    }
     catch {
         $detail = Get-HTGraphErrorDetail -ErrorRecord $_
+        if ($watch) { Write-HTDebug "Graph $($Params.Method) $($Params.Uri) - błąd ($($watch.ElapsedMilliseconds) ms): $($_.Exception.Message) $detail" }
         $message = [string]$_.Exception.Message
         if ($detail -and $message -notlike "*$detail*") {
             throw [System.InvalidOperationException]::new("$message $detail", $_.Exception)
@@ -473,6 +492,7 @@ function Connect-Module {
         [string]$PartnerAccount = ''
     )
 
+    Write-HTDebug { "Łączenie: $Name; PSModulePath: $($env:PSModulePath -replace [regex]::Escape([string][System.IO.Path]::PathSeparator), ' | ')" }
     if (-not (Install-ModuleIfMissing -Name $Name)) { return $false }
     $moduleName = $script:ModuleNameMap[$Name]
 
@@ -1097,6 +1117,7 @@ function Import-HTRequiredModule {
     param ([Parameter(Mandatory)][string]$Name)
     Restore-HTSkippedModulePaths | Out-Null
     $resolved = Resolve-HTModuleVersion -Name $Name
+    Write-HTDebug { "Moduł $($Name): $($resolved.Status)$(if ($resolved.Module) { " $($resolved.Module.Version) ($($resolved.Module.ModuleBase))" }); konflikty: $(@($resolved.Check.LoadedIssues | ForEach-Object { "$($_.Assembly) $($_.Required)>$($_.Available)" }) -join ', ')" }
     switch ($resolved.Status) {
         "Loaded" { return $resolved.Module }
         "Missing" { throw "Moduł $Name nie jest zainstalowany." }
@@ -1108,6 +1129,7 @@ function Import-HTRequiredModule {
     if ($resolved.Skipped.Count -gt 0) {
         Write-Log "Pominięto wersje modułu $Name wymagające nowszego PowerShell: $(@($resolved.Skipped | ForEach-Object { $_.Version }) -join ', '). Używana wersja: $($resolved.Module.Version)." "Warn"
     }
+    Write-HTDebug { "Import modułu $Name $($resolved.Module.Version): $($resolved.Module.Path)" }
     Import-Module -Name $resolved.Module.Path -Global -ErrorAction Stop -WarningAction SilentlyContinue
     Write-Log "Zaimportowano moduł $Name $($resolved.Module.Version)." "Info"
     return $resolved.Module

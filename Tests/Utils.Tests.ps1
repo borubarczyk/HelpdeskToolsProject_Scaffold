@@ -275,3 +275,24 @@ Describe "Katalog eksportu i zapis w folderze" {
         Test-Path -LiteralPath $Global:ExportPath | Should -BeTrue
     }
 }
+
+Describe "Szczegółowy dziennik (debug)" {
+    AfterEach { $Global:DebugLogging = $null }
+    It "pomija wpisy Debug, gdy szczegółowy dziennik jest wyłączony" {
+        $Global:DebugLogging = $false
+        $before = @(Get-HTLogHistory).Count
+        Write-Log -Message "ukryty" -Type "Debug"
+        Write-HTDebug "też ukryty"
+        Write-HTDebug { throw "nie powinno się wykonać" }
+        @(Get-HTLogHistory).Count | Should -Be $before
+    }
+    It "zapisuje wpisy Debug w historii i pliku, gdy jest włączony" {
+        $Global:DebugLogging = $true
+        Write-HTDebug { "Graph GET users - OK ($(1 + 1) ms)" }
+        $entry = @(Get-HTLogHistory)[-1]
+        $entry.Type | Should -Be "Debug"
+        $entry.Message | Should -BeLike "*Graph GET users - OK (2 ms)"
+        Get-Content (Get-HTLogFile) -Raw | Should -Match "\[Debug\].*Graph GET users"
+        @(Read-HTLogFile -Path (Get-HTLogFile) -Text "Graph GET users")[-1].Poziom | Should -Be "Debug"
+    }
+}

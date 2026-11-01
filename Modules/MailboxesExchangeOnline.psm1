@@ -212,6 +212,27 @@ function Remove-HTMailboxPermission {
 }
 
 # Konwersja typu skrzynki
+# Typ, widoczność w GAL i archiwum skrzynki - przegląd przed zmianą (moduł «Typ i widoczność»)
+function Get-HTMailboxTypeInfo {
+    param ([Parameter(Mandatory)][string]$Identity, [string]$TargetType = '')
+    $mbx = Get-EXOMailbox -Identity $Identity -Properties HiddenFromAddressListsEnabled, ArchiveStatus, AutoExpandingArchiveEnabled, LitigationHoldEnabled -ErrorAction Stop
+    $names = @{ UserMailbox = 'Użytkownika'; SharedMailbox = 'Współdzielona'; RoomMailbox = 'Sala'; EquipmentMailbox = 'Zasób'; DiscoveryMailbox = 'Systemowa (eDiscovery)' }
+    $typeMap = @{ Regular = 'UserMailbox'; Shared = 'SharedMailbox'; Room = 'RoomMailbox'; Equipment = 'EquipmentMailbox' }
+    $type = "$($mbx.RecipientTypeDetails)"
+    $differs = $TargetType -and $typeMap[$TargetType] -and $typeMap[$TargetType] -ne $type
+    return [PSCustomObject]@{
+        Skrzynka               = $mbx.DisplayName
+        Typ                    = $(if ($names[$type]) { $names[$type] } else { $type })
+        'Typ (Exchange)'       = $type
+        'Ukryta w GAL'         = [bool]$mbx.HiddenFromAddressListsEnabled
+        Archiwum               = $(if ("$($mbx.ArchiveStatus)" -eq 'Active') { 'Aktywne' } else { 'Brak' })
+        'Archiwum rozszerzane' = [bool]$mbx.AutoExpandingArchiveEnabled
+        'Litigation Hold'      = [bool]$mbx.LitigationHoldEnabled
+        __address              = "$($mbx.PrimarySmtpAddress)"
+        __flag                 = $(if ($differs) { 'warn' } else { '' })
+    }
+}
+
 function Convert-HTMailboxType {
     param (
         [Parameter(Mandatory)][string]$Identity,

@@ -72,6 +72,8 @@ function Get-HTDefaultConfig {
         ReportSender              = ""
         # Microsoft Defender for Endpoint (izolacja urządzeń) - rejestracja aplikacji z uprawnieniami WindowsDefenderATP
         DefenderClientId          = ""
+        # Szczegółowy dziennik diagnostyczny (zapytania Graph, łączenie, moduły, stos błędów)
+        DebugLogging              = $false
         # Skrzynki systemowe Exchange (DiscoverySearchMailbox) na listach i w raportach
         ShowSystemMailboxes       = $false
         # Foldery modułów PowerShell w OneDrive pomijane, gdy pliki są tylko w chmurze, a OneDrive nie działa
@@ -262,6 +264,7 @@ function Apply-HTConfig {
     $Global:BackgroundQueries = [bool]$Config.BackgroundQueries
     $Global:NotifyLongOperationsSeconds = [int]$Config.NotifyLongOperationsSeconds
     $Global:ShowSystemMailboxes = [bool]$Config.ShowSystemMailboxes
+    $Global:DebugLogging = [bool]$Config.DebugLogging
 
     if ($Global:PasswordDefaultLength -lt 8 -or $Global:PasswordDefaultLength -gt 64) { $Global:PasswordDefaultLength = 12 }
     if ($Global:GraphScopes.Count -eq 0) { $Global:GraphScopes = $script:DefaultGraphScopes }
@@ -273,6 +276,9 @@ function Apply-HTConfig {
     # Foldery modułów z OneDrive pominięte w poprzednich sesjach (nowy proces PowerShell dopisuje je z powrotem)
     if (Get-Command -Name Restore-HTSkippedModulePaths -ErrorAction SilentlyContinue) {
         try { Restore-HTSkippedModulePaths | Out-Null } catch { Write-Log -Message "Pomijanie folderów modułów: $($_.Exception.Message)" -Type "Warn" }
+    }
+    if ($Global:DebugLogging -and (Get-Command -Name Write-HTEnvironmentDebug -ErrorAction SilentlyContinue)) {
+        try { Write-HTEnvironmentDebug } catch { Write-Log -Message "Dziennik diagnostyczny: $($_.Exception.Message)" -Type "Warn" }
     }
 
     Write-Log -Message "Zastosowano konfigurację (e-mail: '$($Global:PasswordEmailAdress)', hasła słowne: $($Global:PasswordUseWordBased), domyślna witryna SharePoint: $($Global:DefaultSharepointSite))." -Type "Info"

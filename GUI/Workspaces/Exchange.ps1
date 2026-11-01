@@ -64,32 +64,47 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.usage' -T
 Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.type' -Title 'Typ i widoczność' -Icon 'E8AB' `
     -Description 'Konwersja na skrzynkę współdzieloną / użytkownika / salę, ukrycie w książce adresowej, archiwum online.' -Build {
     param($m)
+    # Najpierw odczyt (niebieski przycisk), potem zmiany (czerwone) - na wierszach zaznaczonych w wynikach albo na skrzynkach z listy po lewej
+    $row0 = Add-HTToolbarRow -Module $m -Title 'Stan'
+    Add-HTButton -Parent $row0 -Module $m -Text 'Pobierz informacje' -Icon 'E946' -Primary -OnClick {
+        param($m)
+        $target = Get-HTComboText $m.C.Type
+        Invoke-HTTargetQuery -Module $m -Name 'Typ i widoczność' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTMailboxTypeInfo -Identity $t.PrimarySmtpAddress -TargetType $target }
+    } | Out-Null
+    Add-HTLabel -Parent $row0 -Hint -Text 'Typ, GAL i archiwum wybranych skrzynek. Żółte - inny typ niż wybrany niżej. Zaznacz wiersze w wynikach, aby zmienić tylko je.' | Out-Null
+    # Skrzynki do zmiany: zaznaczone wiersze wyników «Pobierz informacje», a bez zaznaczenia - skrzynki wybrane na liście
+    $m.Data.Targets = {
+        param($m)
+        $rows = @(Get-HTResultSelection -Module $m | Where-Object { $_ -and $_.PSObject.Properties['__address'] -and $_.__address })
+        if ($rows.Count) { return @($rows | ForEach-Object { [PSCustomObject]@{ PrimarySmtpAddress = $_.__address; DisplayName = $_.Skrzynka } }) }
+        return @(Get-HTTargets -Module $m)
+    }
     $row = Add-HTToolbarRow -Module $m -Title 'Typ skrzynki'
     $m.C.Type = Add-HTComboBox -Parent $row -Items @('Shared', 'Regular', 'Room', 'Equipment') -Width 140
-    Add-HTButton -Parent $row -Module $m -Text 'Konwertuj' -Icon 'E8AB' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Konwertuj' -Icon 'E8AB' -Danger -OnClick {
         param($m)
         $type = Get-HTComboText $m.C.Type
-        Invoke-HTTargetAction -Module $m -Name "Konwersja na $type" -Confirm "Zmienić typ wybranych skrzynek na $($type)?" -Label { param($t) Get-HTMailboxLabel $t } -Action {
+        Invoke-HTTargetAction -Module $m -Name "Konwersja na $type" -Targets (& $m.Data.Targets $m) -Danger -Confirm "Zmienić typ wybranych skrzynek na $($type)?" -Label { param($t) Get-HTMailboxLabel $t } -Action {
             param($t)
             Convert-HTMailboxType -Identity $t.PrimarySmtpAddress -Type $type
             "Typ: $type"
         }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Książka adresowa'
-    Add-HTButton -Parent $row2 -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Ukryj w GAL' -Icon 'ED1A' -Danger -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Ukrycie w GAL' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $true; 'Ukryta' }
+        Invoke-HTTargetAction -Module $m -Name 'Ukrycie w GAL' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $true; 'Ukryta' }
     } | Out-Null
-    Add-HTButton -Parent $row2 -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Pokaż w GAL' -Icon 'E7B3' -Danger -OnClick {
         param($m)
-        Invoke-HTTargetAction -Module $m -Name 'Pokazanie w GAL' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $false; 'Widoczna' }
+        Invoke-HTTargetAction -Module $m -Name 'Pokazanie w GAL' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxHiddenFromGAL -Identity $t.PrimarySmtpAddress -Hidden $false; 'Widoczna' }
     } | Out-Null
     $row3 = Add-HTToolbarRow -Module $m -Title 'Archiwum'
     $m.C.AutoExpand = Add-HTCheckBox -Parent $row3 -Text 'Archiwum automatycznie rozszerzane'
-    Add-HTButton -Parent $row3 -Module $m -Text 'Włącz archiwum' -Icon 'E7B8' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Włącz archiwum' -Icon 'E7B8' -Danger -OnClick {
         param($m)
         $auto = Test-HTChecked $m.C.AutoExpand
-        Invoke-HTTargetAction -Module $m -Name 'Włączenie archiwum' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Enable-HTMailboxArchive -Identity $t.PrimarySmtpAddress -AutoExpanding:$auto; 'Archiwum włączone' }
+        Invoke-HTTargetAction -Module $m -Name 'Włączenie archiwum' -Targets (& $m.Data.Targets $m) -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Enable-HTMailboxArchive -Identity $t.PrimarySmtpAddress -AutoExpanding:$auto; 'Archiwum włączone' }
     } | Out-Null
 }
 

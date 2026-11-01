@@ -180,6 +180,7 @@ function Show-HTSettingsDialog {
         @{ Name = 'NotifyLongOperationsSeconds'; Label = 'Powiadomienie Windows po operacji dłuższej niż (sekundy, 0 = wyłączone)'; Type = 'Number'; Default = [int]$cfg.NotifyLongOperationsSeconds; Min = 0; Max = 3600; Hint = 'Gdy okno programu nie jest aktywne: dymek w obszarze powiadomień i miganie przycisku na pasku zadań.' }
         @{ Name = 'ExportPath'; Label = 'Katalog eksportu'; Default = $cfg.ExportPath; Hint = 'Puste = Dokumenty\HelpdeskTools\Eksport' }
         @{ Name = 'LogFileMaxSizeMB'; Label = 'Maks. rozmiar pliku dziennika (MB)'; Type = 'Number'; Default = [int]$cfg.LogFileMaxSizeMB; Min = 1; Max = 100 }
+        @{ Name = 'DebugLogging'; Label = 'Szczegółowy dziennik (debug) - do diagnozy problemów'; Type = 'Check'; Default = [bool]$cfg.DebugLogging; Hint = "Zapisuje m.in. zapytania Microsoft Graph z czasem odpowiedzi, kroki łączenia i logowania, wersje i ścieżki modułów oraz stos błędów. Włącz na czas diagnozy - dziennik rośnie szybciej. Plik: $Global:LogDir" }
         @{ Type = 'Buttons'; Label = 'Pliki i skróty'; Buttons = @(
                 @{ Text = 'Otwórz plik konfiguracji'; Icon = 'E8E5'; OnClick = { param($w) if (Test-Path $Global:ConfigPath) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $Global:ConfigPath) } } }
                 @{ Text = 'Folder konfiguracji'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }

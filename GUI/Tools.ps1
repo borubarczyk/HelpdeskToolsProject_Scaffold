@@ -186,6 +186,14 @@ Register-HTPaletteAction -Text 'Używaj modułów z OneDrive' -Icon 'E753' -Desc
     Clear-HTSkippedModulePaths
     Show-HTToast 'Zapisano - folder będzie używany po ponownym uruchomieniu programu.' 'ok' 6
 }
+Register-HTPaletteAction -Text 'Szczegółowy dziennik (debug)' -Icon 'EBE8' -Description 'Włącz lub wyłącz wpisy diagnostyczne (zapisywane w ustawieniach)' -Keywords 'debug diagnostyka log dziennik szczegółowy' -Action {
+    param($q)
+    $enable = -not $Global:DebugLogging
+    Set-HTConfigValue -Name 'DebugLogging' -Value $enable
+    $Global:DebugLogging = $enable
+    if ($enable) { Write-HTEnvironmentDebug }
+    Write-Log -Message "Szczegółowy dziennik (debug): $(if ($enable) { 'włączony' } else { 'wyłączony' })." -Type 'Info&Notification'
+}
 Register-HTPaletteAction -Text 'Dziennik programu' -Icon 'E81C' -Description 'Ctrl+L' -Keywords 'log logi dziennik' -Action { param($q) Set-HTLogVisible $true }
 Register-HTPaletteAction -Text 'Szukaj w dzienniku' -Icon 'E81C' -Description 'Wpisy dziennika z wpisanym tekstem (bieżąca sesja)' -NeedsQuery -Action {
     param($q)
