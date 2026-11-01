@@ -135,7 +135,14 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.devices' -Title
 Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block' -Title 'Blokada i sesje' -Icon 'E72E' `
     -Description 'Blokada logowania (z unieważnieniem sesji), odblokowanie i wylogowanie ze wszystkich urządzeń - np. przy podejrzeniu przejęcia konta.' -Build {
     param($m)
-    $row = Add-HTToolbarRow -Module $m
+    # Etapy: konta z listy po lewej -> «Sprawdź stan» -> zmiana (czerwone przyciski) na wierszach zaznaczonych w wynikach
+    $row0 = Add-HTToolbarRow -Module $m -Title 'Stan'
+    Add-HTButton -Parent $row0 -Module $m -Text 'Sprawdź stan' -Icon 'E946' -Primary -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Stan kont' -Label { param($t) Get-HTM365Label $t } -Action { param($t) Get-HTM365AccountState -Id $t.Id }
+    } | Out-Null
+    Add-HTLabel -Parent $row0 -Hint -Text 'Logowanie, ostatnie logowanie, sesje i synchronizacja z AD (konto z AD zablokuj w AD - synchronizacja nadpisze zmianę). Zaznacz wiersze, aby zmienić tylko je.' | Out-Null
+    $row = Add-HTToolbarRow -Module $m -Title 'Zmiany'
     Add-HTButton -Parent $row -Module $m -Text 'Zablokuj logowanie' -Icon 'E72E' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Blokada logowania' -Danger -Confirm 'Zablokować logowanie i unieważnić wszystkie sesje wybranych kont?' -Label { param($t) Get-HTM365Label $t } -Action {
@@ -146,7 +153,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block
             'Logowanie zablokowane, sesje unieważnione'
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Odblokuj' -Icon 'E785' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Odblokuj' -Icon 'E785' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Odblokowanie logowania' -Confirm 'Odblokować logowanie wybranych kont?' -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
@@ -156,7 +163,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block
             'Logowanie odblokowane'
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Unieważnij sesje' -Icon 'E7E8' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Unieważnij sesje' -Icon 'E7E8' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Unieważnienie sesji' -Confirm 'Wylogować wybrane konta ze wszystkich aplikacji i urządzeń?' -Label { param($t) Get-HTM365Label $t } -Action { param($t) Revoke-HTM365UserSessions -Id $t.Id; 'Sesje unieważnione' }
     } | Out-Null

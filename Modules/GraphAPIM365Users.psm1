@@ -62,6 +62,28 @@ function Clear-HTM365Cache {
 }
 
 # Szczegóły użytkownika
+# Stan konta przed blokadą, odblokowaniem i unieważnieniem sesji (moduł «Blokada i sesje»)
+function Get-HTM365AccountState {
+    param ([Parameter(Mandatory)][string]$Id)
+    $select = 'id,displayName,userPrincipalName,accountEnabled,signInSessionsValidFromDateTime,lastPasswordChangeDateTime,onPremisesSyncEnabled,userType'
+    $u = $null
+    # Ostatnie logowanie wymaga AuditLog.Read.All i licencji Entra ID P1 - bez nich stan bez tej kolumny
+    try { $u = Invoke-HTGraphRequest -Uri "users/$($Id)?`$select=$select,signInActivity" }
+    catch { $u = Invoke-HTGraphRequest -Uri "users/$($Id)?`$select=$select" }
+    $lastSignIn = if ($u.PSObject.Properties['signInActivity'] -and $u.signInActivity) { $u.signInActivity.lastSignInDateTime } else { $null }
+    return [PSCustomObject]@{
+        Konto                  = $u.displayName
+        UPN                    = $u.userPrincipalName
+        Logowanie              = $(if ($u.accountEnabled) { 'Dozwolone' } else { 'Zablokowane' })
+        'Ostatnie logowanie'   = $lastSignIn
+        'Sesje ważne od'       = $u.signInSessionsValidFromDateTime
+        'Hasło zmienione'      = $u.lastPasswordChangeDateTime
+        'Synchronizowane z AD' = [bool]$u.onPremisesSyncEnabled
+        Typ                    = $(if ("$($u.userType)" -eq 'Guest') { 'Gość' } else { 'Członek' })
+        __flag                 = $(if (-not $u.accountEnabled) { 'warn' } else { '' })
+    }
+}
+
 function Get-HTM365UserDetail {
     param ([Parameter(Mandatory)][string]$Id)
 

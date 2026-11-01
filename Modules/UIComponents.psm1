@@ -2559,6 +2559,14 @@ function Get-HTModuleDefinition([string]$Key) {
 }
 
 $script:NavEvents = @{
+    CategoryClick  = {
+        param($s, $e)
+        try {
+            $collapsed = @($s.Tag.Items | Where-Object { $_.Visibility -eq 'Visible' }).Count -gt 0
+            Set-HTNavCategoryState -Header $s -Collapsed $collapsed
+        }
+        catch { Write-Log -Message "Nawigacja: $($_.Exception.Message)" -Type 'Warn' }
+    }
     WorkspaceClick = {
         param($s, $e)
         try { Show-HTWorkspace -Key ([string]$s.Tag) }
@@ -2620,13 +2628,36 @@ function Initialize-HTNavigation {
         foreach ($order in @($ws.Categories)) { if ($order -and @($defs | Where-Object { $_.Category -eq $order }).Count -gt 0) { [void]$categories.Add($order) } }
         foreach ($d in $defs) { if (-not $categories.Contains($d.Category)) { [void]$categories.Add($d.Category) } }
         foreach ($cat in $categories) {
-            $header = New-Object System.Windows.Controls.TextBlock
-            $header.Style = Get-HTThemeResource 'NavHeader'
-            $header.Text = $cat.ToUpperInvariant()
+            # Nagłówek kategorii zwija i rozwija jej moduły (stan zapamiętany w UiState.json)
+            $collapseKey = "$($ws.Key)|$cat"
+            $collapsed = Test-HTNavCategoryCollapsed $collapseKey
+            $header = New-Object System.Windows.Controls.Grid
+            $header.Background = [System.Windows.Media.Brushes]::Transparent
+            $header.Cursor = [System.Windows.Input.Cursors]::Hand
+            $header.ToolTip = 'Kliknij, aby zwinąć lub rozwinąć kategorię'
+            [void]$header.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+            $chevronColumn = New-Object System.Windows.Controls.ColumnDefinition
+            $chevronColumn.Width = [System.Windows.GridLength]::Auto
+            [void]$header.ColumnDefinitions.Add($chevronColumn)
+            $title = New-Object System.Windows.Controls.TextBlock
+            $title.Style = Get-HTThemeResource 'NavHeader'
+            $title.Text = $cat.ToUpperInvariant()
+            [void]$header.Children.Add($title)
+            $chevron = New-HTGlyphBlock -Code $(if ($collapsed) { 'E76C' } else { 'E70D' }) -Size 9 -Color '#5E6779'
+            $chevron.Margin = '0,14,10,5'
+            $chevron.VerticalAlignment = 'Center'
+            [System.Windows.Controls.Grid]::SetColumn($chevron, 1)
+            [void]$header.Children.Add($chevron)
+            $items = New-Object System.Collections.Generic.List[object]
+            $header.Tag = @{ Key = $collapseKey; Items = $items; Chevron = $chevron }
+            $header.add_MouseLeftButtonUp($script:NavEvents.CategoryClick)
             [void]$panel.Children.Add($header)
             foreach ($d in @($defs | Where-Object { $_.Category -eq $cat })) {
                 $item = New-HTNavItem -Definition $d -Workspace $ws.Key
                 $ws.NavItems[$d.Key] = $item
+                $item.Visibility = if ($collapsed) { 'Collapsed' } else { 'Visible' }
+                $items.Add($item)
+                $script:NavCategoryOf[$d.Key] = $header
                 [void]$panel.Children.Add($item)
             }
         }
@@ -2674,6 +2705,23 @@ function New-HTNavItem {
 }
 
 $script:NavStars = @{}
+# Moduł -> nagłówek jego kategorii (rozwinięcie kategorii przy przejściu do modułu z palety lub ulubionych)
+$script:NavCategoryOf = @{}
+
+function Set-HTNavCategoryState {
+    param([Parameter(Mandatory)]$Header, [bool]$Collapsed)
+    $tag = $Header.Tag
+    foreach ($item in $tag.Items) { $item.Visibility = if ($Collapsed) { 'Collapsed' } else { 'Visible' } }
+    $tag.Chevron.Text = Get-HTGlyph $(if ($Collapsed) { 'E76C' } else { 'E70D' })
+    Set-HTNavCategoryCollapsed -Key $tag.Key -Collapsed $Collapsed
+}
+
+function Show-HTNavItem {
+    # Rozwija zwiniętą kategorię, w której jest moduł
+    param([string]$Key)
+    $header = $script:NavCategoryOf[$Key]
+    if ($header -and @($header.Tag.Items | Where-Object { $_.Visibility -ne 'Visible' }).Count) { Set-HTNavCategoryState -Header $header -Collapsed $false }
+}
 
 function Update-HTNavFavorites {
     foreach ($key in @($script:NavStars.Keys)) { $script:NavStars[$key].Visibility = if (Test-HTFavoriteModule $key) { 'Visible' } else { 'Collapsed' } }
@@ -2750,6 +2798,7 @@ function Show-HTModule {
     try { Add-HTRecentModule -Key $Key -Workspace $definition.Workspace } catch { Write-Verbose $_ }
     $nav = $ws.NavItems[$Key]
     if ($nav -and $nav.IsChecked -ne $true) { $nav.IsChecked = $true }
+    if ($nav -and $nav.Visibility -ne 'Visible') { Show-HTNavItem -Key $Key }
     if ($m.OnShow) { Invoke-HTUiAction -Module $m -Action $m.OnShow }
 }
 
@@ -4187,8 +4236,16 @@ function Invoke-HTTargetAction {
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
     if (-not (Assert-HTWriteAllowed -Operation $Name)) { return }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
-    if (-not $Targets) { $Targets = @(Get-HTTargets -Module $Module) }
+    # Zasada trzech etapów: zakres (lista po lewej) -> sprawdzenie stanu (wyniki) -> zmiana. Zaznaczone wiersze wyników
+    # wskazują obiekty do zmiany; bez zaznaczenia - obiekty wybrane na liście po lewej.
+    $fromResults = $false
+    if (-not $Targets) {
+        $fromSelection = @(Get-HTSelectedResultTargets -Module $Module)
+        if ($fromSelection.Count) { $Targets = $fromSelection; $fromResults = $true }
+        else { $Targets = @(Get-HTTargets -Module $Module) }
+    }
     if ($Targets.Count -eq 0) { return }
+    if ($fromResults -and $Confirm) { $Confirm = "$Confirm`n`nObiekty z wierszy zaznaczonych w wynikach ($($Targets.Count))." }
     if (-not $Label) { $Label = { param($t) Get-HTTargetLabel $t } }
     $labels = @($Targets | ForEach-Object { [string](& $Label $_) })
     if ($Confirm -and -not (Show-HTConfirm -Message $Confirm -Title $Name -Items $labels -Danger:$Danger -Warning:(-not $Danger) -TypeToConfirm $TypeToConfirm -ConfirmText $(if ($Danger) { 'Wykonaj' } else { 'Wykonaj' }))) { return }
@@ -4941,6 +4998,22 @@ function Invoke-HTTargetQuery {
         Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($failed) { ", błędy: $failed" })"
     }
     Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($failed) { ", błędy: $failed" })" -Type $(if ($failed) { 'Warn' } else { 'Info' })
+}
+
+function Get-HTSelectedResultTargets {
+    # Obiekty docelowe zaznaczonych wierszy wyników (__target), bez powtórzeń - do zmian po sprawdzeniu stanu
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not $Module.Grid -or $Module.Grid.SelectedItems.Count -eq 0) { return @() }
+    $seen = New-Object System.Collections.Generic.List[object]
+    foreach ($o in @(Get-HTResultSelection -Module $Module)) {
+        if (-not $o -or -not $o.PSObject.Properties['__target']) { continue }
+        $t = $o.__target
+        if ($null -eq $t) { continue }
+        $already = $false
+        foreach ($s in $seen) { if ([object]::ReferenceEquals($s, $t)) { $already = $true; break } }
+        if (-not $already) { $seen.Add($t) }
+    }
+    return $seen.ToArray()
 }
 
 function Get-HTRowTarget {

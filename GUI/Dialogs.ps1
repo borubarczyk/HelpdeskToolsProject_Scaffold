@@ -65,6 +65,13 @@ function Show-HTPasswordGenerator {
     $length = $w.FindName('pgLength')
     $length.Value = [Math]::Max(8, [Math]::Min(64, [int]$Global:PasswordDefaultLength))
     $length.add_ValueChanged($script:PasswordGeneratorEvents.Changed)
+    # Kółko myszy nad suwakiem: długość +/- 1 znak
+    $length.add_PreviewMouseWheel({
+            param($s, $e)
+            $step = if ($e.Delta -gt 0) { 1 } else { -1 }
+            $s.Value = [Math]::Max($s.Minimum, [Math]::Min($s.Maximum, $s.Value + $step))
+            $e.Handled = $true
+        })
     foreach ($n in 'pgNumbers', 'pgSymbols', 'pgStartLetter', 'pgNoSimilar') {
         $cb = $w.FindName($n)
         $cb.add_Checked($script:PasswordGeneratorEvents.Changed)
