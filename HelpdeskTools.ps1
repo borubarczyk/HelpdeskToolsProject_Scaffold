@@ -233,7 +233,7 @@ finally {
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
         "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting", "HTActiveAccount",
-        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds"
+        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds", "ShowSystemMailboxes", "HTSkippedModulePaths"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

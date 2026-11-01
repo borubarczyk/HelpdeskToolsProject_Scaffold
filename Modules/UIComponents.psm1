@@ -4583,8 +4583,12 @@ function Show-HTCheckListDialog {
     $body = @'
 <StackPanel>
   <Grid Margin="0,0,0,8">
-    <TextBox x:Name="clSearch" Tag="Szukaj…" Width="220" HorizontalAlignment="Left"/>
-    <StackPanel x:Name="clButtons" Orientation="Horizontal" HorizontalAlignment="Right"/>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*" MinWidth="140"/>
+      <ColumnDefinition Width="Auto"/>
+    </Grid.ColumnDefinitions>
+    <TextBox x:Name="clSearch" Tag="Szukaj…" MaxWidth="240" HorizontalAlignment="Stretch" Margin="0,0,10,0"/>
+    <StackPanel x:Name="clButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"/>
   </Grid>
   <Border Style="{StaticResource Card}" Padding="10,6">
     <ScrollViewer Height="320" VerticalScrollBarVisibility="Auto">

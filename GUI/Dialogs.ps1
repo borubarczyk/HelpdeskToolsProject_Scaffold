@@ -205,6 +205,7 @@ function Show-HTSettingsDialog {
         @{ Type = 'Header'; Label = 'Microsoft 365 i Exchange'; Icon = 'E753'; Hint = 'Licencje, raporty, logowanie i uprawnienia Microsoft Graph.' }
         @{ Name = 'DefaultUsageLocation'; Label = 'Domyślna lokalizacja użycia (licencje)'; Default = $cfg.DefaultUsageLocation; Hint = 'Dwuliterowy kod kraju, np. PL.' }
         @{ Name = 'InactiveDays'; Label = 'Próg nieaktywności kont (dni)'; Type = 'Number'; Default = [int]$cfg.InactiveDays; Min = 1; Max = 3650; Hint = 'Domyślna wartość w raportach nieaktywnych kont i urządzeń.' }
+        @{ Name = 'ShowSystemMailboxes'; Label = 'Pokazuj skrzynki systemowe Exchange (DiscoverySearchMailbox)'; Type = 'Check'; Default = [bool]$cfg.ShowSystemMailboxes; Hint = 'Skrzynka eDiscovery tworzona przez Microsoft - domyślnie ukryta na liście skrzynek i w raportach. Po zmianie wczytaj listę skrzynek ponownie.' }
         @{ Name = 'LoginTimeoutMinutes'; Label = 'Limit czasu logowania w przeglądarce (minuty)'; Type = 'Number'; Default = [int]$cfg.LoginTimeoutMinutes; Min = 1; Max = 60; Hint = 'Po tym czasie oczekiwanie na logowanie jest anulowane (np. gdy karta przeglądarki została zamknięta).' }
         @{ Name = 'GraphScopes'; Label = 'Uprawnienia Microsoft Graph (jedno w linii)'; Type = 'Multiline'; Default = (@($cfg.GraphScopes) -join "`r`n"); Height = 120 }
         @{ Type = 'Buttons'; Label = 'Tenanty klientów (GDAP)'; Buttons = @(

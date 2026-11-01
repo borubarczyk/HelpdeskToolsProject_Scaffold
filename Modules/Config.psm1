@@ -72,6 +72,8 @@ function Get-HTDefaultConfig {
         ReportSender              = ""
         # Microsoft Defender for Endpoint (izolacja urządzeń) - rejestracja aplikacji z uprawnieniami WindowsDefenderATP
         DefenderClientId          = ""
+        # Skrzynki systemowe Exchange (DiscoverySearchMailbox) na listach i w raportach
+        ShowSystemMailboxes       = $false
         # Foldery modułów PowerShell w OneDrive pomijane, gdy pliki są tylko w chmurze, a OneDrive nie działa
         SkippedModulePaths        = @()
         ConfigVersion             = $script:ConfigVersion
@@ -259,6 +261,7 @@ function Apply-HTConfig {
     $Global:ShowOnPremises = [bool]$Config.ShowOnPremises
     $Global:BackgroundQueries = [bool]$Config.BackgroundQueries
     $Global:NotifyLongOperationsSeconds = [int]$Config.NotifyLongOperationsSeconds
+    $Global:ShowSystemMailboxes = [bool]$Config.ShowSystemMailboxes
 
     if ($Global:PasswordDefaultLength -lt 8 -or $Global:PasswordDefaultLength -gt 64) { $Global:PasswordDefaultLength = 12 }
     if ($Global:GraphScopes.Count -eq 0) { $Global:GraphScopes = $script:DefaultGraphScopes }

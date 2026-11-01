@@ -25,10 +25,29 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.details' 
     -Description 'Typ, rozmiar i limity, archiwum, Litigation Hold, przekierowanie, autoodpowiedź, aliasy i delegaci.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
+    Add-HTLabel -Parent $row -Text 'Widok' | Out-Null
+    $m.C.View = Add-HTComboBox -Parent $row -Items @('Pola (wiersz = pole)', 'Skrzynki (wiersz = skrzynka)') -Width 220
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż szczegóły' -Icon 'E8A1' -Primary -OnClick {
         param($m)
-        Invoke-HTTargetQuery -Module $m -Name 'Szczegóły skrzynki' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) ConvertTo-HTDetailRows -Data (Get-HTMailboxDetail -Identity $t.PrimarySmtpAddress) }
+        if ($m.C.View.SelectedIndex -eq 1) {
+            $m.ResultHint = 'Dwuklik na skrzynce - wszystkie szczegóły'
+            Invoke-HTTargetQuery -Module $m -Name 'Zestawienie skrzynek' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) ConvertTo-HTMailboxSummaryRow -Detail (Get-HTMailboxDetail -Identity $t.PrimarySmtpAddress) }
+        }
+        else {
+            $m.ResultHint = $null
+            Invoke-HTTargetQuery -Module $m -Name 'Szczegóły skrzynki' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) ConvertTo-HTDetailRows -Data (Get-HTMailboxDetail -Identity $t.PrimarySmtpAddress) }
+        }
     } | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text '«Skrzynki» - jedna skrzynka w wierszu (porównanie wielu skrzynek), dwuklik otwiera jej szczegóły.' | Out-Null
+    # Widok «Skrzynki»: dwuklik - szczegóły skrzynki w osobnym oknie; widok «Pola» - jak dotąd (szczegóły wiersza)
+    $m.RowDoubleClick = {
+        param($m, $row)
+        $item = Get-HTObjectValue $row '__obj'
+        if ($item -and $item.PSObject.Properties['__detail'] -and $item.__detail) {
+            Show-HTDataViewer -Title "Skrzynka: $($item.Skrzynka)" -Description "$($item.Adres) • $($item.Typ)" -Data @(ConvertTo-HTDetailRows -Data $item.__detail) -ExportName "skrzynka_$($item.Adres)" -Icon 'E8A1'
+        }
+        else { Show-HTRowDetails -Module $m -Row $row }
+    }
 }
 
 Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.usage' -Title 'Rozmiar i limity' -Icon 'EDA2' `
