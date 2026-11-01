@@ -45,10 +45,14 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.details' -Title
 Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.edit' -Title 'Dane kontaktowe' -Icon 'E70F' `
     -Description 'Edycja stanowiska, działu, telefonów i adresu. Dla wielu kont - ustawienie wybranych pól hurtowo (puste pola pozostają bez zmian).' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTM365Label $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTM365UserDetail -Id $t.Id) -Fields 'Imię', 'Nazwisko', 'Stanowisko', 'Dział', 'Firma', 'Biuro', 'Telefon komórkowy', 'Telefon służbowy', 'Adres', 'Lokalizacja użycia', 'Przełożony'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Edytuj…' -Icon 'E70F' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Edytuj…' -Icon 'E70F' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $single = $targets.Count -eq 1
         $d = if ($single) { Invoke-HTGraphRequest -Uri "users/$($targets[0].Id)?`$select=displayName,givenName,surname,jobTitle,department,companyName,officeLocation,mobilePhone,businessPhones,streetAddress,city,postalCode,country,usageLocation,employeeId" } else { $null }
@@ -93,9 +97,9 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.manager' -Title
             [PSCustomObject]@{ Przełożony = $(if ($mgr) { $mgr.displayName } else { '(brak)' }); 'UPN przełożonego' = $mgr.userPrincipalName; Stanowisko = $mgr.jobTitle; __flag = $(if (-not $mgr) { 'muted' } else { '' }) }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Ustaw przełożonego…' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Ustaw przełożonego…' -Icon 'E8FA' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $manager = Select-HTM365User -Title 'Przełożony' -Prompt "Przełożony dla: $($targets.Count) kont."
         if (-not $manager) { return }
@@ -107,7 +111,7 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.manager' -Title
             "Przełożony: $($manager.DisplayName)"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Usuń przełożonego' -Icon 'E74D' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Usuń przełożonego' -Icon 'E74D' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Usunięcie przełożonego' -Confirm 'Usunąć przypisanie przełożonego?' -Label { param($t) Get-HTM365Label $t } -Action {
             param($t)
@@ -172,6 +176,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.block
 Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.password' -Title 'Reset hasła' -Icon 'E8D7' `
     -Description 'Losowe hasła (wg ustawień generatora) lub jedno podane hasło; opcjonalnie wymuszenie zmiany przy logowaniu. Hasła są ukryte - «Pokaż poufne».' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTM365Label $t } -Action { param($t) Get-HTM365AccountState -Id $t.Id } | Out-Null
     $m.SecretColumns = @('Hasło')
     $row = Add-HTToolbarRow -Module $m -Title 'Opcje'
     $m.C.Mode = Add-HTSegmented -Parent $row -Items @('Losowe hasła', 'Podane hasło')
@@ -180,9 +185,9 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.passw
     $m.C.Force = Add-HTCheckBox -Parent $row -Text 'Zmiana hasła przy logowaniu' -Checked $true
     $m.C.Revoke = Add-HTCheckBox -Parent $row -Text 'Unieważnij sesje' -Checked $false
     $actions = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $actions -Module $m -Text 'Resetuj hasło' -Icon 'E8D7' -Primary -OnClick {
+    Add-HTButton -Parent $actions -Module $m -Text 'Resetuj hasło' -Icon 'E8D7' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $fixed = $null
         if ((Get-HTSegmentIndex $m.C.Mode) -eq 1) {
@@ -223,9 +228,9 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.mfa' 
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj telefon…' -Icon 'E717' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj telefon…' -Icon 'E717' -Danger -OnClick {
         param($m)
-        $t = @(Get-HTTargets -Module $m -Single)[0]
+        $t = @(Get-HTChangeTargets -Module $m -Single)[0]
         if (-not $t) { return }
         $form = Show-HTFormDialog -Title 'Telefon MFA' -Description (Get-HTM365Label $t) -Icon 'E717' -OkText 'Dodaj' -Fields @(
             @{ Name = 'Phone'; Label = 'Numer telefonu'; Required = $true; Validation = 'Phone'; Placeholder = '+48 600 100 200'; Hint = 'Numer bez kierunkowego jest traktowany jako polski.' }
@@ -234,9 +239,9 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.mfa' 
         if (-not $form) { return }
         Invoke-HTTargetAction -Module $m -Name 'Dodanie telefonu MFA' -Targets @($t) -Label { param($t) Get-HTM365Label $t } -Action { param($t) "Dodano: $(Add-HTM365PhoneMethod -UserId $t.Id -PhoneNumber $form.Phone -PhoneType $form.Type)" }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Temporary Access Pass…' -Icon 'E8D7' -ToolTip 'Jednorazowy kod do zalogowania i zarejestrowania nowych metod (np. nowy telefon)' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Temporary Access Pass…' -Icon 'E8D7' -ToolTip 'Jednorazowy kod do zalogowania i zarejestrowania nowych metod (np. nowy telefon)' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $form = Show-HTFormDialog -Title 'Temporary Access Pass' -Description "Kody dla $($targets.Count) kont." -Icon 'E8D7' -OkText 'Generuj' -Fields @(
             @{ Name = 'Minutes'; Label = 'Ważność (minuty)'; Type = 'Number'; Default = 60; Min = 10; Max = 43200 }
@@ -289,9 +294,9 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
             foreach ($l in $licenses) { [PSCustomObject]@{ Licencja = Get-HTSkuFriendlyName $l.SkuPartNumber; SKU = $l.SkuPartNumber; __sku = $l } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Przypisz licencję…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Przypisz licencję…' -Icon 'E710' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         Set-HTBusy -Busy $true -Text 'Pobieranie licencji…'
         try { $skus = @(Get-HTSubscribedSkus -Force | Where-Object { $_.Status -eq 'Enabled' } | ForEach-Object { [PSCustomObject]@{ Licencja = Get-HTSkuFriendlyName $_.SkuPartNumber; SKU = $_.SkuPartNumber; Dostępne = $_.Available; Przypisane = $_.Consumed; SkuId = $_.SkuId } }) }
@@ -304,9 +309,9 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
         if ($short.Count -gt 0 -and -not (Show-HTConfirm -Warning -Title 'Za mało licencji' -Message "Niewystarczająca liczba wolnych licencji: $(@($short | ForEach-Object { "$($_.Licencja) ($($_.Dostępne))" }) -join ', '). Kontynuować?")) { return }
         Invoke-HTTargetAction -Module $m -Name 'Przypisanie licencji' -Summary "Licencje do przypisania: $names" -Targets $targets -Label { param($t) Get-HTM365Label $t } -Action { param($t) Set-HTM365UserLicense -Id $t.Id -AddSkuIds $ids; "Przypisano: $names" }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Usuń licencję…' -Icon 'E738' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Usuń licencję…' -Icon 'E738' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         Set-HTBusy -Busy $true -Text 'Pobieranie licencji…'
         try { $skus = @(Get-HTSubscribedSkus -Force | Where-Object { $_.Consumed -gt 0 } | ForEach-Object { [PSCustomObject]@{ Licencja = Get-HTSkuFriendlyName $_.SkuPartNumber; SKU = $_.SkuPartNumber; Przypisane = $_.Consumed; SkuId = $_.SkuId } }) }
@@ -340,9 +345,9 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         Set-HTBusy -Busy $true -Text 'Pobieranie grup…'
         try { $groups = @(Get-HTM365Groups | Where-Object { Test-HTM365GroupManageable -Group $_ }) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
@@ -355,9 +360,9 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
             "Dodano do: $(@($done) -join ', ')"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -ToolTip 'Dodaje zaznaczonych użytkowników do grup, do których należy wskazany użytkownik wzorcowy' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -ToolTip 'Dodaje zaznaczonych użytkowników do grup, do których należy wskazany użytkownik wzorcowy' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $source = Select-HTM365User -Title 'Użytkownik wzorcowy' -Prompt 'Grupy tego użytkownika zostaną skopiowane.'
         if (-not $source) { return }
@@ -454,6 +459,13 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Tit
 Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboarding' -Title 'Offboarding' -Icon 'E8F8' `
     -Description 'Odejście pracownika w jednym kroku: blokada, wylogowanie, reset hasła, autoodpowiedź i przekierowanie, skrzynka współdzielona, ukrycie w GAL, grupy, MFA i licencje.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTM365Label $t } -Action {
+        param($t)
+        $state = Get-HTM365AccountState -Id $t.Id
+        $licenses = @(Get-HTM365UserLicenses -Id $t.Id | ForEach-Object { Get-HTSkuFriendlyName $_.SkuPartNumber })
+        $manager = Get-HTM365UserManager -Id $t.Id
+        [PSCustomObject][ordered]@{ Logowanie = $state.Logowanie; 'Ostatnie logowanie' = $state.'Ostatnie logowanie'; Licencje = ($licenses -join ', '); Przełożony = $(if ($manager) { $manager.userPrincipalName }); 'Synchronizowane z AD' = $state.'Synchronizowane z AD'; __flag = $state.__flag }
+    } | Out-Null
     $m.SecretColumns = @('Hasło')
     $row = Add-HTToolbarRow -Module $m -Title 'Konto'
     $m.C.Block = Add-HTCheckBox -Parent $row -Text 'Zablokuj logowanie i unieważnij sesje' -Checked $true
@@ -473,7 +485,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
     $actions = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $actions -Module $m -Text 'Wykonaj offboarding' -Icon 'E8F8' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $o = @{}
         if (-not (Assert-HTWriteAllowed -Operation 'Offboarding')) { return }
@@ -1135,13 +1147,19 @@ Register-HTPaletteAction -Text 'Diagnoza logowania' -Icon 'E9D9' -Description '�
 Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.onedrive' -Title 'OneDrive odchodzącego' -Icon 'E753' -Service 'Graph' `
     -Description 'Dostęp przełożonego (lub innej osoby) do OneDrive odchodzącego pracownika - przed usunięciem konta (OneDrive jest usuwany po okresie przechowywania). Opcjonalnie odebranie dostępu po N dniach (zadania zaplanowane). Także udostępnienia z OneDrive.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTM365Label $t } -Action {
+        param($t)
+        $state = Get-HTM365AccountState -Id $t.Id
+        $manager = Get-HTM365UserManager -Id $t.Id
+        [PSCustomObject][ordered]@{ Logowanie = $state.Logowanie; 'Ostatnie logowanie' = $state.'Ostatnie logowanie'; 'Przełożony (dostanie dostęp)' = $(if ($manager) { $manager.userPrincipalName } else { '(brak - wpisz osobę)' }); __flag = $state.__flag }
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Dostęp'
     $m.C.GrantTo = Add-HTTextBox -Parent $row -Width 300 -Placeholder 'Dla (UPN, puste - przełożony z Entra ID)'
     Add-HTLabel -Parent $row -Text 'Odbierz po (dni, 0 - nie):' | Out-Null
     $m.C.Days = Add-HTNumeric -Parent $row -Value 30 -Minimum 0 -Maximum 365
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj dostęp' -Icon 'E8FA' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj dostęp' -Icon 'E8FA' -Primary -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Dostęp do OneDrive')) { return }
         $grantTo = $m.C.GrantTo.Text.Trim()

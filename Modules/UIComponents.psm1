@@ -2611,6 +2611,7 @@ function Invoke-HTUiAction {
     if ($outer) {
         $script:UI.FormSummary = New-Object System.Collections.Generic.List[string]
         $script:UI.CommandWarnings = New-Object System.Collections.Generic.List[string]
+        $script:UI.TargetSource = ''
     }
     $script:UI.ActionDepth = [int]$script:UI.ActionDepth + 1
     try {
@@ -3396,6 +3397,26 @@ function Get-HTTargets {
     return $result
 }
 
+function Get-HTChangeTargets {
+    <#
+        Obiekty do zmiany (zasada trzech etapów: zakres -> sprawdzenie stanu -> zmiana): wiersze zaznaczone w wynikach
+        (np. po «Sprawdź stan»), a bez zaznaczenia w wynikach - obiekty zaznaczone na liście po lewej.
+        Źródło trafia do okna potwierdzenia zmiany. -Single: dokładnie jeden obiekt.
+    #>
+    param([Parameter(Mandatory)][hashtable]$Module, [switch]$Single)
+    $fromResults = @(Get-HTSelectedResultTargets -Module $Module)
+    if ($fromResults.Count) {
+        if ($Single -and $fromResults.Count -gt 1) {
+            Show-HTWarning 'Ta operacja dotyczy jednego obiektu - zaznacz w wynikach jeden wiersz.' -Title 'Za dużo obiektów'
+            return @()
+        }
+        $script:UI.TargetSource = 'wiersze zaznaczone w wynikach'
+        return $fromResults
+    }
+    $script:UI.TargetSource = 'zaznaczone na liście'
+    return @(Get-HTTargets -Module $Module -Single:$Single)
+}
+
 function Get-HTPanel([string]$Key) { return $script:UI.Panels[$Key] }
 
 # Drzewo (SharePoint): węzły z polem wyboru; Tag węzła = obiekt
@@ -3901,7 +3922,8 @@ function Add-HTButton {
     $b.Margin = '0,0,8,6'
     Register-HTControlHandler -Control $b -EventName 'Click' -Module $Module -Action $OnClick
     [void]$Module.Buttons.Add($b)
-    if ($Primary -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
+    # F5 (główna akcja modułu) nigdy nie wykonuje zmiany - tylko odczyt (zasada trzech etapów)
+    if ($Primary -and -not $Danger -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
     # Przyciski zmian (czerwone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
     if ($Danger) {
         if (-not $Module['ChangeButtons']) { $Module['ChangeButtons'] = New-Object System.Collections.Generic.List[hashtable] }
@@ -3909,6 +3931,30 @@ function Add-HTButton {
     }
     [void]$Parent.Children.Add($b)
     return $b
+}
+
+function Add-HTStateCheck {
+    <#
+        Etap 2 zasady trzech etapów: niebieski przycisk «Sprawdź stan» (F5) w pierwszym wierszu modułu - bieżący stan
+        obiektów zaznaczonych na liście po lewej. Zmiany (czerwone przyciski) działają potem na wierszach zaznaczonych
+        w wynikach. -Action { param($t) } zwraca wiersz stanu obiektu. Wywołać na początku bloku -Build modułu.
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Module,
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [scriptblock]$Label,
+        [string]$Text = 'Sprawdź stan',
+        [string]$Hint = 'Najpierw sprawdź stan, potem zaznacz wiersze w wynikach - zmiany (czerwone przyciski) obejmą tylko je.'
+    )
+    $Module.Data.StateCheck = @{ Action = $Action; Label = $Label; Text = $Text }
+    $row = Add-HTToolbarRow -Module $Module -Title 'Stan'
+    [void](Add-HTButton -Parent $row -Module $Module -Text $Text -Icon 'E946' -Primary -OnClick {
+            param($m)
+            $check = $m.Data.StateCheck
+            Invoke-HTTargetQuery -Module $m -Name "$($check.Text) - $($m.Title)" -AlwaysShowObject -Label $check.Label -Action $check.Action
+        })
+    if ($Hint) { [void](Add-HTLabel -Parent $row -Hint -Text $Hint) }
+    return $row
 }
 
 function Add-HTRowAction {
@@ -4513,6 +4559,7 @@ function Invoke-HTTargetAction {
         if ($fromSelection.Count) { $Targets = $fromSelection; $source = 'wiersze zaznaczone w wynikach' }
         else { $Targets = @(Get-HTTargets -Module $Module); $source = 'zaznaczone na liście' }
     }
+    elseif ($script:UI.TargetSource) { $source = [string]$script:UI.TargetSource }
     $Targets = @($Targets | Where-Object { $null -ne $_ })
     if ($Targets.Count -eq 0) { return }
     if (-not $Label) { $Label = { param($t) Get-HTTargetLabel $t } }

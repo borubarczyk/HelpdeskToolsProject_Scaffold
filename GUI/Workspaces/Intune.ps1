@@ -73,9 +73,9 @@ Register-HTModule -Workspace 'Intune' -Category 'Urządzenie' -Key 'int.primary'
             foreach ($u in $users) { [PSCustomObject]@{ Użytkownik = $u.displayName; UPN = $u.userPrincipalName } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Zmień…' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Zmień…' -Icon 'E8FA' -Danger -OnClick {
         param($m)
-        $targets = @(Get-HTTargets -Module $m)
+        $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
         $user = Select-HTM365User -Title 'Użytkownik podstawowy' -Prompt "Dla urządzeń: $($targets.Count)"
         if (-not $user) { return }
@@ -86,12 +86,16 @@ Register-HTModule -Workspace 'Intune' -Category 'Urządzenie' -Key 'int.primary'
 Register-HTModule -Workspace 'Intune' -Category 'Urządzenie' -Key 'int.rename' -Title 'Zmiana nazwy' -Icon 'E8AC' `
     -Description 'Zmiana nazwy urządzenia Windows / macOS (wymaga restartu urządzenia; maks. 15 znaków: litery, cyfry, myślnik).' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTDeviceLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTIntuneDeviceDetail -Id $t.Id) -Fields 'Nazwa', 'Użytkownik', 'Model', 'Numer seryjny', 'System'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Nowa nazwa'
     $m.C.Name = Add-HTTextBox -Parent $row -Width 200 -Placeholder 'np. PL-LAP-0123'
-    Add-HTButton -Parent $row -Module $m -Text 'Zmień nazwę' -Icon 'E8AC' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Zmień nazwę' -Icon 'E8AC' -Primary -Danger -OnClick {
         param($m)
         $name = $m.C.Name.Text.Trim()
-        $t = @(Get-HTTargets -Module $m -Single)[0]
+        $t = @(Get-HTChangeTargets -Module $m -Single)[0]
         if (-not $t -or -not $name) { return }
         Invoke-HTTargetAction -Module $m -Name 'Zmiana nazwy' -Targets @($t) -Confirm "Zmienić nazwę $($t.DeviceName) na $($name)?" -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Rename-HTIntuneDevice -Id $t.Id -NewName $name; "Nowa nazwa: $name (po restarcie)" }
     } | Out-Null
@@ -102,18 +106,22 @@ Register-HTModule -Workspace 'Intune' -Category 'Urządzenie' -Key 'int.rename' 
 Register-HTModule -Workspace 'Intune' -Category 'Akcje zdalne' -Key 'int.actions' -Title 'Akcje zdalne' -Icon 'E7E8' `
     -Description 'Synchronizacja, restart, skanowanie i aktualizacja Microsoft Defender, zdalna blokada, rotacja kluczy BitLocker i hasła LAPS.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTDeviceLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTIntuneDeviceDetail -Id $t.Id) -Fields 'Użytkownik', 'System', 'Zgodność', 'Ostatnia synchronizacja', 'Szyfrowanie', 'Własność'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Zarządzanie'
-    Add-HTButton -Parent $row -Module $m -Text 'Synchronizuj' -Icon 'E895' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Synchronizuj' -Icon 'E895' -Primary -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Synchronizacja' -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Sync-HTIntuneDevice -Id $t.Id; 'Wysłano żądanie synchronizacji' }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Uruchom ponownie' -Icon 'E777' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Uruchom ponownie' -Icon 'E777' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Restart' -Confirm 'Uruchomić ponownie wybrane urządzenia? Użytkownik może utracić niezapisane dane.' -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Restart-HTIntuneDevice -Id $t.Id; 'Wysłano żądanie restartu' }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Microsoft Defender'
     foreach ($a in @(@('QuickScan', 'Szybkie skanowanie', 'E721'), @('FullScan', 'Pełne skanowanie', 'E9F5'), @('UpdateSignatures', 'Aktualizuj sygnatury', 'E896'))) {
-        $b = Add-HTButton -Parent $row2 -Module $m -Text $a[1] -Icon $a[2] -OnClick {
+        $b = Add-HTButton -Parent $row2 -Module $m -Text $a[1] -Icon $a[2] -Danger -OnClick {
             param($m, $s)
             $action = [string]$s.Tag
             Invoke-HTTargetAction -Module $m -Name $(switch ($action) { 'QuickScan' { 'Szybkie skanowanie' } 'FullScan' { 'Pełne skanowanie' } default { 'Aktualizacja sygnatur' } }) -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Invoke-HTIntuneDeviceAction -Id $t.Id -Action $action }
@@ -121,19 +129,19 @@ Register-HTModule -Workspace 'Intune' -Category 'Akcje zdalne' -Key 'int.actions
         $b.Tag = $a[0]
     }
     $row3 = Add-HTToolbarRow -Module $m -Title 'Bezpieczeństwo'
-    Add-HTButton -Parent $row3 -Module $m -Text 'Zablokuj zdalnie' -Icon 'E72E' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Zablokuj zdalnie' -Icon 'E72E' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Zdalna blokada' -Confirm 'Zablokować ekran wybranych urządzeń (telefony / tablety)?' -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Invoke-HTIntuneDeviceAction -Id $t.Id -Action RemoteLock }
     } | Out-Null
-    Add-HTButton -Parent $row3 -Module $m -Text 'Rotuj klucze BitLocker' -Icon 'E8D7' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Rotuj klucze BitLocker' -Icon 'E8D7' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Rotacja kluczy BitLocker' -Confirm 'Wygenerować nowe klucze odzyskiwania BitLocker (np. po podaniu klucza użytkownikowi)?' -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Invoke-HTIntuneDeviceAction -Id $t.Id -Action RotateBitLocker }
     } | Out-Null
-    Add-HTButton -Parent $row3 -Module $m -Text 'Rotuj hasło LAPS' -Icon 'E8D7' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Rotuj hasło LAPS' -Icon 'E8D7' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Rotacja hasła LAPS' -Confirm 'Wymusić zmianę hasła lokalnego administratora (Windows LAPS)?' -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Invoke-HTIntuneDeviceAction -Id $t.Id -Action RotateLaps }
     } | Out-Null
-    Add-HTButton -Parent $row3 -Module $m -Text 'Zlokalizuj' -Icon 'E81D' -OnClick {
+    Add-HTButton -Parent $row3 -Module $m -Text 'Zlokalizuj' -Icon 'E81D' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Lokalizacja urządzenia' -Label { param($t) Get-HTDeviceLabel $t } -Action { param($t) Invoke-HTIntuneDeviceAction -Id $t.Id -Action Locate }
     } | Out-Null
@@ -142,6 +150,10 @@ Register-HTModule -Workspace 'Intune' -Category 'Akcje zdalne' -Key 'int.actions
 Register-HTModule -Workspace 'Intune' -Category 'Akcje zdalne' -Key 'int.wipe' -Title 'Wycofanie i czyszczenie' -Icon 'E74D' `
     -Description 'Akcje nieodwracalne: wycofanie (usunięcie danych firmowych), przywrócenie ustawień fabrycznych i usunięcie rekordu z Intune.' -Build {
     param($m)
+    Add-HTStateCheck -Module $m -Label { param($t) Get-HTDeviceLabel $t } -Action {
+        param($t)
+        Select-HTDetailFields -Detail (Get-HTIntuneDeviceDetail -Id $t.Id) -Fields 'Użytkownik', 'Własność', 'System', 'Zgodność', 'Ostatnia synchronizacja', 'Zarejestrowano'
+    } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Wycofanie'
     Add-HTButton -Parent $row -Module $m -Text 'Wycofaj (retire)' -Icon 'E8F8' -Danger -OnClick {
         param($m)

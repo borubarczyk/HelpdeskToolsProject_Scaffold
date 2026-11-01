@@ -459,6 +459,33 @@ function ConvertTo-HTDetailRows {
     }
 }
 
+function Select-HTDetailFields {
+    <#
+        Wybrane pola słownika szczegółów (także z podsekcji) jako jeden wiersz wyników - np. do «Sprawdź stan».
+        -Fields: nazwy pól albo @{ Name = 'Pole'; Label = 'Kolumna' }. Pole z sekcji wyższego poziomu ma pierwszeństwo;
+        brak pola - pusta wartość.
+    #>
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Detail, [Parameter(Mandatory)][object[]]$Fields)
+    $flat = @{}
+    $queue = New-Object System.Collections.Generic.Queue[System.Collections.IDictionary]
+    $queue.Enqueue($Detail)
+    while ($queue.Count) {
+        $d = $queue.Dequeue()
+        foreach ($k in @($d.Keys)) {
+            $v = $d[$k]
+            if ($v -is [System.Collections.IDictionary]) { $queue.Enqueue($v); continue }
+            if (-not $flat.ContainsKey([string]$k)) { $flat[[string]$k] = $v }
+        }
+    }
+    $row = [ordered]@{}
+    foreach ($f in $Fields) {
+        $name = if ($f -is [System.Collections.IDictionary]) { [string]$f.Name } else { [string]$f }
+        $label = if ($f -is [System.Collections.IDictionary] -and $f.Label) { [string]$f.Label } else { $name }
+        $row[$label] = if ($flat.ContainsKey($name)) { $flat[$name] } else { $null }
+    }
+    return [PSCustomObject]$row
+}
+
 # Liczba dni od podanej daty (null, gdy brak daty)
 function Get-HTDaysSince {
     param ([AllowNull()][object]$Date)
