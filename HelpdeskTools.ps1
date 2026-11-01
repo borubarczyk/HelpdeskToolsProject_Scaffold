@@ -96,6 +96,7 @@ $moduleNames = @(
     "Mfa",
     "QrCode",
     "TenantProfiles",
+    "UserProfiles",
     "UiState",
     "ColumnFilters",
     "Reports",

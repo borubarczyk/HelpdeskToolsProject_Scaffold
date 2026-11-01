@@ -523,6 +523,8 @@ function New-HTM365User {
         [string]$JobTitle,
         [string]$Department,
         [string]$UsageLocation,
+        [string]$CompanyName,
+        [string]$OfficeLocation,
         [bool]$ForceChange = $true,
         [bool]$AccountEnabled = $true
     )
@@ -537,6 +539,8 @@ function New-HTM365User {
     if ($Surname) { $body.surname = $Surname }
     if ($JobTitle) { $body.jobTitle = $JobTitle }
     if ($Department) { $body.department = $Department }
+    if ($CompanyName) { $body.companyName = $CompanyName }
+    if ($OfficeLocation) { $body.officeLocation = $OfficeLocation }
     $location = if ($UsageLocation) { $UsageLocation } else { $Global:DefaultUsageLocation }
     if ($location) { $body.usageLocation = $location }
     return Invoke-HTGraphRequest -Uri "users" -Method POST -Body $body

@@ -90,7 +90,7 @@ Kafelki ze wszystkich połączonych usług i lista problemów; **moduły i środ
 - Bezpieczeństwo: blokada logowania z unieważnieniem sesji, reset hasła (losowe / podane), metody MFA (usuwanie, telefon, Temporary Access Pass), **historia logowań** (IP, lokalizacja, dostęp warunkowy), **diagnoza logowania** («nie mogę się zalogować»: konto, hasło, MFA, ryzyko, dostęp warunkowy, wyjaśnienie kodów błędów 50053, 50074, 53003…), **zasady dostępu warunkowego obejmujące konto**, **zgody aplikacji konta** (z cofaniem).
 - Licencje i grupy: przypisywanie / usuwanie licencji z kontrolą wolnych sztuk, grupy (także pocztowe), **kopiowanie grup od użytkownika wzorcowego**, **błędy licencji grupowych** (z ponowieniem przypisania), **licencje do odzyskania** (konta zablokowane i nieaktywne).
 - Teams: **zespoły** z właścicielami, gośćmi, archiwizacją i ostatnią aktywnością - zespoły bez właściciela, dodanie właściciela, archiwizacja i przywrócenie.
-- Cykl życia: nowy użytkownik (licencja i grupy z wzorca), **masowe tworzenie kont z pliku CSV** (szablon, sprawdzenie pliku, licencje, grupy, przełożony), **offboarding w jednym kroku** (blokada, hasło, autoodpowiedź, przekierowanie, skrzynka współdzielona, GAL, MFA, **dostęp przełożonego do OneDrive**, grupy, przełożony, licencje; powiadomienie Teams), **OneDrive odchodzącego** (dostęp przełożonego z automatycznym odebraniem po N dniach, udostępnione pliki), **usunięci użytkownicy** (przywracanie z kosza katalogu).
+- Cykl życia: nowy użytkownik (licencja i grupy z wzorca) z **profilami tworzenia kont** - np. osobny profil dla każdego klienta: format loginu (`{imie}.{nazwisko}`, `{i}.{nazwisko}`…, bez polskich znaków), domena, stanowisko, dział, firma, biuro, lokalizacja użycia, licencje, grupy i konto wzorcowe; profil jest proponowany w tenancie z jego domeną, edycja i import / eksport JSON: «Profile kont…» (plik `UserProfiles.json`), **masowe tworzenie kont z pliku CSV** (szablon, sprawdzenie pliku, licencje, grupy, przełożony), **offboarding w jednym kroku** (blokada, hasło, autoodpowiedź, przekierowanie, skrzynka współdzielona, GAL, MFA, **dostęp przełożonego do OneDrive**, grupy, przełożony, licencje; powiadomienie Teams), **OneDrive odchodzącego** (dostęp przełożonego z automatycznym odebraniem po N dniach, udostępnione pliki), **usunięci użytkownicy** (przywracanie z kosza katalogu).
 - Raporty: **nieaktywni użytkownicy**, **goście**, **rejestracja MFA**, bez licencji, **role administracyjne**, **nieudane logowania** w organizacji.
 
 ### Bezpieczeństwo
@@ -206,6 +206,7 @@ Modules/
   Mfa.psm1                     MFA: TOTP (RFC 6238), Base32, konta w Mfa.json (DPAPI), uprawnienia kont
   QrCode.psm1                  Kod QR (ISO/IEC 18004) bez zewnętrznych bibliotek - link otpauth:// przy włączaniu MFA
   TenantProfiles.psm1          Profile tenantów: normalizacja, walidacja, wyszukiwanie, scalanie, import i eksport CSV
+  UserProfiles.psm1            Profile tworzenia kont: format loginu, domena, licencje, grupy, wzorzec; zapis JSON
   UiState.psm1                 Zapamiętany układ: ulubione, ostatnie moduły, kolumny, widoki filtrów, okno
   ColumnFilters.psm1           Filtry kolumn tabeli wyników (logika autofiltru)
   Reports.psm1                 Raporty HTML z tabel wyników, wizytówka użytkownika

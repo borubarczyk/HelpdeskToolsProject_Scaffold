@@ -397,6 +397,141 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
 #endregion
 
 #region Cykl życia
+#region Profile tworzenia kont
+function Save-HTUserProfile {
+    # Zapis profilu (nowy albo zmieniony; -Touch - data ostatniego użycia)
+    param([Parameter(Mandatory)]$UserProfile, [string]$OriginalName = '', [switch]$Touch)
+    $p = ConvertTo-HTUserProfile $UserProfile
+    if ($Touch) { $p.LastUsed = (Get-Date).ToUniversalTime().ToString('o') }
+    $others = @(Get-HTUserProfiles | Where-Object { $_.Name -ine $(if ($OriginalName) { $OriginalName } else { $p.Name }) })
+    Save-HTUserProfiles -Profiles (@($others) + @($p))
+}
+
+function Edit-HTUserProfile {
+    <#
+        Formularz profilu tworzenia kont (sekcje). Zwraca profil albo $null. Błędy - komunikat i formularz ponownie
+        z wpisanymi wartościami. Licencje, grupy i konto wzorcowe można wybrać z połączonego tenanta.
+    #>
+    param($UserProfile = $null, [switch]$New)
+    $base = if ($UserProfile) { ConvertTo-HTUserProfile $UserProfile } else { ConvertTo-HTUserProfile @{} }
+    $original = if ($New) { '' } else { $base.Name }
+    $domains = @()
+    if ($Global:ConnectedToGraphAPI) { try { $domains = @(Get-HTM365Domains) } catch { Write-Verbose $_ } }
+    $values = $base
+    while ($true) {
+        $fields = @(
+            @{ Type = 'Header'; Label = 'Profil'; Icon = 'E77B'; Hint = 'Profil jest proponowany przy «Utwórz użytkownika…» w tenancie, który ma domenę profilu.' }
+            @{ Name = 'Name'; Label = 'Nazwa profilu (np. nazwa klienta)'; Required = $true; Default = $values.Name }
+            @{ Name = 'Domain'; Label = 'Domena kont (część UPN po @, puste - każdy tenant)'; Type = 'Combo'; Editable = $true; Options = $domains; Default = $values.Domain }
+            @{ Name = 'LoginFormat'; Label = 'Format loginu'; Type = 'Combo'; Editable = $true; Options = @(Get-HTLoginFormats | ForEach-Object { $_.Format }); Default = $values.LoginFormat; Hint = '{imie}, {nazwisko}, {i} - pierwsza litera imienia, {n} - nazwiska. Np. {i}.{nazwisko} - j.kowalski. Polskie znaki są zamieniane.' }
+            @{ Name = 'UsageLocation'; Label = 'Lokalizacja użycia (kod kraju)'; Default = $values.UsageLocation; Placeholder = 'PL' }
+            @{ Name = 'Notes'; Label = 'Notatki'; Default = $values.Notes }
+            @{ Type = 'Header'; Label = 'Dane konta'; Icon = 'E779'; Hint = 'Wartości domyślne w formularzu nowego konta (można je zmienić przy tworzeniu).' }
+            @{ Name = 'JobTitle'; Label = 'Stanowisko'; Default = $values.JobTitle }
+            @{ Name = 'Department'; Label = 'Dział'; Default = $values.Department }
+            @{ Name = 'CompanyName'; Label = 'Firma'; Default = $values.CompanyName }
+            @{ Name = 'OfficeLocation'; Label = 'Biuro'; Default = $values.OfficeLocation }
+            @{ Name = 'ForceChange'; Label = 'Zmiana hasła przy pierwszym logowaniu'; Type = 'Check'; Default = $values.ForceChange }
+            @{ Type = 'Header'; Label = 'Licencje i grupy'; Icon = 'E8EC'; Hint = 'Przypisywane po utworzeniu konta. Grupy dynamiczne i synchronizowane z AD są pomijane.' }
+            @{ Name = 'Licenses'; Label = 'Licencje (kody SKU, jeden w wierszu)'; Type = 'Multiline'; Height = 70; Default = ($values.Licenses -join "`r`n") }
+            @{ Type = 'Buttons'; Buttons = @(@{ Text = 'Wybierz licencje z tenanta…'; Icon = 'E8EC'; OnClick = {
+                            param($w)
+                            if (-not (Assert-HTConnection -Service 'Graph')) { return }
+                            $items = @(Get-HTSubscribedSkus -Force | ForEach-Object { [PSCustomObject]@{ Licencja = (Get-HTSkuFriendlyName $_.SkuPartNumber); SKU = $_.SkuPartNumber; Wolne = $_.Available } })
+                            $sel = @(Show-HTSelectionDialog -Title 'Licencje profilu' -Items $items -Columns @(@{ Text = 'Licencja'; Property = 'Licencja' }, @{ Text = 'SKU'; Property = 'SKU' }, @{ Text = 'Wolne'; Property = 'Wolne' }) -MultiSelect -Icon 'E8EC')
+                            if ($sel.Count) { $box = $w.Tag.Controls['Licenses'].Control; $box.Text = (@(ConvertTo-HTStringList @($box.Text, @($sel | Where-Object { $_ } | ForEach-Object { $_.SKU })))) -join "`r`n" }
+                        }
+                    }) }
+            @{ Name = 'Groups'; Label = 'Grupy (nazwy, jedna w wierszu)'; Type = 'Multiline'; Height = 90; Default = ($values.Groups -join "`r`n") }
+            @{ Type = 'Buttons'; Buttons = @(@{ Text = 'Wybierz grupy z tenanta…'; Icon = 'E902'; OnClick = {
+                            param($w)
+                            if (-not (Assert-HTConnection -Service 'Graph')) { return }
+                            $groups = @(Get-HTM365Groups | Where-Object { Test-HTM365GroupManageable -Group $_ })
+                            $sel = @(Show-HTSelectionDialog -Title 'Grupy profilu' -Items $groups -Columns @(@{ Text = 'Nazwa'; Property = 'DisplayName' }, @{ Text = 'Typ'; Property = 'Type' }, @{ Text = 'E-mail'; Property = 'Mail' }) -MultiSelect -Icon 'E902')
+                            if ($sel.Count) { $box = $w.Tag.Controls['Groups'].Control; $box.Text = (@(ConvertTo-HTStringList @($box.Text, @($sel | Where-Object { $_ } | ForEach-Object { $_.DisplayName })))) -join "`r`n" }
+                        }
+                    }) }
+            @{ Name = 'TemplateUser'; Label = 'Konto wzorcowe - nowe konto dostanie jego grupy (UPN, opcjonalnie)'; Default = $values.TemplateUser }
+            @{ Type = 'Buttons'; Buttons = @(@{ Text = 'Wybierz konto…'; Icon = 'E77B'; OnClick = { param($w) $u = Select-HTM365User -Title 'Konto wzorcowe profilu'; if ($u) { $w.Tag.Controls['TemplateUser'].Control.Text = [string]$u.UserPrincipalName } } }) }
+        )
+        $form = Show-HTFormDialog -Title $(if ($New) { 'Nowy profil konta' } else { "Profil konta: $original" }) -Fields $fields -Sections -Width 940 -MaxHeight 520 -Icon 'E77B' -OkText 'Zapisz'
+        if (-not $form) { return $null }
+        $candidate = ConvertTo-HTUserProfile $form
+        $candidate.LastUsed = $base.LastUsed
+        $errors = @(Test-HTUserProfile -UserProfile $candidate -Existing @(Get-HTUserProfiles) -OriginalName $original)
+        if (-not $errors.Count) { return $candidate }
+        Show-HTWarning -Title 'Profil konta' -Text ("Popraw:`n`n" + ($errors -join "`n"))
+        $values = $candidate
+    }
+}
+
+function Show-HTUserProfilesEditor {
+    # Profile tworzenia kont: dodawanie, edycja, duplikat, usuwanie, import i eksport (JSON)
+    while ($true) {
+        $profiles = @(Get-HTUserProfiles)
+        $list = if ($profiles.Count) { "Profili: $($profiles.Count)`n$(@($profiles | Select-Object -First 10 | ForEach-Object { "• $($_.Name) - $(Get-HTUserProfileDescription $_)" }) -join "`n")" } else { 'Brak profili. Profil zapamiętuje, jak tworzyć konta u danego klienta: format loginu, domenę, firmę, licencje, grupy i konto wzorcowe.' }
+        $choices = @(
+            @{ Key = 'Add'; Text = 'Nowy profil…'; Icon = 'E710'; Description = 'Np. dla klienta albo działu' }
+            if ($profiles.Count) { @{ Key = 'Edit'; Text = 'Edytuj profil…'; Icon = 'E70F' } }
+            if ($profiles.Count) { @{ Key = 'Copy'; Text = 'Duplikuj profil…'; Icon = 'E8C8'; Description = 'Nowy profil na podstawie istniejącego' } }
+            @{ Key = 'Import'; Text = 'Import z pliku…'; Icon = 'E8B5'; Description = 'Plik JSON z eksportu (np. z innego komputera)' }
+            if ($profiles.Count) { @{ Key = 'Export'; Text = 'Eksport do pliku…'; Icon = 'EDE1' } }
+            if ($profiles.Count) { @{ Key = 'Remove'; Text = 'Usuń profile…'; Icon = 'E74D'; Style = 'Danger' } }
+        )
+        $choice = Show-HTChoiceDialog -Title 'Profile tworzenia kont' -Prompt $list -Icon 'E77B' -Choices $choices
+        $pickProfile = {
+            param([string]$Title)
+            $key = Show-HTChoiceDialog -Title $Title -Icon 'E77B' -Choices @($profiles | ForEach-Object { @{ Key = $_.Name; Text = $_.Name; Icon = 'E77B'; Description = (Get-HTUserProfileDescription $_) } })
+            if ($key) { @($profiles | Where-Object { $_.Name -eq $key })[0] }
+        }
+        switch ($choice) {
+            'Add' { $edited = Edit-HTUserProfile -New; if ($edited) { Save-HTUserProfile -UserProfile $edited; Write-Log -Message "Zapisano profil konta: $($edited.Name)" -Type 'Info' } }
+            'Edit' {
+                $p = & $pickProfile 'Edytuj profil'
+                if ($p) { $edited = Edit-HTUserProfile -UserProfile $p; if ($edited) { Save-HTUserProfile -UserProfile $edited -OriginalName $p.Name; Write-Log -Message "Zmieniono profil konta: $($edited.Name)" -Type 'Info' } }
+            }
+            'Copy' {
+                $p = & $pickProfile 'Duplikuj profil'
+                if ($p) { $copy = ConvertTo-HTUserProfile $p; $copy.Name = "$($p.Name) (kopia)"; $copy.LastUsed = ''; $edited = Edit-HTUserProfile -UserProfile $copy -New; if ($edited) { Save-HTUserProfile -UserProfile $edited } }
+            }
+            'Import' {
+                $path = Select-HTOpenFile -Title 'Import profili kont' -Filter 'JSON (*.json)|*.json|Wszystkie pliki (*.*)|*.*'
+                if (-not $path) { continue }
+                try { $incoming = @(Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -ErrorAction Stop | ForEach-Object { $_ }) }
+                catch { Show-HTError 'Nie odczytano pliku profili.' $_; continue }
+                $same = @($incoming | Where-Object { $n = [string]$_.Name; @($profiles | Where-Object { $_.Name -ieq $n }).Count })
+                $skip = $false
+                if ($same.Count) {
+                    $mode = Show-HTChoiceDialog -Title 'Import profili kont' -Prompt "Profile w pliku: $($incoming.Count), w tym o istniejących nazwach: $($same.Count)." -Icon 'E8B5' -Choices @(
+                        @{ Key = 'Replace'; Text = 'Zastąp istniejące profile'; Icon = 'E72C' }
+                        @{ Key = 'Skip'; Text = 'Pomiń istniejące profile'; Icon = 'E8FB' }
+                    )
+                    if (-not $mode) { continue }
+                    $skip = ($mode -eq 'Skip')
+                }
+                $merge = Merge-HTUserProfiles -Existing $profiles -Incoming $incoming -Skip:$skip
+                Save-HTUserProfiles -Profiles $merge.Profiles
+                Write-Log -Message "Profile kont z pliku $(Split-Path $path -Leaf): dodane $($merge.Added), zastąpione $($merge.Replaced), pominięte $($merge.Skipped)." -Type 'Info&Notification'
+            }
+            'Export' {
+                $path = Select-HTSaveFile -Title 'Eksport profili kont' -Filter 'JSON (*.json)|*.json' -FileName 'ProfileKont.json' -DefaultExt '.json'
+                if ($path) { Save-HTUserProfiles -Profiles $profiles -Path $path; Show-HTToast "Zapisano profile: $($profiles.Count)." 'ok' }
+            }
+            'Remove' {
+                $rows = @($profiles | ForEach-Object { [PSCustomObject]@{ Nazwa = $_.Name; Opis = (Get-HTUserProfileDescription $_) } })
+                $sel = @(Show-HTSelectionDialog -Title 'Usuń profile kont' -Items $rows -Columns @(@{ Text = 'Nazwa'; Property = 'Nazwa' }, @{ Text = 'Opis'; Property = 'Opis' }) -MultiSelect -OkText 'Usuń' -Icon 'E74D')
+                $names = @($sel | Where-Object { $_ } | ForEach-Object { $_.Nazwa })
+                if ($names.Count -and (Show-HTConfirm -Title 'Usuń profile kont' -Message 'Usunąć zaznaczone profile tworzenia kont?' -Items $names -Danger -ConfirmText 'Usuń')) {
+                    Save-HTUserProfiles -Profiles @($profiles | Where-Object { $names -notcontains $_.Name })
+                    Write-Log -Message "Usunięto profile kont: $($names -join ', ')" -Type 'Info'
+                }
+            }
+            default { return }
+        }
+    }
+}
+#endregion
+
 Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Title 'Nowy użytkownik' -Icon 'E8FA' -Service 'Graph' `
     -Description 'Tworzy konto w chmurze z losowym hasłem; opcjonalnie od razu licencja i grupy skopiowane z użytkownika wzorcowego.' -Build {
     param($m)
@@ -408,51 +543,106 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Tit
         Set-HTBusy -Busy $true -Text 'Pobieranie domen i licencji…'
         try {
             $domains = @(Get-HTM365Domains)
-            $skus = @(Get-HTSubscribedSkus -Force | Where-Object { $_.Status -eq 'Enabled' -and $_.Available -gt 0 })
+            $allSkus = @(Get-HTSubscribedSkus -Force | Where-Object { $_.Status -eq 'Enabled' })
+            $skus = @($allSkus | Where-Object { $_.Available -gt 0 })
         }
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        # Profil tworzenia kont (np. klienta): format loginu, domena, dane firmy, licencje, grupy i konto wzorcowe
+        $userProfile = $null
+        $profiles = @(Find-HTUserProfilesForDomains -Profiles @(Get-HTUserProfiles) -Domains $domains)
+        if ($profiles.Count) {
+            $choices = @(@($profiles | ForEach-Object { @{ Key = $_.Name; Text = $_.Name; Icon = 'E77B'; Description = (Get-HTUserProfileDescription $_) } }) + @(@{ Key = '__none'; Text = 'Bez profilu'; Icon = 'E8FA'; Description = 'Puste pola - wszystko ręcznie' }))
+            $pick = Show-HTChoiceDialog -Title 'Profil nowego konta' -Prompt 'Profile pasujące do domen tego tenanta (edycja: «Profile kont…»).' -Icon 'E77B' -Choices $choices
+            if (-not $pick) { return }
+            if ($pick -ne '__none') { $userProfile = @($profiles | Where-Object { $_.Name -eq $pick })[0] }
+        }
+        $up = $userProfile
+        $format = if ($up) { $up.LoginFormat } else { '{imie}.{nazwisko}' }
         $skuOptions = @('(bez licencji)') + @($skus | ForEach-Object { "$(Get-HTSkuFriendlyName $_.SkuPartNumber) [$($_.SkuPartNumber)] - wolne: $($_.Available)" })
-        $form = Show-HTFormDialog -Title 'Nowy użytkownik Microsoft 365' -Icon 'E8FA' -OkText 'Utwórz' -Fields @(
+        $fields = @(
+            if ($up -and $up.Notes) { @{ Type = 'Info'; Label = "Profil «$($up.Name)»: $($up.Notes)" } }
             @{ Name = 'Given'; Label = 'Imię'; Required = $true }
             @{ Name = 'Surname'; Label = 'Nazwisko'; Required = $true }
-            @{ Name = 'Login'; Label = 'Login (część UPN przed @)'; Placeholder = 'puste = imie.nazwisko' }
-            @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains }
-            @{ Name = 'JobTitle'; Label = 'Stanowisko' }
-            @{ Name = 'Department'; Label = 'Dział' }
-            @{ Name = 'UsageLocation'; Label = 'Lokalizacja użycia'; Default = $Global:DefaultUsageLocation }
-            @{ Name = 'Sku'; Label = 'Licencja'; Type = 'Combo'; Options = $skuOptions }
-            @{ Name = 'CopyGroups'; Label = 'Skopiuj grupy z użytkownika wzorcowego (wybór po kliknięciu «Utwórz»)'; Type = 'Check' }
-            @{ Name = 'Force'; Label = 'Zmiana hasła przy pierwszym logowaniu'; Type = 'Check'; Default = $true }
+            @{ Name = 'Login'; Label = 'Login (część UPN przed @)'; Placeholder = "puste = $format, np. $(ConvertTo-HTLoginFromFormat -Format $format -GivenName 'Jan' -Surname 'Kowalski')" }
+            @{ Name = 'Domain'; Label = 'Domena'; Type = 'Combo'; Options = $domains; Default = $(if ($up -and $domains -contains $up.Domain) { $up.Domain }) }
+            @{ Name = 'JobTitle'; Label = 'Stanowisko'; Default = $(if ($up) { $up.JobTitle }) }
+            @{ Name = 'Department'; Label = 'Dział'; Default = $(if ($up) { $up.Department }) }
+            @{ Name = 'CompanyName'; Label = 'Firma'; Default = $(if ($up) { $up.CompanyName }) }
+            @{ Name = 'OfficeLocation'; Label = 'Biuro'; Default = $(if ($up) { $up.OfficeLocation }) }
+            @{ Name = 'UsageLocation'; Label = 'Lokalizacja użycia'; Default = $(if ($up -and $up.UsageLocation) { $up.UsageLocation } else { $Global:DefaultUsageLocation }) }
+            if ($up -and $up.Licenses.Count) { @{ Name = 'ProfileLicenses'; Label = "Licencje z profilu: $(@($up.Licenses | ForEach-Object { Get-HTSkuFriendlyName $_ }) -join ', ')"; Type = 'Check'; Default = $true } }
+            @{ Name = 'Sku'; Label = $(if ($up -and $up.Licenses.Count) { 'Dodatkowa licencja' } else { 'Licencja' }); Type = 'Combo'; Options = $skuOptions }
+            if ($up -and $up.Groups.Count) { @{ Name = 'ProfileGroups'; Label = "Grupy z profilu ($($up.Groups.Count)): $($up.Groups -join ', ')"; Type = 'Check'; Default = $true } }
+            if ($up -and $up.TemplateUser) { @{ Name = 'ProfileTemplate'; Label = "Grupy konta wzorcowego z profilu: $($up.TemplateUser)"; Type = 'Check'; Default = $true } }
+            @{ Name = 'CopyGroups'; Label = 'Skopiuj grupy z innego użytkownika wzorcowego (wybór po kliknięciu «Utwórz»)'; Type = 'Check' }
+            @{ Name = 'Force'; Label = 'Zmiana hasła przy pierwszym logowaniu'; Type = 'Check'; Default = $(if ($up) { $up.ForceChange } else { $true }) }
         )
+        $form = Show-HTFormDialog -Title 'Nowy użytkownik Microsoft 365' -Description $(if ($up) { "Profil: $($up.Name)" } else { '' }) -Icon 'E8FA' -OkText 'Utwórz' -Fields $fields
         if (-not $form) { return }
-        $login = if ($form.Login) { $form.Login } else { New-HTADLoginName -GivenName $form.Given -Surname $form.Surname }
+        $login = if ($form.Login) { $form.Login } else { ConvertTo-HTLoginFromFormat -Format $format -GivenName $form.Given -Surname $form.Surname }
         $upn = "$login@$($form.Domain)"
         $template = if ($form.CopyGroups) { Select-HTM365User -Title 'Użytkownik wzorcowy' -Prompt 'Nowe konto otrzyma jego grupy.' } else { $null }
         $sku = if ($form.Sku -and $form.Sku -ne '(bez licencji)') { $skus[[array]::IndexOf($skuOptions, $form.Sku) - 1] } else { $null }
-        $extra = @(if ($template) { "Grupy z konta wzorcowego: $(Get-HTM365Label $template)" })
+        # Licencje, grupy i konto wzorcowe z profilu
+        $profileSkus = @()
+        $missingSkus = @()
+        if ($form.Contains('ProfileLicenses') -and $form.ProfileLicenses) {
+            foreach ($name in @($up.Licenses)) {
+                $found = @($allSkus | Where-Object { $_.SkuPartNumber -ieq $name -or "$($_.SkuId)" -ieq $name })[0]
+                if ($found) { $profileSkus += $found } else { $missingSkus += $name }
+            }
+        }
+        $profileGroups = if ($form.Contains('ProfileGroups') -and $form.ProfileGroups) { @($up.Groups) } else { @() }
+        $profileTemplate = if ($form.Contains('ProfileTemplate') -and $form.ProfileTemplate) { $up.TemplateUser } else { '' }
+        $extra = @(
+            if ($template) { "Grupy z konta wzorcowego: $(Get-HTM365Label $template)" }
+            if ($missingSkus.Count) { "Brak w tenancie licencji z profilu (pominięte): $($missingSkus -join ', ')" }
+        )
         if (-not (Confirm-HTChange -Name 'Tworzenie użytkownika' -Labels @($upn) -Summary (@(Get-HTPendingFormSummary) + $extra) -Confirm "Utworzyć konto $($upn)? Hasło zostanie wygenerowane.")) { return }
         Invoke-HTQuery -Module $m -Name 'Tworzenie użytkownika' -KeepResults -ScriptBlock {
             $password = New-HTRandomPassword
             $user = New-HTM365User -DisplayName "$($form.Given) $($form.Surname)" -UserPrincipalName $upn -Password $password -GivenName $form.Given -Surname $form.Surname `
-                -JobTitle $form.JobTitle -Department $form.Department -UsageLocation $form.UsageLocation -ForceChange $form.Force
-            $notes = @('Konto utworzone')
-            if ($sku) {
-                try { Set-HTM365UserLicense -Id $user.id -AddSkuIds @("$($sku.SkuId)") -UsageLocation $form.UsageLocation; $notes += "licencja $($sku.SkuPartNumber)" }
-                catch { $notes += "błąd licencji: $($_.Exception.Message)" }
+                -JobTitle $form.JobTitle -Department $form.Department -CompanyName $form.CompanyName -OfficeLocation $form.OfficeLocation -UsageLocation $form.UsageLocation -ForceChange $form.Force
+            $notes = New-Object System.Collections.Generic.List[string]
+            $notes.Add('Konto utworzone')
+            foreach ($s in @(@($profileSkus) + @($sku) | Where-Object { $_ } | Sort-Object { "$($_.SkuId)" } -Unique)) {
+                try { Set-HTM365UserLicense -Id $user.id -AddSkuIds @("$($s.SkuId)") -UsageLocation $form.UsageLocation; $notes.Add("licencja $(Get-HTSkuFriendlyName $s.SkuPartNumber)") }
+                catch { $notes.Add("błąd licencji $($s.SkuPartNumber): $($_.Exception.Message)") }
             }
-            if ($template) {
-                $added = 0
-                foreach ($g in @(Get-HTM365UserGroups -Id $template.Id | Where-Object { Test-HTM365GroupManageable -Group $_ })) {
-                    try { Add-HTM365UserToGroup -Group $g -User ([PSCustomObject]@{ Id = $user.id; UserPrincipalName = $upn }); $added++ } catch { $notes += "grupa $($g.DisplayName): $($_.Exception.Message)" }
+            $newUser = [PSCustomObject]@{ Id = $user.id; UserPrincipalName = $upn }
+            $added = 0
+            if ($profileGroups.Count) {
+                $allGroups = @(Get-HTM365Groups)
+                foreach ($gName in $profileGroups) {
+                    $g = @($allGroups | Where-Object { $_.DisplayName -ieq $gName -or $_.Mail -ieq $gName -or "$($_.Id)" -eq $gName })[0]
+                    if (-not $g) { $notes.Add("nie znaleziono grupy «$gName»"); continue }
+                    if (-not (Test-HTM365GroupManageable -Group $g)) { $notes.Add("grupa «$gName» dynamiczna albo z AD - pominięta"); continue }
+                    try { Add-HTM365UserToGroup -Group $g -User $newUser; $added++ } catch { $notes.Add("grupa $($gName): $($_.Exception.Message)") }
                 }
-                $notes += "grup: $added"
             }
-            Write-Log -Message "Utworzono użytkownika M365: $upn" -Type 'Info&Notification'
-            [PSCustomObject]@{ Obiekt = $upn; Status = 'OK'; Hasło = $password; Szczegóły = ($notes -join '; ') }
+            $templateIds = @(if ($template) { $template.Id })
+            if ($profileTemplate) {
+                try { $templateIds += (Invoke-HTGraphRequest -Uri "users/$([uri]::EscapeDataString($profileTemplate))?`$select=id").id }
+                catch { $notes.Add("nie znaleziono konta wzorcowego $profileTemplate") }
+            }
+            $done = @{}
+            foreach ($tid in @($templateIds | Where-Object { $_ } | Select-Object -Unique)) {
+                foreach ($g in @(Get-HTM365UserGroups -Id $tid | Where-Object { Test-HTM365GroupManageable -Group $_ })) {
+                    if ($done.ContainsKey("$($g.Id)")) { continue }
+                    $done["$($g.Id)"] = $true
+                    try { Add-HTM365UserToGroup -Group $g -User $newUser; $added++ }
+                    catch { if ("$($_.Exception.Message)" -notmatch 'already exist|już') { $notes.Add("grupa $($g.DisplayName): $($_.Exception.Message)") } }
+                }
+            }
+            if ($added) { $notes.Add("grup: $added") }
+            Write-Log -Message "Utworzono użytkownika M365: $upn$(if ($up) { " (profil $($up.Name))" })" -Type 'Info&Notification'
+            [PSCustomObject]@{ Obiekt = $upn; Status = 'OK'; Hasło = $password; Profil = $(if ($up) { $up.Name } else { '' }); Szczegóły = ($notes -join '; ') }
         }
+        if ($up) { Save-HTUserProfile -UserProfile $up -OriginalName $up.Name -Touch }
         $p = Get-HTPanel 'm365users'
         if ($p) { Invoke-HTPanelLoad -Panel $p -Quiet }
     } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Profile kont…' -Icon 'E77B' -ToolTip 'Profile tworzenia kont (np. dla każdego klienta): format loginu, domena, firma, licencje, grupy, konto wzorcowe' -OnClick { param($m) Show-HTUserProfilesEditor } | Out-Null
     if ($Global:ShowOnPremises) { Add-HTLabel -Parent $row -Hint -Text 'Dla kont synchronizowanych z lokalnym AD użyj przestrzeni «Użytkownicy AD».' | Out-Null }
 }
 
