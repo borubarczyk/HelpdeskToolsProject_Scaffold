@@ -5,8 +5,28 @@ $script:UserListSelect = "id,displayName,userPrincipalName,mail,accountEnabled,j
 $script:SkuCache = $null
 
 # Lista użytkowników
+# Konta systemowe w Entra ID (konto synchronizacji Entra Connect «Sync_…», skrzynka eDiscovery) - domyślnie ukrywane
+# na liście kont i w raportach; pokazanie: Ustawienia > Microsoft 365 i Exchange > «Pokazuj konta i skrzynki systemowe»
+function Test-HTSystemAccount {
+    param ($User)
+    if (-not $User) { return $false }
+    $upn = "$($User.userPrincipalName)"
+    return ("$($User.displayName)" -in 'On-Premises Directory Synchronization Service Account', 'Discovery Search Mailbox' -or
+        $upn -match '^(Sync_[^@]+_[0-9a-f]+@|ADToAADSyncServiceAccount@|DiscoverySearchMailbox)')
+}
+
+function Test-HTHideSystemAccounts { return (-not $Global:ShowSystemMailboxes) }
+
 function Get-HTM365Users {
-    $users = Invoke-HTGraphRequest -Uri "users?`$select=$script:UserListSelect&`$top=999" -All
+    param ([switch]$IncludeSystem)
+    $users = @(Invoke-HTGraphRequest -Uri "users?`$select=$script:UserListSelect&`$top=999" -All)
+    if (-not $IncludeSystem -and (Test-HTHideSystemAccounts)) {
+        $hidden = @($users | Where-Object { Test-HTSystemAccount $_ })
+        if ($hidden.Count) {
+            Write-Log -Message "Ukryto konta systemowe: $($hidden.Count) ($(@($hidden | ForEach-Object { "$($_.userPrincipalName)" }) -join ', ')) - pokazanie: Ustawienia > Microsoft 365 i Exchange." -Type 'Info'
+            $users = @($users | Where-Object { -not (Test-HTSystemAccount $_) })
+        }
+    }
     $skuNames = Get-HTSkuNameMap
     return @($users | ForEach-Object {
             [PSCustomObject]@{
@@ -606,7 +626,9 @@ function Get-HTM365InactiveUsers {
     $select = "id,displayName,userPrincipalName,accountEnabled,userType,createdDateTime,assignedLicenses,department,signInActivity"
     $users = Invoke-HTGraphRequest -Uri "users?`$select=$select&`$top=999" -All
     $skuNames = Get-HTSkuNameMap
+    $hideSystem = Test-HTHideSystemAccounts
     foreach ($u in $users) {
+        if ($hideSystem -and (Test-HTSystemAccount $u)) { continue }
         if (-not $IncludeDisabled -and -not $u.accountEnabled) { continue }
         if (-not $IncludeGuests -and $u.userType -eq "Guest") { continue }
         $last = Get-HTM365LastSignIn -SignInActivity $u.signInActivity
