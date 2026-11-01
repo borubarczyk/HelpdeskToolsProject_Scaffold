@@ -611,6 +611,56 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.deleted' 
 }
 #endregion
 
+#region Akcje na kontach z dowolnych wyników (prawy przycisk > «Konto Microsoft 365»)
+function ConvertTo-HTGraphUserKey {
+    # UPN gościa (z #EXT#) w adresie zapytania Graph
+    param([string]$Id)
+    return ($Id -replace '#', '%23')
+}
+
+Register-HTObjectKind -Kind 'M365User' -Title 'Konto Microsoft 365' -Icon 'E77B' -Service 'Graph' -Workspaces @('Dashboard', 'M365', 'Security', 'Exchange', 'Intune', 'Sites', 'SharePoint', 'Tasks') -Resolve {
+    param($o)
+    foreach ($n in 'UPN', 'UserPrincipalName', 'Konto', 'Użytkownik') {
+        $p = $o.PSObject.Properties[$n]
+        if ($p -and "$($p.Value)" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { return "$($p.Value)" }
+    }
+    $p = $o.PSObject.Properties['UserId']
+    if ($p -and "$($p.Value)" -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') { return "$($p.Value)" }
+    return $null
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Szczegóły konta' -Icon 'E8A1' -View -Action {
+    param($Id, $Row)
+    Set-HTBusy -Busy $true -Text "Szczegóły konta $Id…"
+    try { $rows = @(ConvertTo-HTDetailRows -Data (Get-HTM365UserDetail -Id (ConvertTo-HTGraphUserKey $Id))) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    Show-HTDataViewer -Title "Konto: $Id" -Data $rows -ExportName "konto_$Id" -Icon 'E77B'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Stan konta (logowanie, sesje)' -Icon 'E946' -View -Action {
+    param($Id, $Row)
+    Set-HTBusy -Busy $true -Text "Stan konta $Id…"
+    try { $state = Get-HTM365AccountState -Id (ConvertTo-HTGraphUserKey $Id) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    Show-HTDataViewer -Title "Stan konta: $Id" -Data @($state) -ExportName "stan_$Id" -Icon 'E946'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Zablokuj logowanie' -Icon 'E72E' -Danger -Name 'Blokada logowania' -Confirm 'Zablokować logowanie i unieważnić wszystkie sesje zaznaczonych kont?' -Action {
+    param($Id, $Row)
+    $key = ConvertTo-HTGraphUserKey $Id
+    Set-HTM365UserEnabled -Id $key -Enabled $false -RevokeSessions $true
+    Register-HTUndo -Operation 'Blokada logowania' -Object $Id -Kind 'UserEnabled' -Data @{ UserId = $key; Enabled = $true }
+    'Logowanie zablokowane, sesje unieważnione'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Odblokuj logowanie' -Icon 'E785' -Danger -Name 'Odblokowanie logowania' -Confirm 'Odblokować logowanie zaznaczonych kont?' -Action {
+    param($Id, $Row)
+    $key = ConvertTo-HTGraphUserKey $Id
+    Set-HTM365UserEnabled -Id $key -Enabled $true
+    Register-HTUndo -Operation 'Odblokowanie logowania' -Object $Id -Kind 'UserEnabled' -Data @{ UserId = $key; Enabled = $false }
+    'Logowanie odblokowane'
+}
+Register-HTObjectAction -Kind 'M365User' -Text 'Unieważnij sesje' -Icon 'E7E8' -Danger -Name 'Unieważnienie sesji' -Confirm 'Wylogować zaznaczone konta ze wszystkich aplikacji i urządzeń?' -Action {
+    param($Id, $Row)
+    Revoke-HTM365UserSessions -Id (ConvertTo-HTGraphUserKey $Id)
+    'Sesje unieważnione'
+}
+#endregion
+
 #region Raporty
 function Register-HTM365Report {
     param([string]$Key, [string]$Title, [string]$Icon, [string]$Description, [scriptblock]$Query, [switch]$Days, [int]$DefaultDays = 0, [string]$DaysLabel = 'Dni:', [scriptblock]$Extra)

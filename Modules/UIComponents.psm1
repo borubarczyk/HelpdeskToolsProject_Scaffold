@@ -3758,6 +3758,11 @@ function Add-HTButton {
     Register-HTControlHandler -Control $b -EventName 'Click' -Module $Module -Action $OnClick
     [void]$Module.Buttons.Add($b)
     if ($Primary -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
+    # Przyciski zmian (czerwone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
+    if ($Danger) {
+        if (-not $Module['ChangeButtons']) { $Module['ChangeButtons'] = New-Object System.Collections.Generic.List[hashtable] }
+        $Module['ChangeButtons'].Add(@{ Button = $b; Text = $Text; Icon = $Icon })
+    }
     [void]$Parent.Children.Add($b)
     return $b
 }
@@ -3767,6 +3772,85 @@ function Add-HTRowAction {
     param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][scriptblock]$Action, [string]$Icon = 'E76C', [switch]$Danger)
     [void]$Module.RowActions.Add(@{ Text = $Text; Action = $Action; Icon = $Icon; Danger = [bool]$Danger })
 }
+
+#region Akcje na obiektach w wynikach (np. blokada konta z raportu nieaktywnych użytkowników)
+<#
+    Rodzaj obiektu rozpoznawany w wierszach wyników dowolnego modułu: -Resolve { param($row) } zwraca identyfikator
+    (np. UPN) albo $null. Akcje rodzaju (Register-HTObjectAction) są w podmenu «<Tytuł> (N)» menu prawego przycisku.
+    -Workspaces: tylko w tych przestrzeniach (puste - wszędzie).
+#>
+$script:ObjectKinds = New-Object System.Collections.Generic.List[hashtable]
+
+function Register-HTObjectKind {
+    param([Parameter(Mandatory)][string]$Kind, [Parameter(Mandatory)][string]$Title, [string]$Icon = 'E77B', [Parameter(Mandatory)][scriptblock]$Resolve, [string]$Service = '', [string[]]$Workspaces = @())
+    $existing = @($script:ObjectKinds | Where-Object { $_.Kind -eq $Kind })[0]
+    if ($existing) { [void]$script:ObjectKinds.Remove($existing) }
+    $script:ObjectKinds.Add(@{ Kind = $Kind; Title = $Title; Icon = $Icon; Resolve = $Resolve; Service = $Service; Workspaces = @($Workspaces); Actions = (New-Object System.Collections.Generic.List[hashtable]) })
+}
+
+function Register-HTObjectAction {
+    <#
+        Akcja rodzaju obiektu: -Action { param($Id, $Row) } zwraca opis wyniku. Zmiany: -Danger (czerwone) i -Confirm
+        (pytanie z listą obiektów). -View: podgląd jednego obiektu (bez potwierdzenia i historii operacji).
+    #>
+    param([Parameter(Mandatory)][string]$Kind, [Parameter(Mandatory)][string]$Text, [string]$Icon = 'E76C', [Parameter(Mandatory)][scriptblock]$Action, [switch]$Danger, [string]$Confirm = '', [string]$Name = '', [switch]$View)
+    $definition = @($script:ObjectKinds | Where-Object { $_.Kind -eq $Kind })[0]
+    if (-not $definition) { throw "Nieznany rodzaj obiektu: $Kind" }
+    $definition.Actions.Add(@{ Text = $Text; Icon = $Icon; Action = $Action; Danger = [bool]$Danger; Confirm = $Confirm; Name = $(if ($Name) { $Name } else { $Text.TrimEnd('…') }); View = [bool]$View })
+}
+
+function Get-HTObjectActionTargets {
+    # Rozpoznane obiekty zaznaczonych wierszy: @{ Id; Row; Label }, bez powtórzeń identyfikatora
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][hashtable]$Kind)
+    $seen = @{}
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @(Get-HTResultSelection -Module $Module)) {
+        if (-not $row) { continue }
+        $id = $null
+        try { $id = [string](& $Kind.Resolve $row) } catch { $id = $null }
+        if (-not $id -or $seen.ContainsKey($id.ToLowerInvariant())) { continue }
+        $seen[$id.ToLowerInvariant()] = $true
+        $list.Add([PSCustomObject]@{ Id = $id; Row = $row; Label = $id })
+    }
+    return $list.ToArray()
+}
+
+function Get-HTObjectActionMenus {
+    # Podmenu akcji dla rodzajów obiektów rozpoznanych w zaznaczonych wierszach
+    param([Parameter(Mandatory)][hashtable]$Module)
+    foreach ($kind in $script:ObjectKinds) {
+        if ($kind.Actions.Count -eq 0) { continue }
+        if ($kind.Workspaces.Count -and $kind.Workspaces -notcontains [string]$Module.Workspace) { continue }
+        $targets = @(Get-HTObjectActionTargets -Module $Module -Kind $kind)
+        if ($targets.Count -eq 0) { continue }
+        $parent = New-HTMenuItem -Text "$($kind.Title) ($($targets.Count))" -Icon $kind.Icon -Module $Module
+        foreach ($a in $kind.Actions) {
+            $enabled = -not $a.View -or $targets.Count -ge 1
+            [void]$parent.Items.Add((New-HTMenuItem -Text $a.Text -Icon $a.Icon -Danger:$a.Danger -Module $Module -Enabled $enabled -Data @{ Kind = $kind; Definition = $a } -Action {
+                        param($m, $s)
+                        Invoke-HTObjectAction -Module $m -Kind $s.Tag.Data.Kind -Definition $s.Tag.Data.Definition
+                    }))
+        }
+        $parent
+    }
+}
+
+function Invoke-HTObjectAction {
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][hashtable]$Kind, [Parameter(Mandatory)][hashtable]$Definition)
+    $targets = @(Get-HTObjectActionTargets -Module $Module -Kind $Kind)
+    if ($targets.Count -eq 0) { Show-HTWarning 'Zaznacz wiersze z obiektami w tabeli wyników.'; return }
+    if ($Kind.Service -and -not (Assert-HTConnection -Service $Kind.Service)) { return }
+    if ($Definition.View) {
+        $first = $targets[0]
+        $null = & $Definition.Action $first.Id $first.Row
+        return
+    }
+    # Blok akcji i identyfikator przekazane w obiekcie (bez odwołań do zmiennych tej funkcji z wnętrza bloku)
+    $items = @($targets | ForEach-Object { [PSCustomObject]@{ Id = $_.Id; Row = $_.Row; Label = $_.Label; Run = $Definition.Action } })
+    Invoke-HTRowAction -Module $Module -Name $Definition.Name -Rows $items -Danger:$Definition.Danger -Confirm $Definition.Confirm -Service $Kind.Service `
+        -Label { param($r) $r.Label } -Action { param($r) & $r.Run $r.Id $r.Row }
+}
+#endregion
 
 function Update-HTGridMenu {
     # Menu kontekstowe budowane przy otwarciu: nagłówek - menu kolumny; wiersze - akcje modułu, kopiowanie, eksport, szybki filtr
@@ -3785,6 +3869,19 @@ function Update-HTGridMenu {
                     $null = & $s.Tag.Data $m $rows
                 }))
     }
+    # Zmiany modułu (czerwone przyciski) dla obiektów z zaznaczonych wierszy (wyniki «Sprawdź stan» / «Pokaż…»)
+    $rowTargets = if ($hasRows) { @(Get-HTSelectedResultTargets -Module $Module) } else { @() }
+    if ($rowTargets.Count -and $Module['ChangeButtons']) {
+        foreach ($cb in @($Module['ChangeButtons'] | Where-Object { $_ -and $_.Button.IsEnabled -and $_.Button.IsVisible })) {
+            [void]$menu.Items.Add((New-HTMenuItem -Text "$($cb.Text) - zaznaczone ($($rowTargets.Count))" -Icon $cb.Icon -Danger -Module $Module -Data $cb.Button -Action {
+                        param($m, $s)
+                        $button = $s.Tag.Data
+                        $button.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $button)))
+                    }))
+        }
+    }
+    # Akcje na rozpoznanych obiektach (konto, skrzynka, urządzenie) - z dowolnego raportu i wyniku
+    if ($hasRows) { foreach ($objectMenu in @(Get-HTObjectActionMenus -Module $Module)) { [void]$menu.Items.Add($objectMenu) } }
     if ($menu.Items.Count -gt 0) { [void]$menu.Items.Add((New-HTMenuSeparator)) }
     [void]$menu.Items.Add((New-HTMenuItem -Text 'Szczegóły wiersza' -Icon 'E8A1' -Module $Module -Enabled $hasRows -Action {
                 param($m)

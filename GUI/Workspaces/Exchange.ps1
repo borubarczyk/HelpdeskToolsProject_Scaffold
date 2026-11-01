@@ -20,6 +20,26 @@ Add-HTPanelHint -Panel $panel -Text 'Kropka: zielona - użytkownika, niebieska -
 
 function Get-HTMailboxLabel { param($x) [string]$x.PrimarySmtpAddress }
 
+# Akcje na skrzynkach z dowolnych wyników przestrzeni Exchange (prawy przycisk > «Skrzynka»)
+Register-HTObjectKind -Kind 'Mailbox' -Title 'Skrzynka' -Icon 'E715' -Service 'Exchange' -Workspaces @('Exchange') -Resolve {
+    param($o)
+    foreach ($n in 'PrimarySmtpAddress', '__address', 'Adres', 'Obiekt', 'Skrzynka') {
+        $p = $o.PSObject.Properties[$n]
+        if ($p -and "$($p.Value)" -match '^[^@\s]+@[^@\s]+\.[^@\s]+$') { return "$($p.Value)" }
+    }
+    $p = $o.PSObject.Properties['__target']
+    if ($p -and $p.Value -and $p.Value.PSObject.Properties['PrimarySmtpAddress']) { return [string]$p.Value.PrimarySmtpAddress }
+    return $null
+}
+Register-HTObjectAction -Kind 'Mailbox' -Text 'Szczegóły skrzynki' -Icon 'E8A1' -View -Action {
+    param($Id, $Row)
+    Set-HTBusy -Busy $true -Text "Szczegóły skrzynki $Id…"
+    try { $rows = @(ConvertTo-HTDetailRows -Data (Get-HTMailboxDetail -Identity $Id)) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    Show-HTDataViewer -Title "Skrzynka: $Id" -Data $rows -ExportName "skrzynka_$Id" -Icon 'E715'
+}
+Register-HTObjectAction -Kind 'Mailbox' -Text 'Ukryj w książce adresowej' -Icon 'ED1A' -Danger -Name 'Ukrycie w GAL' -Confirm 'Ukryć zaznaczone skrzynki w książce adresowej?' -Action { param($Id, $Row) Set-HTMailboxHiddenFromGAL -Identity $Id -Hidden $true; 'Ukryta' }
+Register-HTObjectAction -Kind 'Mailbox' -Text 'Pokaż w książce adresowej' -Icon 'E7B3' -Danger -Name 'Pokazanie w GAL' -Confirm 'Pokazać zaznaczone skrzynki w książce adresowej?' -Action { param($Id, $Row) Set-HTMailboxHiddenFromGAL -Identity $Id -Hidden $false; 'Widoczna' }
+
 #region Skrzynka
 Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.details' -Title 'Szczegóły skrzynki' -Icon 'E8A1' `
     -Description 'Typ, rozmiar i limity, archiwum, Litigation Hold, przekierowanie, autoodpowiedź, aliasy i delegaci.' -Build {

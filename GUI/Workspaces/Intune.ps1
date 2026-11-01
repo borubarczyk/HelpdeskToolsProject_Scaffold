@@ -249,6 +249,21 @@ function Register-HTIntuneReport {
 }
 $script:IntuneReportDefs = @{}
 
+# Akcje na urządzeniach z dowolnych wyników przestrzeni Intune (prawy przycisk > «Urządzenie Intune»)
+Register-HTObjectKind -Kind 'IntuneDevice' -Title 'Urządzenie Intune' -Icon 'E7F8' -Service 'Graph' -Workspaces @('Intune') -Resolve {
+    param($o)
+    $guid = '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
+    $p = $o.PSObject.Properties['ManagedDeviceId']
+    if ($p -and "$($p.Value)" -match $guid) { return "$($p.Value)" }
+    if ($o.PSObject.Properties['Urządzenie'] -or $o.PSObject.Properties['DeviceName']) {
+        $p = $o.PSObject.Properties['Id']
+        if ($p -and "$($p.Value)" -match $guid) { return "$($p.Value)" }
+    }
+    return $null
+}
+Register-HTObjectAction -Kind 'IntuneDevice' -Text 'Synchronizuj' -Icon 'E895' -Name 'Synchronizacja' -Action { param($Id, $Row) Sync-HTIntuneDevice -Id $Id; 'Wysłano żądanie synchronizacji' }
+Register-HTObjectAction -Kind 'IntuneDevice' -Text 'Uruchom ponownie' -Icon 'E777' -Danger -Name 'Restart' -Confirm 'Uruchomić ponownie zaznaczone urządzenia? Użytkownik może utracić niezapisane dane.' -Action { param($Id, $Row) Restart-HTIntuneDevice -Id $Id; 'Wysłano polecenie restartu' }
+
 function ConvertTo-HTDeviceReportRow {
     param($d, [string]$Flag = '')
     [PSCustomObject]@{
