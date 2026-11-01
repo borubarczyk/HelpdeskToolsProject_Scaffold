@@ -124,6 +124,19 @@ try {
 }
 catch { $failures.Add("Przełączniki nad tabelą: $($_.Exception.Message)") }
 
+# Lista edytowalna (wybór z listy albo własny tekst): wybrana wartość widoczna w polu tekstowym
+try {
+    $probe = New-HTUiElement -Xaml '<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><ComboBox x:Name="cb" IsEditable="True" Width="200"/></Grid>'
+    $cb = $probe.FindName('cb')
+    foreach ($i in 'firma.pl', 'firma.onmicrosoft.com') { [void]$cb.Items.Add($i) }
+    [void]$cb.ApplyTemplate()
+    $cb.SelectedIndex = 1
+    $box = $cb.Template.FindName('PART_EditableTextBox', $cb)
+    if (-not $box) { $failures.Add('Lista edytowalna: brak pola tekstowego w szablonie.') }
+    elseif ($box.Text -ne 'firma.onmicrosoft.com' -or "$($box.Visibility)" -ne 'Visible') { $failures.Add("Lista edytowalna: pole pokazuje «$($box.Text)» ($($box.Visibility)) zamiast wybranej wartości.") }
+}
+catch { $failures.Add("Lista edytowalna: $($_.Exception.Message)") }
+
 $palette = @(Get-HTPaletteItems -Query 'licencje')
 if ($palette.Count -eq 0) { $failures.Add('Paleta poleceń: brak wyników dla «licencje».') }
 if (@(Get-HTPaletteItems -Query '').Count -eq 0) { $failures.Add('Paleta poleceń: brak poleceń bez zapytania.') }

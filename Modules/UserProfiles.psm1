@@ -37,7 +37,8 @@ function ConvertTo-HTLoginFromFormat {
 function ConvertTo-HTStringList {
     # Lista z tekstu (wiersze, przecinki, średniki) albo tablicy - bez pustych i powtórzeń (bez rozróżniania wielkości liter)
     param($Value)
-    $items = foreach ($v in @($Value)) { if ($null -ne $v) { [string]$v -split '[\r\n,;]+' } }
+    # Zagnieżdżone listy (np. @($pole.Text, @(wybrane nazwy))) - rozwijane, a nie zamieniane na tekst ze spacjami
+    $items = foreach ($v in @($Value)) { foreach ($x in @($v)) { if ($null -ne $x) { [string]$x -split '[\r\n,;]+' } } }
     $seen = @{}
     foreach ($i in $items) {
         $t = $i.Trim()

@@ -26,6 +26,9 @@ Describe "Profile tworzenia kont - login i normalizacja" {
         $p.Licenses | Should -Be @('SPB', 'EXCHANGESTANDARD')
         $p.Groups | Should -Be @('Wszyscy', 'Biuro')
     }
+    It "dopisuje wybrane z tenanta nazwy do pola - każda w osobnym wierszu, nazwy ze spacjami bez zmian" {
+        @(ConvertTo-HTStringList @("sp_zarzad`r`nWszyscy pracownicy", @('sp_handel', 'sp_zarzad', 'Dział IT'))) | Should -Be @('sp_zarzad', 'Wszyscy pracownicy', 'sp_handel', 'Dział IT')
+    }
     It "zgłasza błędy profilu" {
         $existing = @(ConvertTo-HTUserProfile @{ Name = 'Klient A' })
         @(Test-HTUserProfile -UserProfile @{ Name = '' }) | Should -Match 'nazwę profilu'
