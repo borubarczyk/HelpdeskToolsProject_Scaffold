@@ -273,6 +273,42 @@ function Remove-HTM365DirectLicenses {
     return [PSCustomObject]@{ Removed = $removed.ToArray(); Failed = $failed.ToArray() }
 }
 
+function Get-HTM365AccountBackup {
+    <#
+        Kopia ustawień konta przed offboardingiem (AccountBackup.psm1 zapisuje ją do pliku): dane konta, logowanie,
+        przełożony, licencje (bezpośrednie / z grup), grupy i metody MFA (informacyjnie). Skrzynkę dopisuje Exchange.
+    #>
+    param ([Parameter(Mandatory)][string]$Id)
+    $select = 'id,displayName,userPrincipalName,mail,accountEnabled,jobTitle,department,companyName,officeLocation,usageLocation,assignedLicenses,licenseAssignmentStates'
+    $u = Invoke-HTGraphRequest -Uri "users/$($Id)?`$select=$select"
+    $skuNames = Get-HTSkuNameMap
+    $states = @($u.licenseAssignmentStates | Where-Object { $_ })
+    $licenses = foreach ($l in @($u.assignedLicenses | Where-Object { $_ })) {
+        $sku = "$($l.skuId)"
+        $direct = (-not $states.Count) -or (@($states | Where-Object { "$($_.skuId)" -eq $sku -and -not $_.assignedByGroup }).Count -gt 0)
+        [ordered]@{ SkuId = $sku; SkuPartNumber = [string]$skuNames[$sku]; Name = (Get-HTSkuFriendlyName ($skuNames[$sku] ?? $sku)); Direct = $direct }
+    }
+    $manager = Get-HTM365UserManager -Id $Id
+    $groups = foreach ($g in @(Get-HTM365UserGroups -Id $Id)) { [ordered]@{ Id = $g.Id; DisplayName = $g.DisplayName; Type = $g.Type; Mail = $g.Mail; Dynamic = [bool]$g.Dynamic; Synced = [bool]$g.Synced } }
+    $methods = @()
+    try { $methods = @(foreach ($mt in @(Get-HTM365AuthMethods -Id $Id)) { [ordered]@{ Type = [string]$mt.Type; Detail = [string]$mt.Detail } }) }
+    catch { Write-Log -Message "Kopia konta $($u.userPrincipalName): metody MFA nieodczytane - $($_.Exception.Message)" -Type 'Warn' }
+    return [ordered]@{
+        Version     = 1
+        Created     = (Get-Date).ToUniversalTime().ToString('o')
+        CreatedBy   = [string]$env:USERNAME
+        User        = [ordered]@{
+            Id = $u.id; UserPrincipalName = $u.userPrincipalName; DisplayName = $u.displayName; Mail = $u.mail; AccountEnabled = [bool]$u.accountEnabled
+            JobTitle = $u.jobTitle; Department = $u.department; CompanyName = $u.companyName; OfficeLocation = $u.officeLocation; UsageLocation = $u.usageLocation
+        }
+        Manager     = $(if ($manager) { [ordered]@{ Id = $manager.id; UserPrincipalName = $manager.userPrincipalName; DisplayName = $manager.displayName } } else { $null })
+        Licenses    = @($licenses)
+        Groups      = @($groups)
+        AuthMethods = @($methods)
+        Mailbox     = $null
+    }
+}
+
 # Ujednolicony obiekt grupy
 function ConvertTo-HTM365GroupObject {
     param ([Parameter(Mandatory)][object]$Group)

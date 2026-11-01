@@ -657,6 +657,8 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
         [PSCustomObject][ordered]@{ Logowanie = $state.Logowanie; 'Ostatnie logowanie' = $state.'Ostatnie logowanie'; Licencje = ($licenses -join ', '); Przełożony = $(if ($manager) { $manager.userPrincipalName }); 'Synchronizowane z AD' = $state.'Synchronizowane z AD'; __flag = $state.__flag }
     } | Out-Null
     $m.SecretColumns = @('Hasło')
+    $row0 = Add-HTToolbarRow -Module $m -Title 'Kopia'
+    $m.C.Backup = Add-HTCheckBox -Parent $row0 -Text 'Najpierw zapisz kopię ustawień konta (plik do przywrócenia konta)' -Checked $true -ToolTip 'Konto, logowanie, przełożony, licencje, grupy, skrzynka (typ, GAL, przekierowanie, autoodpowiedź) i lista metod MFA - folder eksportu > «Kopie kont». Gdy kopia się nie zapisze, konto jest pomijane.'
     $row = Add-HTToolbarRow -Module $m -Title 'Konto'
     $m.C.Block = Add-HTCheckBox -Parent $row -Text 'Zablokuj logowanie i unieważnij sesje' -Checked $true
     $m.C.Password = Add-HTCheckBox -Parent $row -Text 'Losowe hasło' -Checked $true
@@ -680,7 +682,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
         if ($targets.Count -eq 0) { return }
         $o = @{}
         if (-not (Assert-HTWriteAllowed -Operation 'Offboarding')) { return }
-        foreach ($k in 'Block', 'Password', 'Mfa', 'Shared', 'Hide', 'Groups', 'Licenses', 'Manager', 'OneDrive') { $o[$k] = Test-HTChecked $m.C[$k] }
+        foreach ($k in 'Backup', 'Block', 'Password', 'Mfa', 'Shared', 'Hide', 'Groups', 'Licenses', 'Manager', 'OneDrive') { $o[$k] = Test-HTChecked $m.C[$k] }
         $o.Forward = $m.C.Forward.Text.Trim()
         $o.AutoReply = $m.C.AutoReply.Text.Trim()
         if ($o.Forward -and -not (Test-HTInputValue -Value $o.Forward -ValidationType Email)) { Show-HTWarning 'Nieprawidłowy adres przekierowania.'; return }
@@ -701,6 +703,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
         if ($o.Manager) { $steps += 'usunięcie przełożonego' }
         if ($o.Licenses) { $steps += 'usunięcie licencji' }
         if ($steps.Count -eq 0) { Show-HTWarning 'Wybierz co najmniej jeden krok.'; return }
+        if ($o.Backup) { $steps = @("kopia ustawień konta (plik: $(Get-HTAccountBackupDirectory))") + $steps }
         if (-not (Confirm-HTChange -Danger -Name 'Offboarding' -Confirm 'Wykonać wybrane kroki dla kont?' -Summary $steps -Labels @($targets | ForEach-Object { Get-HTM365Label $_ }) -TypeToConfirm 'OFFBOARDING')) { return }
         $exo = [bool]$Global:ConnectedToExchange
         $adminConnection = $null
@@ -731,8 +734,21 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
                     Write-Log -Message "Offboarding $label - $($Step): $($r.Status) $(if ($r.Status -ne 'OK') { $r.Szczegóły })" -Type $(if ($r.Status -eq 'Błąd') { 'Warn' } else { 'Info' })
                     Add-HTOperationRecord -Operation "Offboarding: $Step" -Object $label -Status $r.Status -Details $(if ($r.Hasło) { '' } else { $r.Szczegóły }) -Module 'Offboarding' 
                     Add-HTResultRows -Module $m -Objects @([PSCustomObject]$r)
+                    $r.Status
                 }
                 $mailbox = $t.UserPrincipalName
+                # Kopia ustawień przed zmianami - bez kopii konto jest pomijane (żeby dało się je przywrócić)
+                if ($o.Backup) {
+                    $backupStatus = & $run 'Kopia ustawień konta' {
+                        $backup = Get-HTM365AccountBackup -Id $t.Id
+                        if ($exo) { try { $backup.Mailbox = Get-HTMailboxBackupInfo -Identity $mailbox } catch { $backup.MailboxError = $_.Exception.Message } }
+                        "Zapisano: $(Save-HTAccountBackup -Backup $backup)"
+                    }
+                    if ($backupStatus -ne 'OK') {
+                        Add-HTResultRows -Module $m -Objects @([PSCustomObject][ordered]@{ Obiekt = $label; Krok = 'Pozostałe kroki'; Status = 'Pominięto'; Szczegóły = 'Nie zapisano kopii ustawień - konto bez zmian'; Hasło = ''; __flag = 'warn' })
+                        continue
+                    }
+                }
                 if ($o.Block) { & $run 'Blokada i wylogowanie' { Set-HTM365UserEnabled -Id $t.Id -Enabled $false -RevokeSessions $true; Update-HTM365PanelUser -User $t -Changes @{ AccountEnabled = $false } } }
                 if ($o.Password) { & $run 'Reset hasła' { $pw = New-HTRandomPassword; Reset-HTM365UserPassword -Id $t.Id -Password $pw -ForceChange $true; @{ Hasło = $pw } } }
                 if ($exo) {
@@ -785,7 +801,91 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
         Show-HTToast "Offboarding zakończony$(if ($failed) { " - błędy: $failed" })." $(if ($failed) { 'warn' } else { 'ok' })
         [void](Send-HTTeamsMessage -Event 'Offboarding' -Title 'Offboarding zakończony' -Tone $(if ($failed) { 'warn' } else { 'ok' }) -Text "Kroki: $($steps -join ', ')." -Facts ([ordered]@{ Konta = (@($targets | ForEach-Object { Get-HTM365Label $_ }) -join ', '); Błędy = "$failed" }))
     } | Out-Null
-    Add-HTLabel -Parent $actions -Hint -Text 'Wymaga potwierdzenia słowem OFFBOARDING. Wyniki każdego kroku pojawią się w tabeli.' | Out-Null
+    Add-HTButton -Parent $actions -Module $m -Text 'Przywróć z kopii…' -Icon 'E777' -Danger -NoRowMenu -ToolTip 'Przywrócenie konta po offboardingu z pliku kopii ustawień (folder eksportu > «Kopie kont»)' -OnClick {
+        param($m)
+        if (-not (Assert-HTConnection -Service 'Graph')) { return }
+        if (-not (Assert-HTWriteAllowed -Operation 'Przywrócenie konta')) { return }
+        $path = Select-HTOpenFile -Title 'Kopia ustawień konta' -Filter 'Kopia konta (*.json)|*.json|Wszystkie pliki (*.*)|*.*' -InitialDirectory (Get-HTAccountBackupDirectory)
+        if (-not $path) { return }
+        try { $backup = Read-HTAccountBackup -Path $path }
+        catch { Show-HTError 'Nie odczytano kopii ustawień konta.' $_; return }
+        $plan = @(Get-HTAccountRestorePlan -Backup $backup)
+        $exo = [bool]$Global:ConnectedToExchange
+        $fields = @(
+            @{ Type = 'Info'; Label = (Get-HTAccountBackupSummary -Backup $backup) }
+            foreach ($s in $plan) {
+                $blocked = $s.Service -eq 'Exchange' -and -not $exo
+                @{ Name = $s.Key; Label = "$($s.Text)$(if ($blocked) { ' - wymaga połączenia z Exchange (pominięte)' })"; Type = 'Check'; Default = ($s.Default -and -not $blocked) }
+            }
+        )
+        $form = Show-HTFormDialog -Title "Przywrócenie konta: $($backup.User.UserPrincipalName)" -Description 'Zaznacz, co przywrócić z kopii.' -Icon 'E777' -OkText 'Dalej' -Width 700 -Fields $fields
+        if (-not $form) { return }
+        $chosen = @($plan | Where-Object { $form[$_.Key] -and ($_.Service -ne 'Exchange' -or $exo) })
+        if ($chosen.Count -eq 0) { Show-HTWarning 'Nie wybrano żadnego kroku.'; return }
+        $upn = [string]$backup.User.UserPrincipalName
+        $id = [string]$backup.User.Id
+        if (-not (Confirm-HTChange -Name 'Przywrócenie konta' -Labels @($upn) -Summary @($chosen | ForEach-Object { $_.Text }) -Confirm "Przywrócić ustawienia konta z kopii $(Split-Path $path -Leaf)?")) { return }
+        Reset-HTResults -Module $m
+        Set-HTBusy -Busy $true -Text "Przywracanie konta $upn…"
+        try {
+            $run = {
+                param([string]$Step, [scriptblock]$Do)
+                $r = [ordered]@{ Obiekt = $upn; Krok = $Step; Status = 'OK'; Szczegóły = ''; Hasło = '' }
+                try {
+                    $out = & $Do
+                    if ($out -is [hashtable]) { foreach ($k in $out.Keys) { $r[$k] = $out[$k] } } elseif ($out) { $r.Szczegóły = [string]$out }
+                }
+                catch { $r.Status = 'Błąd'; $r.Szczegóły = $_.Exception.Message }
+                Write-Log -Message "Przywrócenie konta $upn - $($Step): $($r.Status) $(if ($r.Status -ne 'OK') { $r.Szczegóły })" -Type $(if ($r.Status -eq 'Błąd') { 'Warn' } else { 'Info' })
+                Add-HTOperationRecord -Operation "Przywrócenie konta: $Step" -Object $upn -Status $r.Status -Details $(if ($r.Hasło) { '' } else { $r.Szczegóły }) -Module 'Offboarding'
+                Add-HTResultRows -Module $m -Objects @([PSCustomObject]$r)
+            }
+            foreach ($s in $chosen) {
+                switch ($s.Key) {
+                    'Enable' { & $run $s.Text { Set-HTM365UserEnabled -Id $id -Enabled $true; 'Logowanie dozwolone' } }
+                    'Password' { & $run $s.Text { $pw = New-HTRandomPassword; Reset-HTM365UserPassword -Id $id -Password $pw -ForceChange $true; @{ Hasło = $pw } } }
+                    'Manager' { & $run $s.Text { Set-HTM365UserManager -Id $id -ManagerId ([string]$backup.Manager.Id); 'Ustawiono' } }
+                    'Licenses' {
+                        & $run $s.Text {
+                            $current = @(Get-HTM365UserLicenses -Id $id | ForEach-Object { "$($_.SkuId)" })
+                            $added = @()
+                            $failedLicenses = @()
+                            foreach ($l in @($backup.Licenses | Where-Object { $_.Direct })) {
+                                if ($current -contains [string]$l.SkuId) { continue }
+                                try { Set-HTM365UserLicense -Id $id -AddSkuIds @([string]$l.SkuId) -UsageLocation ([string]$backup.User.UsageLocation); $added += [string]$l.Name }
+                                catch { $failedLicenses += "$($l.Name): $($_.Exception.Message)" }
+                            }
+                            if (-not $added.Count -and $failedLicenses.Count) { throw ($failedLicenses -join '; ') }
+                            "Przypisano: $(if ($added.Count) { $added -join ', ' } else { 'nic - licencje już są' })$(if ($failedLicenses.Count) { "; nie przypisano: $($failedLicenses -join '; ')" })"
+                        }
+                    }
+                    'Groups' {
+                        & $run $s.Text {
+                            $current = @(Get-HTM365UserGroups -Id $id | ForEach-Object { "$($_.Id)" })
+                            $member = [PSCustomObject]@{ Id = $id; UserPrincipalName = $upn }
+                            $added = 0
+                            $failedGroups = @()
+                            foreach ($g in @($backup.Groups | Where-Object { -not $_.Dynamic -and -not $_.Synced })) {
+                                if ($current -contains [string]$g.Id) { continue }
+                                if ($g.Type -in 'Dystrybucyjna', 'Zabezpieczeń (mail)' -and -not $exo) { $failedGroups += "$($g.DisplayName): wymaga Exchange"; continue }
+                                try { Add-HTM365UserToGroup -Group ([PSCustomObject]$g) -User $member; $added++ } catch { $failedGroups += "$($g.DisplayName): $($_.Exception.Message)" }
+                            }
+                            if (-not $added -and $failedGroups.Count) { throw ($failedGroups -join '; ') }
+                            "Dodano do grup: $added$(if ($failedGroups.Count) { "; nie dodano: $($failedGroups -join '; ')" })"
+                        }
+                    }
+                    'MailboxType' { & $run $s.Text { Convert-HTMailboxType -Identity $upn -Type Regular; 'Skrzynka użytkownika' } }
+                    'Gal' { & $run $s.Text { Set-HTMailboxHiddenFromGAL -Identity $upn -Hidden $false; 'Widoczna' } }
+                    'Forwarding' { & $run $s.Text { Set-HTMailboxForwarding -Identity $upn -ForwardTo ([string]$backup.Mailbox.ForwardTo) -KeepCopy ([bool]$backup.Mailbox.KeepCopy); if ($backup.Mailbox.ForwardTo) { "Do: $($backup.Mailbox.ForwardTo)" } else { 'Usunięto' } } }
+                    'AutoReply' { & $run $s.Text { Set-HTMailboxAutoReply -Identity $upn -State Disabled; 'Wyłączona' } }
+                }
+            }
+        }
+        finally { Set-HTBusy -Busy $false -Text 'Przywracanie zakończone' }
+        $failed = @($m.Table.Select("Status LIKE 'Błąd*'")).Count
+        Show-HTToast "Przywracanie konta $upn zakończone$(if ($failed) { " - błędy: $failed" })." $(if ($failed) { 'warn' } else { 'ok' })
+    } | Out-Null
+    Add-HTLabel -Parent $actions -Hint -Text 'Wymaga potwierdzenia słowem OFFBOARDING. Wyniki każdego kroku pojawią się w tabeli. Kopia ustawień - folder eksportu > «Kopie kont».' | Out-Null
 }
 
 Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.deleted' -Title 'Usunięci użytkownicy' -Icon 'E74D' -Service 'Graph' `

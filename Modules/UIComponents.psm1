@@ -3932,7 +3932,9 @@ function Add-HTButton {
         [string]$Icon = '',
         [string]$ToolTip = '',
         [switch]$Primary,
-        [switch]$Danger
+        [switch]$Danger,
+        # Czerwony przycisk bez pozycji w menu wierszy wyników (nie działa na zaznaczonych wierszach, np. przywracanie z pliku)
+        [switch]$NoRowMenu
     )
     $b = New-HTButton -Text $Text -Icon $Icon -Primary:$Primary -Danger:$Danger -ToolTip $ToolTip
     $b.Margin = '0,0,8,6'
@@ -3941,7 +3943,7 @@ function Add-HTButton {
     # F5 (główna akcja modułu) nigdy nie wykonuje zmiany - tylko odczyt (zasada trzech etapów)
     if ($Primary -and -not $Danger -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
     # Przyciski zmian (czerwone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
-    if ($Danger) {
+    if ($Danger -and -not $NoRowMenu) {
         if (-not $Module['ChangeButtons']) { $Module['ChangeButtons'] = New-Object System.Collections.Generic.List[hashtable] }
         $Module['ChangeButtons'].Add(@{ Button = $b; Text = $Text; Icon = $Icon })
     }
@@ -7136,10 +7138,11 @@ function Export-HTResultView {
 
 function Select-HTOpenFile {
     # Okno wyboru pliku do odczytu; zwraca ścieżkę albo $null
-    param([string]$Title = 'Wybierz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*')
+    param([string]$Title = 'Wybierz plik', [string]$Filter = 'Wszystkie pliki (*.*)|*.*', [string]$InitialDirectory = '')
     $dialog = New-Object Microsoft.Win32.OpenFileDialog
     $dialog.Title = $Title
     $dialog.Filter = $Filter
+    if ($InitialDirectory -and (Test-Path -LiteralPath $InitialDirectory)) { $dialog.InitialDirectory = $InitialDirectory }
     $owner = $script:UI.Window
     $accepted = if ($owner -and $owner.IsVisible) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
     if ($accepted -eq $true) { return $dialog.FileName }
