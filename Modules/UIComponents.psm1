@@ -7783,6 +7783,8 @@ function Get-HTSupportSections {
         $v = Get-Variable -Name $n -Scope Global -ValueOnly -ErrorAction Ignore
         "$($n): $(if ($null -eq $v) { '-' } else { [string]$v })"
     }
+    $selfTest = @(try { if (Get-Command -Name Get-HTSelfTestReport -ErrorAction Ignore) { Get-HTSelfTestReport } } catch { "Autotest: $($_.Exception.Message)" })
+    if ($selfTest.Count) { $sections['Ostatni autotest (Organizacja > Diagnostyka)'] = $selfTest }
     $history = @(Get-HTLogHistory)
     $sections['Ostatnie błędy i ostrzeżenia (25)'] = @($history | Where-Object { $_.Type -in 'Error', 'Warn' } | Select-Object -Last 25 | ForEach-Object { Format-HTLogEntry -Entry $_ })
     $sections['Ostatnie wyjątki PowerShell (5)'] = foreach ($e in @($global:Error | Select-Object -First 5)) {

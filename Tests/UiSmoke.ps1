@@ -142,10 +142,21 @@ try {
 catch { $failures.Add("Lista edytowalna: $($_.Exception.Message)") }
 
 # Nowe przestrzenie: Organizacja (bez listy po lewej) i Grupy i zespoły (lista grup) z modułami przeniesionymi z Exchange i M365
-foreach ($expected in @(@{ Ws = 'Organization'; Keys = @('org.newgroup', 'm365.new', 'exo.newmailbox', 'exo.transport', 'm365.reclaim') }, @{ Ws = 'Groups'; Keys = @('grp.members', 'grp.owners', 'grp.manage', 'm365.teams', 'exo.dyn') })) {
+foreach ($expected in @(@{ Ws = 'Organization'; Keys = @('org.newgroup', 'm365.new', 'exo.newmailbox', 'exo.transport', 'm365.reclaim', 'org.guest', 'org.newsite', 'org.domains', 'org.selftest') }, @{ Ws = 'Groups'; Keys = @('grp.members', 'grp.owners', 'grp.manage', 'm365.teams', 'exo.dyn', 'grp.licenses', 'grp.team') }, @{ Ws = 'SharePoint'; Keys = @('sp.newsite') })) {
     if (-not $HT_UI.Workspaces.Contains($expected.Ws)) { $failures.Add("Brak przestrzeni $($expected.Ws)."); continue }
     foreach ($k in $expected.Keys) { if ((Get-HTModuleDefinition $k).Workspace -ne $expected.Ws) { $failures.Add("Moduł $k nie jest w przestrzeni $($expected.Ws).") } }
 }
+
+# Autotest: wszystkie testy z rejestru i - bez połączeń - przebieg tylko testów lokalnych (reszta «Pominięto»)
+try {
+    $selfRows = @(Invoke-HTSelfTest -Tests @(Get-HTSelfTests -IncludeWrite -IncludeSlow) -Connected @{} -Context (New-HTSelfTestContext -Sleep { param($s) }))
+    if ($selfRows.Count -lt 20) { $failures.Add("Autotest: za mało testów ($($selfRows.Count)).") }
+    $badSkip = @($selfRows | Where-Object { $_.Usługa -ne 'Ten komputer' -and $_.Status -ne 'Pominięto' })
+    if ($badSkip.Count) { $failures.Add("Autotest: testy usług bez połączenia nie zostały pominięte: $(@($badSkip | ForEach-Object Klucz) -join ', ').") }
+    $localFail = @($selfRows | Where-Object { $_.Usługa -eq 'Ten komputer' -and $_.Status -eq 'Błąd' })
+    if ($localFail.Count) { $failures.Add("Autotest: błędy testów lokalnych: $(@($localFail | ForEach-Object { "$($_.Klucz): $($_.Szczegóły)" }) -join '; ').") }
+}
+catch { $failures.Add("Autotest: $($_.Exception.Message)") }
 
 $palette = @(Get-HTPaletteItems -Query 'licencje')
 if ($palette.Count -eq 0) { $failures.Add('Paleta poleceń: brak wyników dla «licencje».') }

@@ -418,3 +418,99 @@ Describe "Grupy jako obiekty" {
         $g.Visibility | Should -Be 'Private'
     }
 }
+
+Describe "Zaproszenia gości (B2B)" {
+    It "lista gości: adres, «adres; nazwa», «Nazwa <adres>», błędne i powtórzone adresy" {
+        $r = @(ConvertFrom-HTGuestInviteList "jan@zew.pl`r`nanna@firma.com; Anna Nowak`r`nPiotr Kowal <piotr@x.org>`r`nzly-adres`r`nJAN@zew.pl`r`n`r`n")
+        $r.Count | Should -Be 5
+        $r[0].Email | Should -Be 'jan@zew.pl'
+        $r[0].Problem | Should -Be ''
+        $r[1].DisplayName | Should -Be 'Anna Nowak'
+        $r[2].Email | Should -Be 'piotr@x.org'
+        $r[2].DisplayName | Should -Be 'Piotr Kowal'
+        $r[3].Problem | Should -Be 'Niepoprawny adres e-mail'
+        $r[4].Problem | Should -Be 'Adres powtórzony na liście'
+    }
+    It "zaproszenie z e-mailem: wiadomość, język polski, tylko jedna kopia (limit Graph)" {
+        $b = Get-HTGuestInvitationBody -Email ' jan@zew.pl ' -DisplayName 'Jan' -Message 'Witaj' -CcRecipients @('a@firma.pl', 'b@firma.pl')
+        $b.invitedUserEmailAddress | Should -Be 'jan@zew.pl'
+        $b.invitedUserDisplayName | Should -Be 'Jan'
+        $b.sendInvitationMessage | Should -BeTrue
+        $b.inviteRedirectUrl | Should -Be 'https://myapps.microsoft.com'
+        $b.invitedUserMessageInfo.customizedMessageBody | Should -Be 'Witaj'
+        $b.invitedUserMessageInfo.messageLanguage | Should -Be 'pl-PL'
+        @($b.invitedUserMessageInfo.ccRecipients).Count | Should -Be 1
+        $b.invitedUserMessageInfo.ccRecipients[0].emailAddress.address | Should -Be 'a@firma.pl'
+    }
+    It "bez e-maila: bez treści wiadomości, własna strona po przyjęciu" {
+        $b = Get-HTGuestInvitationBody -Email 'jan@zew.pl' -SendInvitation $false -Message 'x' -RedirectUrl 'https://firma.sharepoint.com/sites/x'
+        $b.sendInvitationMessage | Should -BeFalse
+        $b.Contains('invitedUserMessageInfo') | Should -BeFalse
+        $b.inviteRedirectUrl | Should -Be 'https://firma.sharepoint.com/sites/x'
+    }
+    It "zaproszenie zwraca konto gościa i link do przyjęcia" {
+        Mock -ModuleName GraphAPIM365Users Invoke-HTGraphRequest { [PSCustomObject]@{ invitedUserEmailAddress = 'jan@zew.pl'; status = 'PendingAcceptance'; inviteRedeemUrl = 'https://login/redeem'; invitedUser = [PSCustomObject]@{ id = 'u-1' } } }
+        $r = New-HTM365GuestInvitation -Email 'jan@zew.pl' -SendInvitation $false
+        $r.UserId | Should -Be 'u-1'
+        $r.RedeemUrl | Should -Be 'https://login/redeem'
+        $r.Status | Should -Be 'PendingAcceptance'
+        Should -Invoke -ModuleName GraphAPIM365Users Invoke-HTGraphRequest -Times 1 -ParameterFilter { $Uri -eq 'invitations' -and $Method -eq 'POST' -and $Body.sendInvitationMessage -eq $false }
+    }
+}
+
+Describe "Licencje grupowe" {
+    It "licencje tylko dla grup zabezpieczeń i grup Microsoft 365 z zabezpieczeniami" {
+        Test-HTM365GroupLicensable ([PSCustomObject]@{ Type = 'Zabezpieczeń' }) | Should -BeTrue
+        Test-HTM365GroupLicensable ([PSCustomObject]@{ Type = 'Zabezpieczeń (mail)' }) | Should -BeTrue
+        Test-HTM365GroupLicensable ([PSCustomObject]@{ Type = 'Dystrybucyjna' }) | Should -BeFalse
+        Test-HTM365GroupLicensable ([PSCustomObject]@{ Type = 'Microsoft 365'; SecurityEnabled = $false }) | Should -BeFalse
+        Test-HTM365GroupLicensable ([PSCustomObject]@{ Type = 'Microsoft 365'; SecurityEnabled = $true }) | Should -BeTrue
+    }
+    It "obiekt grupy ma SecurityEnabled" {
+        (ConvertTo-HTM365GroupObject ([PSCustomObject]@{ id = 'g'; displayName = 'G'; groupTypes = @('Unified'); securityEnabled = $true; mailEnabled = $true })).SecurityEnabled | Should -BeTrue
+    }
+    It "treść przypisania: dodawane SKU bez powtórzeń, usuwane osobno" {
+        $b = Get-HTGroupLicenseBody -AddSkuIds @('s1', 's1', 's2') -RemoveSkuIds @('s3')
+        @($b.addLicenses).Count | Should -Be 2
+        $b.addLicenses[0].skuId | Should -Be 's1'
+        @($b.addLicenses[0].disabledPlans).Count | Should -Be 0
+        $b.removeLicenses | Should -Be @('s3')
+    }
+    It "bez zmian nie wysyła żądania; zmiana - POST assignLicense grupy" {
+        Mock -ModuleName GraphAPIM365Users Invoke-HTGraphRequest { }
+        Set-HTM365GroupLicense -Id 'g1'
+        Should -Invoke -ModuleName GraphAPIM365Users Invoke-HTGraphRequest -Times 0 -Exactly
+        Set-HTM365GroupLicense -Id 'g1' -AddSkuIds @('s1')
+        Should -Invoke -ModuleName GraphAPIM365Users Invoke-HTGraphRequest -Times 1 -ParameterFilter { $Uri -eq 'groups/g1/assignLicense' -and $Method -eq 'POST' }
+    }
+}
+
+Describe "Domeny tenanta" {
+    It "wiersz domeny: usługi po polsku, niezweryfikowana na czerwono z podpowiedzią" {
+        $r = ConvertTo-HTDomainRow ([PSCustomObject]@{ id = 'firma.pl'; isVerified = $false; isDefault = $false; isInitial = $false; authenticationType = 'Managed'; supportedServices = @() })
+        $r.Zweryfikowana | Should -BeFalse
+        $r.__flag | Should -Be 'crit'
+        $r.Uwagi | Should -Match 'niezweryfikowana'
+        $ok = ConvertTo-HTDomainRow ([PSCustomObject]@{ id = 'firma.pl'; isVerified = $true; isDefault = $true; authenticationType = 'Managed'; supportedServices = @('Email', 'OfficeCommunicationsOnline') })
+        $ok.Usługi | Should -Be 'poczta, Teams (Skype)'
+        $ok.Uwierzytelnianie | Should -Be 'w chmurze'
+        $ok.__flag | Should -Be ''
+    }
+    It "rekordy DNS: wartość zależnie od typu (TXT, MX, CNAME, SRV)" {
+        (ConvertTo-HTDomainDnsRow ([PSCustomObject]@{ recordType = 'Txt'; label = 'firma.pl'; text = 'MS=ms123'; ttl = 3600 })).Wartość | Should -Be 'MS=ms123'
+        $mx = ConvertTo-HTDomainDnsRow ([PSCustomObject]@{ recordType = 'Mx'; label = 'firma.pl'; mailExchange = 'firma-pl.mail.protection.outlook.com'; preference = 0; supportedService = 'Email' })
+        $mx.Typ | Should -Be 'MX'
+        $mx.Priorytet | Should -Be 0
+        $mx.Usługa | Should -Be 'poczta'
+        (ConvertTo-HTDomainDnsRow ([PSCustomObject]@{ recordType = 'CName'; label = 'autodiscover.firma.pl'; canonicalName = 'autodiscover.outlook.com' })).Wartość | Should -Be 'autodiscover.outlook.com'
+        $srv = ConvertTo-HTDomainDnsRow ([PSCustomObject]@{ recordType = 'Srv'; label = 'firma.pl'; service = '_sip'; protocol = '_tls'; priority = 100; weight = 1; port = 443; nameTarget = 'sipdir.online.lync.com' })
+        $srv.Nazwa | Should -Be '_sip._tls.firma.pl'
+        $srv.Wartość | Should -Be '100 1 443 sipdir.online.lync.com'
+    }
+    It "porównanie z DNS: bez wielkości liter, kropki na końcu i cudzysłowów" {
+        Compare-HTDnsRecordValue -Expected 'Autodiscover.Outlook.com' -Actual @('autodiscover.outlook.com.') | Should -BeTrue
+        Compare-HTDnsRecordValue -Expected 'MS=ms123' -Actual @('"MS=ms123"', 'v=spf1') | Should -BeTrue
+        Compare-HTDnsRecordValue -Expected 'MS=ms123' -Actual @('MS=ms999') | Should -BeFalse
+        Compare-HTDnsRecordValue -Expected '' -Actual @('x') | Should -BeFalse
+    }
+}
