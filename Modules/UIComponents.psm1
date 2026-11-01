@@ -278,9 +278,14 @@ $script:ThemeXaml = @'
                 </ControlTemplate>
               </ToggleButton.Template>
             </ToggleButton>
-            <ContentPresenter IsHitTestVisible="False" Margin="9,0,28,0" VerticalAlignment="Center"
+            <ContentPresenter x:Name="selection" IsHitTestVisible="False" Margin="9,0,28,0" VerticalAlignment="Center"
                               Content="{TemplateBinding SelectionBoxItem}"
                               ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"/>
+            <!-- Lista edytowalna (wybór z listy albo własny tekst): pole tekstowe z wybraną albo wpisaną wartością -->
+            <TextBox x:Name="PART_EditableTextBox" Visibility="Collapsed" Margin="3,1,26,1" Padding="5,0" MinHeight="0"
+                     VerticalAlignment="Center" VerticalContentAlignment="Center" Background="Transparent" BorderThickness="0"
+                     Foreground="{TemplateBinding Foreground}" CaretBrush="#E4E8EF"
+                     IsReadOnly="{Binding IsReadOnly, RelativeSource={RelativeSource TemplatedParent}}"/>
             <Popup IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True"
                    Focusable="False" PopupAnimation="Fade">
               <Border Background="#1B212A" BorderBrush="#2F3846" BorderThickness="1" CornerRadius="7" Margin="0,3,0,0" Padding="3"
@@ -293,6 +298,10 @@ $script:ThemeXaml = @'
           </Grid>
           <ControlTemplate.Triggers>
             <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+            <Trigger Property="IsEditable" Value="True">
+              <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+              <Setter TargetName="selection" Property="Visibility" Value="Collapsed"/>
+            </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
       </Setter.Value>
@@ -4408,7 +4417,7 @@ function Get-HTViewSignature {
     # Bieżący stan widoku modułu (filtr tekstowy, filtry kolumn, ukryte kolumny) jako tekst do porównania z zapisanym widokiem
     param([hashtable]$Module)
     $text = if ($Module.FilterBox) { [string]$Module.FilterBox.Text } else { '' }
-    $preset = ConvertTo-HTFilterPreset -Name '' -Text $text.Trim() -ColumnFilters $Module.ColumnFilters -Hidden @($Module.UserHidden)
+    $preset = ConvertTo-HTFilterPreset -Name 'bieżący' -Text $text.Trim() -ColumnFilters $Module.ColumnFilters -Hidden @($Module.UserHidden)
     $filters = @($preset.Filters | Sort-Object { $_.Column } | ForEach-Object { [ordered]@{ Column = $_.Column; Values = @($_.Values | Sort-Object); Op = $_.Op; Text = $_.Text } })
     return ([ordered]@{ Text = $preset.Text; Filters = $filters; Hidden = @($preset.Hidden | Sort-Object) } | ConvertTo-Json -Compress -Depth 5)
 }
