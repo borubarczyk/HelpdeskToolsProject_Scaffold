@@ -128,7 +128,7 @@ Drzewo bibliotek i folderów połączonej witryny; uprawnienia (nadawanie wielu 
 ### Zadania
 - **Zadania zaplanowane**: lista z terminami i wynikami, wykonanie teraz, zmiana terminu, anulowanie. Program wykonuje zaległe zadania co minutę, gdy jest uruchomiony i połączony z usługą.
 - **Uprawnienia tymczasowe**: członkostwo w grupie albo dostęp do skrzynki (pełny dostęp, wyślij jako) do wskazanej daty - odebranie trafia do zadań zaplanowanych.
-- **Zaplanowany offboarding** w wybranym terminie (np. ostatni dzień pracy o 17:00).
+- **Zaplanowany offboarding** w wybranym terminie (np. ostatni dzień pracy o 17:00) - także z kopią ustawień konta do pliku przed zmianami (bez kopii zadanie kończy się błędem, konto zostaje bez zmian; przywrócenie: Microsoft 365 > Offboarding > «Przywróć z kopii…»). Kroki pocztowe, w tym przekierowanie, czekają na połączenie z Exchange.
 - **Checklisty on/offboardingu** z postępem i terminem: kroki ręczne i automatyczne (blokada, sesje, hasło, grupy, licencje, skrzynka, GAL), edytowalne szablony, powiadomienie Teams po ukończeniu.
 - **Migawki i porównanie**: role administracyjne, dostęp warunkowy, członkowie grup, licencje, przekierowania skrzynek, sekrety aplikacji - co dodano, usunięto i zmieniono od migawki (albo między dwiema migawkami).
 - **Cofanie zmian**: blokada konta, usunięcie licencji lub z grupy, przełożony, uprawnienia do skrzynek, reguły transportu, archiwizacja zespołu, urządzenia Entra ID, izolacja - jednym kliknięciem.
