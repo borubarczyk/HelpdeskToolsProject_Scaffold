@@ -163,13 +163,16 @@ Describe "Moduły w OneDrive (pliki tylko w chmurze)" {
 
 Describe "Biblioteki załadowane w procesie" {
     It "zwraca biblioteki domyślnego kontekstu, bez bibliotek z izolowanego kontekstu modułu" {
+        $lib = New-TestAssembly -Directory (Join-Path $script:Root "isolated") -Name "HT.IsolatedLib" -Version "1.0.0.0" -Code 'namespace HTIsolated { public static class I { public static int Value() { return 3; } } }'
         $alc = [System.Runtime.Loader.AssemblyLoadContext]::new("HTTestIsolated", $true)
         try {
-            $isolated = $alc.LoadFromAssemblyPath($script:MsalLib)
-            $isolated.GetName().Version | Should -Be ([version]"4.70.0.0")
+            # Z pamięci, nie z pliku - plik załadowany z dysku jest zablokowany w Windows i Pester nie usunie TestDrive
+            $isolated = $alc.LoadFromStream([System.IO.MemoryStream]::new([System.IO.File]::ReadAllBytes($lib)))
+            $isolated.GetName().Name | Should -Be "HT.IsolatedLib"
+            @([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq "HT.IsolatedLib" }).Count | Should -BeGreaterThan 0
             $loaded = @(Get-HTLoadedAssemblies)
             @($loaded | Where-Object { $_.Name -eq "System.Management.Automation" }).Count | Should -Be 1
-            @($loaded | Where-Object { $_.Location -eq $script:MsalLib }).Count | Should -Be 0
+            @($loaded | Where-Object { $_.Name -eq "HT.IsolatedLib" }).Count | Should -Be 0
         }
         finally { $alc.Unload() }
     }
