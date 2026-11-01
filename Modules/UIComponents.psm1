@@ -598,7 +598,8 @@ $script:ThemeXaml = @'
     <Setter Property="MinRowHeight" Value="28"/>
     <Setter Property="FontSize" Value="12.5"/>
     <Setter Property="EnableRowVirtualization" Value="True"/>
-    <Setter Property="EnableColumnVirtualization" Value="True"/>
+    <!-- Bez wirtualizacji kolumn: przy przewijaniu w poziomie część nagłówków (z przyciskiem filtra) bywała pusta -->
+    <Setter Property="EnableColumnVirtualization" Value="False"/>
     <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
     <Setter Property="ColumnHeaderStyle" Value="{StaticResource GridHeader}"/>
     <Setter Property="CellStyle" Value="{StaticResource GridCell}"/>
@@ -1318,7 +1319,7 @@ function Show-HTFormDialog {
         @'
 <Grid Height="{0}">
   <Grid.ColumnDefinitions>
-    <ColumnDefinition Width="210"/>
+    <ColumnDefinition Width="236"/>
     <ColumnDefinition Width="*"/>
   </Grid.ColumnDefinitions>
   <Border BorderBrush="#242B36" BorderThickness="0,0,1,0" Padding="0,0,10,0" Margin="0,0,20,0">
@@ -1358,18 +1359,26 @@ function Show-HTFormDialog {
         $rb.GroupName = $navGroup
         $rb.Tag = $page
         $rb.IsChecked = ($pages.Count -eq 1)
-        $row = New-Object System.Windows.Controls.StackPanel
-        $row.Orientation = 'Horizontal'
+        # Siatka zamiast poziomego StackPanel - tekst dostaje szerokość kolumny i zawija się zamiast ucinać
+        $row = New-Object System.Windows.Controls.Grid
+        $iconColumn = New-Object System.Windows.Controls.ColumnDefinition
+        $iconColumn.Width = [System.Windows.GridLength]::Auto
+        [void]$row.ColumnDefinitions.Add($iconColumn)
+        [void]$row.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
         $glyph = New-HTGlyphBlock -Code $(if ($PageIcon) { $PageIcon } else { 'E713' }) -Size 14
         $glyph.Margin = '2,0,11,0'
         $glyph.Width = 18
+        $glyph.VerticalAlignment = 'Center'
         [void]$row.Children.Add($glyph)
         $text = New-Object System.Windows.Controls.TextBlock
         $text.Text = $PageTitle
-        $text.TextTrimming = 'CharacterEllipsis'
+        $text.TextWrapping = 'Wrap'
         $text.VerticalAlignment = 'Center'
+        [System.Windows.Controls.Grid]::SetColumn($text, 1)
         [void]$row.Children.Add($text)
         $rb.Content = $row
+        $rb.HorizontalContentAlignment = 'Stretch'
+        $rb.ToolTip = $PageTitle
         $rb.add_Checked($script:FormEvents.Section)
         [void]$w.FindName('fmNav').Children.Add($rb)
         $heading = New-HTDialogText -Text $PageTitle -Color '#FFFFFF' -Size 15
@@ -1868,26 +1877,49 @@ $script:Clipboard = @{ Secret = $null; Timer = $null }
 
 function Show-HTToast {
     # Krótkie powiadomienie w prawym dolnym rogu okna (znika samo)
-    param([Parameter(Mandatory)][string]$Text, [ValidateSet('info', 'ok', 'warn', 'crit')][string]$Tone = 'info', [int]$Seconds = 4)
+    param([Parameter(Mandatory)][string]$Text, [ValidateSet('info', 'ok', 'warn', 'crit')][string]$Tone = 'info', [int]$Seconds = 5)
     $toastHost = $script:UI.Controls['toastHost']
     if (-not $toastHost) { return }
     try {
         $toneDef = $script:DialogTones[$Tone]
+        # Większe powiadomienie: kolorowy pasek z lewej, ikona w kółku w kolorze komunikatu, większa czcionka
         $xaml = @'
-<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="#1E2530" BorderBrush="#2F3846" BorderThickness="1"
-        CornerRadius="9" Padding="14,10" Margin="0,8,0,0" MaxWidth="420" HorizontalAlignment="Right">
-  <Border.Effect><DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.45" Color="Black"/></Border.Effect>
-  <StackPanel Orientation="Horizontal">
-    <TextBlock Name="icon" Style="{StaticResource Glyph}" FontSize="15" Margin="0,0,10,0"/>
-    <TextBlock Name="text" TextWrapping="Wrap" MaxWidth="360" Foreground="#E4E8EF" VerticalAlignment="Center"/>
-  </StackPanel>
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="#1E2530" BorderBrush="#3A4454" BorderThickness="1"
+        CornerRadius="10" Margin="0,10,0,0" MinWidth="340" MaxWidth="560" HorizontalAlignment="Right">
+  <Border.Effect><DropShadowEffect BlurRadius="26" ShadowDepth="4" Opacity="0.6" Color="Black"/></Border.Effect>
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="5"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <Border Name="accent" CornerRadius="10,0,0,10"/>
+    <Grid Grid.Column="1" Margin="16,14,20,14">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <Border Name="badge" Width="34" Height="34" CornerRadius="17" VerticalAlignment="Center" Margin="0,0,14,0">
+        <TextBlock Name="icon" Style="{StaticResource Glyph}" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <TextBlock Name="text" Grid.Column="1" TextWrapping="Wrap" FontSize="14.5" LineHeight="20" Foreground="#F2F4F8" VerticalAlignment="Center"/>
+    </Grid>
+  </Grid>
 </Border>
 '@
         $toast = New-HTUiElement $xaml
         $icon = $toast.FindName('icon')
         $icon.Text = Get-HTGlyph $toneDef.Icon
         $icon.Foreground = Get-HTBrush $toneDef.Fore
+        $toast.FindName('badge').Background = Get-HTBrush $toneDef.Back
+        $toast.FindName('accent').Background = Get-HTBrush $toneDef.Fore
         $toast.FindName('text').Text = $Text
+        # Płynne pojawienie się (przesunięcie i przezroczystość)
+        $toast.Opacity = 0
+        $shift = New-Object System.Windows.Media.TranslateTransform 24, 0
+        $toast.RenderTransform = $shift
+        $duration = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(220))
+        $toast.BeginAnimation([System.Windows.UIElement]::OpacityProperty, [System.Windows.Media.Animation.DoubleAnimation]::new(0, 1, $duration))
+        $shift.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, [System.Windows.Media.Animation.DoubleAnimation]::new(24, 0, $duration))
         while ($toastHost.Children.Count -ge 4) { $toastHost.Children.RemoveAt(0) }
         [void]$toastHost.Children.Add($toast)
         $timer = New-Object System.Windows.Threading.DispatcherTimer
@@ -1949,8 +1981,8 @@ function Add-HTLogItem {
     try {
         $items = $script:UI.LogItems
         if ($items.Count -ge 3000) { for ($i = 0; $i -lt 500; $i++) { $items.RemoveAt(0) } }
-        $level = switch ($Entry.Type) { 'Warn' { 'WARN' } 'Error' { 'ERROR' } default { if ($Entry.Notify) { 'OK' } else { 'INFO' } } }
-        $message = ($Entry.Message -replace '^(ℹ️|⚠️|❌)\s*', '')
+        $level = switch ($Entry.Type) { 'Warn' { 'WARN' } 'Error' { 'ERROR' } 'Debug' { 'DEBUG' } default { if ($Entry.Notify) { 'OK' } else { 'INFO' } } }
+        $message = ($Entry.Message -replace '^(ℹ️|⚠️|❌|🔧)\s*', '')
         $item = [PSCustomObject]@{
             Time    = $Entry.Time.ToString('HH:mm:ss')
             Level   = $level
@@ -2215,7 +2247,9 @@ function Update-ConnectionButtonText {
     na odpowiedź z karty). Wywołanie Connect-* blokuje wątek okna, dlatego na czas logowania w osobnym wątku
     działa małe okno «Trwa logowanie» z przyciskiem «Anuluj» i limitem czasu. Anulowanie wysyła do oczekującego
     nasłuchu MSAL odpowiedź z błędem access_denied - Connect-* kończy się błędem zamiast czekać w nieskończoność
-    (np. gdy karta przeglądarki została przypadkiem zamknięta).
+    (np. gdy karta przeglądarki została przypadkiem zamknięta). MSAL nasłuchuje przez HttpListener, czyli usługę
+    http.sys - port należy wtedy do procesu System (PID 4), nie do programu. Gdy anulowanie nie zadziała, okno
+    pozwala spróbować ponownie albo zamknąć program (wątek okna jest zablokowany i nie da się go inaczej odzyskać).
 #>
 $script:LoginWatchdogScript = {
     param($State)
@@ -2241,6 +2275,8 @@ $script:LoginWatchdogScript = {
       <ProgressBar Name="bar" Height="6" Margin="0,16,0,0" IsIndeterminate="True" Foreground="#4C7DF0" Background="#262D39" BorderThickness="0"/>
       <TextBlock Name="time" Foreground="#5E6779" FontSize="12" Margin="0,6,0,0"/>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <Button Name="kill" Content="Zamknij program" Padding="16,6" MinWidth="140" Margin="0,0,10,0" Visibility="Collapsed" Background="#262D39" Foreground="#E4E8EF" BorderBrush="#3A4252"
+                ToolTip="Kończy program - logowanie zablokowało okno programu. Po zamknięciu uruchom program ponownie."/>
         <Button Name="cancel" Content="Anuluj logowanie" Padding="16,6" MinWidth="140" Background="#3A1F25" Foreground="#FF8A95" BorderBrush="#5A2A33"/>
       </StackPanel>
     </StackPanel>
@@ -2253,39 +2289,62 @@ $script:LoginWatchdogScript = {
     $State.Dispatcher = $w.Dispatcher
     $started = Get-Date
 
+    $cancelButton = $w.FindName('cancel')
+    $killButton = $w.FindName('kill')
+    $info = $w.FindName('info')
+
+    # Nowe porty nasłuchu od początku logowania: programu albo http.sys (PID 4), na pętli zwrotnej lub wszystkich adresach
+    $findPorts = {
+        try {
+            return @(Get-NetTCPConnection -OwningProcess @($State.ProcessId, 4) -State Listen -ErrorAction Stop |
+                    Where-Object { $_.LocalAddress -in '127.0.0.1', '::1', '0.0.0.0', '::' -and $State.BasePorts -notcontains [int]$_.LocalPort } |
+                    ForEach-Object { [int]$_.LocalPort } | Select-Object -Unique)
+        }
+        catch { return @() }
+    }
+
+    # Anulowanie nie przerwało logowania - ponowna próba albo zamknięcie programu
+    $showEscape = {
+        $State.EscapeShown = $true
+        $info.Text = if ($State.CancelSent -gt 0) {
+            'Program wysłał anulowanie, ale logowanie nadal trwa. Spróbuj ponownie albo zamknij program i uruchom go jeszcze raz (okno programu jest zablokowane do końca logowania).'
+        }
+        else {
+            'Nie znaleziono oczekującego logowania w przeglądarce. Jeśli karta logowania jest otwarta - dokończ logowanie. Jeśli nie - spróbuj ponownie albo zamknij program i uruchom go jeszcze raz (okno programu jest zablokowane do końca logowania).'
+        }
+        $cancelButton.Content = 'Spróbuj ponownie'
+        $cancelButton.IsEnabled = $true
+        $killButton.Visibility = 'Visible'
+    }
+
     $sendCancel = {
         param([string]$Reason)
-        if ($State.Cancelled) { return }
-        $State.Cancelled = $true
-        $State.Reason = $Reason
-        $w.FindName('cancel').IsEnabled = $false
-        $w.FindName('info').Text = 'Anulowanie logowania…'
-        # Nowe porty nasłuchu tego procesu na pętli zwrotnej = oczekujący nasłuch MSAL na odpowiedź z przeglądarki
-        $ports = @()
+        if ($State.Sending) { return }
+        $State.Sending = $true
         try {
-            $ports = @(Get-NetTCPConnection -OwningProcess $State.ProcessId -State Listen -ErrorAction Stop |
-                    Where-Object { $_.LocalAddress -in '127.0.0.1', '::1' -and $State.BasePorts -notcontains $_.LocalPort } |
-                    ForEach-Object { $_.LocalPort } | Select-Object -Unique)
-        }
-        catch { $ports = @() }
-        $sent = 0
-        foreach ($port in $ports) {
-            foreach ($hostName in '127.0.0.1', 'localhost') {
-                try {
-                    Invoke-WebRequest -Uri "http://$($hostName):$port/?error=access_denied&error_description=Login+cancelled+in+Helpdesk+Tools" -TimeoutSec 4 -UseBasicParsing -ErrorAction Stop | Out-Null
-                    $sent++
-                    break
-                }
-                catch {
-                    # Odpowiedź z błędem HTTP też oznacza, że nasłuch odebrał żądanie
-                    if ($_.Exception.Response) { $sent++; break }
+            $State.Cancelled = $true
+            if (-not $State.Reason) { $State.Reason = $Reason }
+            $State.EscapeShown = $false
+            $cancelButton.IsEnabled = $false
+            $info.Text = 'Anulowanie logowania…'
+            $sent = 0
+            foreach ($port in @(& $findPorts)) {
+                # Najpierw «localhost» - http.sys odrzuca żądanie z inną nazwą hosta niż zarejestrowana przez MSAL (400)
+                foreach ($hostName in 'localhost', '127.0.0.1') {
+                    try {
+                        Invoke-WebRequest -Uri "http://$($hostName):$port/?error=access_denied&error_description=Login+cancelled+in+Helpdesk+Tools" -TimeoutSec 4 -UseBasicParsing -ErrorAction Stop | Out-Null
+                        $sent++
+                        break
+                    }
+                    catch { Write-Verbose "Port $($port) ($hostName): $($_.Exception.Message)" }
                 }
             }
+            $State.CancelSent += $sent
+            $State.CancelAt = Get-Date
+            if ($sent -eq 0) { & $showEscape }
+            else { $info.Text = 'Wysłano anulowanie - czekam na zakończenie logowania…' }
         }
-        $State.CancelSent = $sent
-        if ($sent -eq 0) {
-            $w.FindName('info').Text = 'Nie znaleziono oczekującego logowania w przeglądarce. Jeśli otwarte jest okno logowania Microsoft, zamknij je - program wróci do pracy.'
-        }
+        finally { $State.Sending = $false }
     }
 
     $timer = New-Object System.Windows.Threading.DispatcherTimer
@@ -2294,15 +2353,23 @@ $script:LoginWatchdogScript = {
             if ($State.Done) { $timer.Stop(); $State.Closing = $true; $w.Close(); return }
             $left = [int]($State.TimeoutSeconds - ((Get-Date) - $started).TotalSeconds)
             if ($left -le 0 -and -not $State.Cancelled) { & $sendCancel 'timeout' }
+            # Anulowanie wysłane, a logowanie po 15 s nadal trwa - pokaż wyjście awaryjne
+            if ($State.Cancelled -and -not $State.EscapeShown -and -not $State.Sending -and $State.CancelAt -and ((Get-Date) - $State.CancelAt).TotalSeconds -ge 15) { & $showEscape }
             $w.FindName('time').Text = if ($State.Cancelled) { '' } else { 'Automatyczne anulowanie za {0}:{1:00}' -f [Math]::Floor([Math]::Max(0, $left) / 60), ([Math]::Max(0, $left) % 60) }
         })
-    $w.FindName('cancel').add_Click({ & $sendCancel 'user' })
-    # Zamknięcie okienka (X) = anulowanie - inaczej nie byłoby jak przerwać oczekiwania
+    $cancelButton.add_Click({ & $sendCancel 'user' })
+    $killButton.add_Click({
+            $answer = [System.Windows.MessageBox]::Show($w, "Zamknąć program?`n`nLogowanie zablokowało okno programu i nie da się go przerwać inaczej. Niezapisane wyniki zostaną utracone. Po zamknięciu uruchom program ponownie.", 'Helpdesk Tools', 'YesNo', 'Warning')
+            if ("$answer" -ne 'Yes') { return }
+            $State.Killed = $true
+            try { [System.Diagnostics.Process]::GetProcessById([int]$State.ProcessId).Kill() } catch { $info.Text = "Nie udało się zamknąć programu: $($_.Exception.Message). Zamknij go w Menedżerze zadań." }
+        })
+    # Zamknięcie okienka (X) = anulowanie (albo ponowna próba) - inaczej nie byłoby jak przerwać oczekiwania
     $w.add_Closing({
             param($s, $e)
             if ($State.Done -or $State.Closing) { return }
             $e.Cancel = $true
-            & $sendCancel 'user'
+            if (-not $State.Sending) { & $sendCancel 'user' }
         })
     $timer.Start()
     [void]$w.ShowDialog()
@@ -2310,11 +2377,13 @@ $script:LoginWatchdogScript = {
 
 function Start-HTLoginWatchdog {
     param([string]$Title, [int]$TimeoutSeconds = 300)
+    # Porty nasłuchu programu i http.sys (PID 4) sprzed logowania - nowy port po starcie logowania to nasłuch MSAL
     $base = @()
-    try { $base = @(Get-NetTCPConnection -OwningProcess $PID -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalPort }) } catch { $base = @() }
+    try { $base = @(Get-NetTCPConnection -OwningProcess @($PID, 4) -State Listen -ErrorAction Stop | ForEach-Object { [int]$_.LocalPort } | Select-Object -Unique) } catch { $base = @() }
     $state = [hashtable]::Synchronized(@{
             Title = $Title; TimeoutSeconds = [Math]::Max(30, $TimeoutSeconds); ProcessId = $PID; BasePorts = $base
-            Done = $false; Closing = $false; Cancelled = $false; Reason = ''; CancelSent = 0; Window = $null; Dispatcher = $null
+            Done = $false; Closing = $false; Cancelled = $false; Reason = ''; CancelSent = 0; CancelAt = $null; Sending = $false
+            EscapeShown = $false; Killed = $false; Window = $null; Dispatcher = $null
         })
     try {
         $rs = [runspacefactory]::CreateRunspace()
@@ -2354,10 +2423,14 @@ function Invoke-HTInteractiveLogin {
     Set-HTStatus -Text "Logowanie: $Title - dokończ logowanie w przeglądarce…"
     Update-HTUi
     $watch = Start-HTLoginWatchdog -Title $Title -TimeoutSeconds $TimeoutSeconds
+    Write-HTDebug { "Logowanie $($Title): start, limit $TimeoutSeconds s, porty nasłuchu przed logowaniem (program i http.sys): $(@($watch.BasePorts).Count)" }
+    $started = Get-Date
     try {
         & $ScriptBlock
+        Write-HTDebug { "Logowanie $($Title): zakończone po $([int]((Get-Date) - $started).TotalSeconds) s" }
     }
     catch {
+        Write-HTDebug { "Logowanie $($Title): błąd po $([int]((Get-Date) - $started).TotalSeconds) s - anulowano: $($watch.Cancelled) ($($watch.Reason)), wysłane anulowania: $($watch.CancelSent), $($_.Exception.GetType().Name): $($_.Exception.Message)" }
         if ($watch -and $watch.Cancelled) {
             $why = if ($watch.Reason -eq 'timeout') { "przekroczono czas logowania ($([int]($TimeoutSeconds / 60)) min)" } else { 'anulowano logowanie' }
             throw [System.OperationCanceledException]::new("Nie połączono z usługą $Title - $why.")
@@ -2425,6 +2498,7 @@ function Invoke-HTUiAction {
         # Moduł zablokowany dla konta MFA (Show-HTModule) - wpis w dzienniku już jest, wystarczy powiadomienie
         if ($_.Exception -is [System.UnauthorizedAccessException] -and $_.Exception.Data['HTAccess']) { Show-HTToast $_.Exception.Message 'warn' 5; return }
         Write-Log -Message "Błąd: $($_.Exception.Message)" -Type 'Error'
+        Write-HTDebug { "Stos błędu ($($_.Exception.GetType().FullName)):`n$($_.ScriptStackTrace)" }
         Show-HTError 'Operacja nie powiodła się.' $_
     }
 }
@@ -3256,7 +3330,10 @@ $script:ModuleViewXaml = @'
     <TextBox x:Name="filterBox" Grid.Column="4" Width="260" Tag="Filtruj wyniki (Ctrl+F)…" Margin="0,0,8,0"/>
     <CheckBox x:Name="chkReveal" Grid.Column="5" Content="Pokaż poufne" Margin="4,0,12,0" Visibility="Collapsed"/>
     <Button x:Name="btnViews" Grid.Column="6" Style="{StaticResource GhostButton}" ToolTip="Zapisane widoki: filtr, filtry kolumn i ukryte kolumny tego modułu" Margin="0,0,4,0"/>
-    <Button x:Name="btnColumns" Grid.Column="7" Style="{StaticResource GhostButton}" ToolTip="Wybierz kolumny do pokazania - ukryte nie trafiają do kopiowania ani eksportu" Margin="0,0,4,0"/>
+    <StackPanel Grid.Column="7" Orientation="Horizontal">
+      <Button x:Name="btnEmptyCols" Style="{StaticResource GhostButton}" ToolTip="Ukryj kolumny bez wartości (kliknij ponownie, aby je pokazać)" Margin="0,0,4,0"/>
+      <Button x:Name="btnColumns" Style="{StaticResource GhostButton}" ToolTip="Wybierz kolumny do pokazania - ukryte nie trafiają do kopiowania ani eksportu" Margin="0,0,4,0"/>
+    </StackPanel>
     <Button x:Name="btnDetail" Grid.Column="8" Style="{StaticResource GhostButton}" ToolTip="Panel szczegółów wiersza" Margin="0,0,4,0"/>
     <Button x:Name="btnCopy" Grid.Column="9" Style="{StaticResource GhostButton}" ToolTip="Kopiuj zaznaczone wiersze lub całą tabelę (format Excel)" Margin="0,0,4,0"/>
     <Button x:Name="btnMail" Grid.Column="10" Style="{StaticResource GhostButton}" ToolTip="Wyślij widoczne wyniki e-mailem (Excel, raport HTML lub CSV w załączniku)" Margin="0,0,4,0"/>
@@ -3355,7 +3432,7 @@ function New-HTModuleView {
     $root = New-HTUiElement $script:ModuleViewXaml
     $Module.Root = $root
     foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
-        'btnViews', 'btnColumns', 'btnDetail', 'btnCopy', 'btnMail', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
+        'btnViews', 'btnColumns', 'btnEmptyCols', 'btnDetail', 'btnCopy', 'btnMail', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
         'detailPane', 'detailText', 'btnDetailCopy', 'btnCollapse') {
         $Module.View_[$n] = $root.FindName($n)
     }
@@ -3374,6 +3451,7 @@ function New-HTModuleView {
     $v = $Module.View_
     $v.btnDetail.Content = New-HTIconContent -Text '' -Icon 'E8A1'
     $v.btnColumns.Content = New-HTIconContent -Text '' -Icon 'E8FD'
+    $v.btnEmptyCols.Content = New-HTIconContent -Text '' -Icon 'ED1A'
     $v.btnViews.Content = New-HTIconContent -Text '' -Icon 'E71D'
     $v.btnCopy.Content = New-HTIconContent -Text '' -Icon 'E8C8'
     $v.btnMail.Content = New-HTIconContent -Text '' -Icon 'E715'
@@ -3391,6 +3469,7 @@ function New-HTModuleView {
     Register-HTControlHandler -Control $v.btnCopy -EventName 'Click' -Module $Module -Action { param($m) Copy-HTResultView -Module $m }
     Register-HTControlHandler -Control $v.btnExport -EventName 'Click' -Module $Module -Action { param($m) Export-HTResultView -Module $m }
     Register-HTControlHandler -Control $v.btnColumns -EventName 'Click' -Module $Module -Action { param($m) Select-HTResultColumns -Module $m }
+    Register-HTControlHandler -Control $v.btnEmptyCols -EventName 'Click' -Module $Module -Action { param($m) Switch-HTEmptyColumns -Module $m }
     Register-HTControlHandler -Control $v.btnViews -EventName 'Click' -Module $Module -Action { param($m, $s) Show-HTViewsMenu -Module $m -Anchor $s }
     Register-HTControlHandler -Control $v.btnMail -EventName 'Click' -Module $Module -Action { param($m) Send-HTResultMail -Module $m }
     # Zapisane widoki i ukryte kolumny dotyczą modułów nawigacji (nie okien podglądu)
@@ -4487,6 +4566,36 @@ function Update-HTHeaderMenu {
             }))
     [void]$Menu.Items.Add((New-HTMenuItem -Text 'Pokaż tylko tę kolumnę' -Icon 'E8FD' -Module $Module -Action { param($m) Set-HTResultColumns -Module $m -Visible @([string]$m.MenuCell.Column) }))
     [void]$Menu.Items.Add((New-HTMenuItem -Text 'Wybierz kolumny…' -Icon 'E8FD' -Module $Module -Action { param($m) Select-HTResultColumns -Module $m }))
+    [void]$Menu.Items.Add((New-HTMenuItem -Text 'Ukryj / pokaż kolumny bez wartości' -Icon 'ED1A' -Module $Module -Action { param($m) Switch-HTEmptyColumns -Module $m }))
+}
+
+<#
+    Szybkie ukrycie kolumn bez wartości w widocznych wierszach (np. 15 atrybutów niestandardowych, z których wypełnione
+    są dwa). Ponowne kliknięcie pokazuje je z powrotem. Kolumna «Obiekt» zostaje zawsze.
+#>
+function Switch-HTEmptyColumns {
+    param([Parameter(Mandatory)][hashtable]$Module)
+    if (-not $Module.Grid -or $Module.Grid.Columns.Count -eq 0 -or $null -eq $Module.View) { Show-HTToast 'Brak kolumn - najpierw pobierz dane.' 'info' 3; return }
+    $hiddenEmpty = @($Module.Grid.Columns | Where-Object { @($Module['EmptyHidden']) -contains [string]$_.SortMemberPath -and $_.Visibility -ne 'Visible' })
+    if ($hiddenEmpty.Count) {
+        foreach ($c in $hiddenEmpty) { $c.Visibility = 'Visible' }
+        $Module['EmptyHidden'] = @()
+        Update-HTColumnsButton -Module $Module
+        Show-HTToast "Pokazano kolumny bez wartości: $($hiddenEmpty.Count)." 'info' 3
+        return
+    }
+    $empty = @(foreach ($c in $Module.Grid.Columns) {
+            $name = [string]$c.SortMemberPath
+            if ($c.Visibility -ne 'Visible' -or -not $name -or $name -eq 'Obiekt') { continue }
+            $values = @(Get-HTColumnTextValues -Module $Module -Column $name | Where-Object { $_.Trim() -ne '' })
+            if ($values.Count -eq 0) { $name }
+        })
+    if ($empty.Count -eq 0) { Show-HTToast 'Każda widoczna kolumna ma wartości.' 'info' 3; return }
+    if ($empty.Count -ge @($Module.Grid.Columns | Where-Object { $_.Visibility -eq 'Visible' }).Count) { Show-HTToast 'Wszystkie kolumny są puste - nic nie ukryto.' 'info' 3; return }
+    foreach ($c in $Module.Grid.Columns) { if ($empty -contains [string]$c.SortMemberPath) { $c.Visibility = 'Collapsed' } }
+    $Module['EmptyHidden'] = $empty
+    Update-HTColumnsButton -Module $Module
+    Show-HTToast "Ukryto kolumny bez wartości: $($empty.Count). Kliknij ponownie, aby je pokazać." 'ok' 4
 }
 
 function Update-HTColumnsButton {
@@ -4496,6 +4605,11 @@ function Update-HTColumnsButton {
     if (-not $b -or -not $Module.Grid) { return }
     $n = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' -and $Module.UserHidden.Contains([string]$_.SortMemberPath) }).Count
     $b.Content = New-HTIconContent -Text $(if ($n) { "ukryte: $n" } else { '' }) -Icon 'E8FD'
+    $e = $Module.View_['btnEmptyCols']
+    if ($e) {
+        $k = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' -and @($Module['EmptyHidden']) -contains [string]$_.SortMemberPath }).Count
+        $e.Content = New-HTIconContent -Text $(if ($k) { "puste: $k" } else { '' }) -Icon 'ED1A'
+    }
     # Zapamiętanie ukrytych kolumn modułu (przy następnym uruchomieniu też ukryte)
     if ($Module.Workspace -and $Module.Key) {
         $saved = @(Get-HTModuleHiddenColumns $Module.Key)
@@ -4538,8 +4652,12 @@ function Show-HTCheckListDialog {
     $body = @'
 <StackPanel>
   <Grid Margin="0,0,0,8">
-    <TextBox x:Name="clSearch" Tag="Szukaj…" Width="220" HorizontalAlignment="Left"/>
-    <StackPanel x:Name="clButtons" Orientation="Horizontal" HorizontalAlignment="Right"/>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*" MinWidth="140"/>
+      <ColumnDefinition Width="Auto"/>
+    </Grid.ColumnDefinitions>
+    <TextBox x:Name="clSearch" Tag="Szukaj…" MaxWidth="240" HorizontalAlignment="Stretch" Margin="0,0,10,0"/>
+    <StackPanel x:Name="clButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"/>
   </Grid>
   <Border Style="{StaticResource Card}" Padding="10,6">
     <ScrollViewer Height="320" VerticalScrollBarVisibility="Auto">
@@ -5559,13 +5677,25 @@ $script:MfaEnrollXaml = @'
     </StackPanel>
   </Grid>
   <Border Style="{StaticResource Card}" Padding="14,12" Margin="0,14,0,0">
-    <StackPanel>
-      <TextBlock TextWrapping="Wrap" Foreground="#C9D0DC"
-                 Text="1. W aplikacji uwierzytelniającej (Microsoft Authenticator, Google Authenticator i podobne) dodaj konto, wybierz wpisanie klucza ręcznie i konto oparte na czasie:"/>
-      <TextBox x:Name="enKey" IsReadOnly="True" FontFamily="Consolas" FontSize="17" Margin="0,10,0,0" HorizontalContentAlignment="Center"/>
-      <TextBlock x:Name="enLabel" Foreground="#8791A5" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"/>
-      <WrapPanel x:Name="enButtons" Margin="0,8,0,0"/>
-    </StackPanel>
+    <Grid>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <Border Background="White" CornerRadius="6" Padding="4" Width="186" Height="186" VerticalAlignment="Top" Margin="0,0,16,0">
+        <Grid>
+          <Image x:Name="enQr" Stretch="Uniform" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+          <TextBlock x:Name="enQrWait" Text="Tworzenie kodu QR…" Foreground="#5E6779" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+        </Grid>
+      </Border>
+      <StackPanel Grid.Column="1">
+        <TextBlock TextWrapping="Wrap" Foreground="#C9D0DC"
+                   Text="1. W aplikacji uwierzytelniającej (Microsoft Authenticator, Google Authenticator i podobne) dodaj konto i zeskanuj kod QR. Bez aparatu: wpisz klucz ręcznie (konto oparte na czasie):"/>
+        <TextBox x:Name="enKey" IsReadOnly="True" FontFamily="Consolas" FontSize="16" Margin="0,10,0,0" HorizontalContentAlignment="Center"/>
+        <TextBlock x:Name="enLabel" Foreground="#8791A5" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"/>
+        <WrapPanel x:Name="enButtons" Margin="0,8,0,0"/>
+      </StackPanel>
+    </Grid>
   </Border>
   <TextBlock Text="2. Wpisz 6-cyfrowy kod, który pokazuje aplikacja" Foreground="#8791A5" FontSize="12" Margin="0,14,0,5"/>
   <TextBox x:Name="enCode" MaxLength="6" Width="150" HorizontalAlignment="Left" FontSize="16"/>
@@ -5575,6 +5705,36 @@ $script:MfaEnrollXaml = @'
 '@
 
 $script:MfaEnrollEvents = @{
+    # Kod QR z linkiem otpauth:// (nazwa konta jest w linku - odświeżany po zmianie nazwy, z opóźnieniem)
+    UpdateQr = {
+        param($w)
+        $n = $w.FindName('enName').Text.Trim()
+        $uri = Get-HTMfaUri -Account $(if ($n) { $n } else { 'konto' }) -Base32 (ConvertTo-HTBase32 $w.Tag.Secret)
+        $wait = $w.FindName('enQrWait')
+        try {
+            $w.FindName('enQr').Source = New-HTQrBitmap -QrCode (New-HTQrCode -Text $uri)
+            $wait.Visibility = 'Collapsed'
+        }
+        catch {
+            $w.FindName('enQr').Source = $null
+            $wait.Text = 'Nie utworzono kodu QR - wpisz klucz ręcznie.'
+            $wait.Visibility = 'Visible'
+            Write-Log -Message "MFA: kod QR - $($_.Exception.Message)" -Type 'Warn'
+        }
+    }
+    QrTick = {
+        param($s, $e)
+        $s.Stop()
+        $w = $s.Tag
+        if ($w -and $w.IsVisible) { & $script:MfaEnrollEvents.UpdateQr $w }
+    }
+    NameChanged = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        if (-not $w -or -not $w.Tag.QrTimer) { return }
+        $w.Tag.QrTimer.Stop()
+        $w.Tag.QrTimer.Start()
+    }
     CopyKey = {
         param($s, $e)
         $win = [System.Windows.Window]::GetWindow($s)
@@ -5598,7 +5758,7 @@ function Show-HTMfaEnroll {
     #>
     param([switch]$Primary, [hashtable]$Account = $null)
     $title = if ($Account) { "Nowy klucz MFA - $($Account.Name)" } elseif ($Primary) { 'MFA dla konta podstawowego' } else { 'Nowe konto z MFA' }
-    $w = New-HTDialog -Title $title -Subtitle 'Odblokowanie programu będzie wymagać PIN-u i kodu z aplikacji w telefonie.' -Body $script:MfaEnrollXaml -Icon 'E8D7' -OkText 'Zapisz' -Width 560 -Validate {
+    $w = New-HTDialog -Title $title -Subtitle 'Odblokowanie programu będzie wymagać PIN-u i kodu z aplikacji w telefonie.' -Body $script:MfaEnrollXaml -Icon 'E8D7' -OkText 'Zapisz' -Width 680 -Validate {
         param($w)
         $t = $w.Tag
         $name = $w.FindName('enName').Text.Trim()
@@ -5641,7 +5801,24 @@ function Show-HTMfaEnroll {
     $copyUri = New-HTButton -Text 'Kopiuj link otpauth://' -Icon 'E71B' -ToolTip 'Link do aplikacji, które przyjmują go wklejony (np. menedżery haseł)'
     $copyUri.add_Click($script:MfaEnrollEvents.CopyUri)
     foreach ($b in $copyKey, $copyUri) { [void]$buttons.Children.Add($b) }
-    $w.add_ContentRendered({ param($s, $e) $b = $s.FindName('enName'); [void]$b.Focus(); $b.SelectAll() })
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(700)
+    $timer.Tag = $w
+    $timer.add_Tick($script:MfaEnrollEvents.QrTick)
+    $w.Tag.QrTimer = $timer
+    # Pierwszy kod QR tuż po pokazaniu okna (tworzenie trwa ok. sekundy - okno pojawia się od razu)
+    $initTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $initTimer.Interval = [TimeSpan]::FromMilliseconds(60)
+    $initTimer.Tag = $w
+    $initTimer.add_Tick($script:MfaEnrollEvents.QrTick)
+    $w.Tag.QrInitTimer = $initTimer
+    $nameBox.add_TextChanged($script:MfaEnrollEvents.NameChanged)
+    $w.add_ContentRendered({
+            param($s, $e)
+            $b = $s.FindName('enName'); [void]$b.Focus(); $b.SelectAll()
+            $s.Tag.QrInitTimer.Start()
+        })
+    $w.add_Closed({ param($s, $e) foreach ($t in $s.Tag.QrTimer, $s.Tag.QrInitTimer) { if ($t) { $t.Stop() } } })
     $ok = Invoke-HTDialog $w
     if ($ok) { Write-Log -Message ('MFA: {0} konto «{1}».' -f $(if ($Account) { 'nowy klucz dla' } else { 'dodano' }), $nameBox.Text.Trim()) -Type 'Info&Notification' }
     return $ok

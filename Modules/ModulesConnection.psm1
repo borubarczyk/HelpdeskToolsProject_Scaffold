@@ -116,8 +116,11 @@ function Repair-HTModulePath {
     <#
         Pomija w tej sesji (PSModulePath procesu) foldery modułów niedostępne z OneDrive: wykryte automatycznie oraz
         -File (plik z komunikatu błędu) i -Path. Zwraca pominięte foldery. Pliki na dysku nie są zmieniane.
+        Pominięte foldery są zapamiętywane w konfiguracji (SkippedModulePaths) - Install-Module i każdy nowy proces
+        PowerShell dopisują folder Dokumenty\PowerShell\Modules z powrotem (Restore-HTSkippedModulePaths).
+        -Quiet: bez wpisu w dzienniku (ponowne pominięcie znanego folderu).
     #>
-    param ([string]$File = '', [string[]]$Path = @(), [switch]$NoDetection)
+    param ([string]$File = '', [string[]]$Path = @(), [switch]$NoDetection, [switch]$Quiet)
     $paths = @($env:PSModulePath -split [System.IO.Path]::PathSeparator | Where-Object { $_ })
     $bad = New-Object System.Collections.Generic.List[string]
     foreach ($p in $Path) { if ($p) { $bad.Add($p) } }
@@ -131,10 +134,57 @@ function Repair-HTModulePath {
     if ($removed.Count -eq 0) { return @() }
     $env:PSModulePath = (@($paths | Where-Object { $badSet -notcontains (& $norm $_) }) -join [System.IO.Path]::PathSeparator)
     $global:HTSkippedModulePaths = @(@($global:HTSkippedModulePaths) + $removed | Select-Object -Unique)
-    Write-Log -Message "Pominięto moduły PowerShell z OneDrive ($($removed -join '; ')): pliki są tylko w chmurze, a OneDrive nie działa. Brakujące moduły program zaproponuje zainstalować dla wszystkich użytkowników (C:\Program Files\PowerShell\Modules)." -Type 'Warn'
+    Save-HTSkippedModulePaths
+    if (-not $Quiet) {
+        Write-Log -Message "Pominięto moduły PowerShell z OneDrive ($($removed -join '; ')): pliki są tylko w chmurze, a OneDrive nie działa. Brakujące moduły program zaproponuje zainstalować dla wszystkich użytkowników (C:\Program Files\PowerShell\Modules). Folder będzie pomijany także po ponownym uruchomieniu." -Type 'Warn'
+    }
     return $removed
 }
+
+# Zapamiętane w konfiguracji foldery modułów do pominięcia (SkippedModulePaths)
+function Get-HTSavedSkippedModulePaths {
+    $config = $Global:HTConfig
+    if (-not $config) { return @() }
+    $value = if ($config -is [System.Collections.IDictionary]) { $config['SkippedModulePaths'] } elseif ($config.PSObject.Properties['SkippedModulePaths']) { $config.SkippedModulePaths } else { $null }
+    return @($value | Where-Object { $_ } | ForEach-Object { [string]$_ })
+}
+
+function Save-HTSkippedModulePaths {
+    $saved = @(Get-HTSavedSkippedModulePaths)
+    $all = @(@($saved) + @($global:HTSkippedModulePaths) | Where-Object { $_ } | Select-Object -Unique)
+    if ($all.Count -eq $saved.Count) { return }
+    if (-not $Global:ConfigPath -or -not (Get-Command -Name Set-HTConfigValue -ErrorAction SilentlyContinue)) { return }
+    try { Set-HTConfigValue -Name 'SkippedModulePaths' -Value $all }
+    catch { Write-Log -Message "Nie zapisano pominiętych folderów modułów w konfiguracji: $($_.Exception.Message)" -Type 'Warn' }
+}
+
+# Ponowne pominięcie zapamiętanych folderów modułów z OneDrive - przed importem i po instalacji modułu
+function Restore-HTSkippedModulePaths {
+    $known = @(@($global:HTSkippedModulePaths) + @(Get-HTSavedSkippedModulePaths) | Where-Object { $_ } | Select-Object -Unique)
+    if ($known.Count -eq 0) { return @() }
+    $global:HTSkippedModulePaths = $known
+    return @(Repair-HTModulePath -Path $known -NoDetection -Quiet)
+}
+
+# Wyłączenie pomijania (np. po naprawie OneDrive) - od następnego uruchomienia folder jest znowu używany
+function Clear-HTSkippedModulePaths {
+    $global:HTSkippedModulePaths = @()
+    if ($Global:ConfigPath -and (Get-Command -Name Set-HTConfigValue -ErrorAction SilentlyContinue)) { Set-HTConfigValue -Name 'SkippedModulePaths' -Value @() }
+}
 #endregion
+
+# Szczegółowy dziennik: stan środowiska (PowerShell, .NET, ścieżki modułów, OneDrive, wersje modułów Microsoft 365)
+function Write-HTEnvironmentDebug {
+    if (-not $Global:DebugLogging) { return }
+    Write-HTDebug "Środowisko: PowerShell $($PSVersionTable.PSVersion) ($PSHOME), .NET $([System.Environment]::Version), $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription), administrator: $(Test-HTIsAdministrator), kultura: $((Get-Culture).Name), wątek: $([System.Threading.Thread]::CurrentThread.GetApartmentState())"
+    Write-HTDebug "PSModulePath: $($env:PSModulePath -replace [regex]::Escape([string][System.IO.Path]::PathSeparator), ' | ')"
+    Write-HTDebug "OneDrive: $($env:OneDrive); proces OneDrive: $([bool](Get-Process -Name OneDrive -ErrorAction SilentlyContinue)); pomijane foldery modułów: $(@(@($global:HTSkippedModulePaths) + @(Get-HTSavedSkippedModulePaths) | Where-Object { $_ } | Select-Object -Unique) -join ' | ')"
+    foreach ($name in 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement', 'PnP.PowerShell') {
+        $installed = @(Get-Module -ListAvailable -Name $name -ErrorAction SilentlyContinue | Sort-Object Version -Descending | ForEach-Object { "$($_.Version) ($($_.ModuleBase))" })
+        $loaded = Get-Module -Name $name | Select-Object -First 1
+        Write-HTDebug "Moduł $($name): załadowany $(if ($loaded) { $loaded.Version } else { '-' }); zainstalowane: $(if ($installed) { $installed -join '; ' } else { 'brak' })"
+    }
+}
 
 # Funkcja do instalacji modułu, jeśli nie jest zainstalowany
 function Install-ModuleIfMissing {
@@ -145,6 +195,7 @@ function Install-ModuleIfMissing {
     )
 
     $actualName = $script:ModuleNameMap[$Name]
+    Restore-HTSkippedModulePaths | Out-Null
 
     if (Test-ModulePresence -Name $actualName) {
         Write-Log "Moduł '$actualName' jest zainstalowany." "Info"
@@ -162,6 +213,8 @@ function Install-ModuleIfMissing {
     try {
         Set-HTBusy -Busy $true -Text "Instalowanie modułu $actualName..."
         Install-Module -Name $actualName -Scope $scope -AcceptLicense -Force -AllowClobber -Repository PSGallery -ErrorAction Stop
+        # PowerShellGet dopisuje do PSModulePath folder Dokumenty\PowerShell\Modules - ponowne pominięcie (OneDrive)
+        Restore-HTSkippedModulePaths | Out-Null
         Write-Log "Moduł '$actualName' został pomyślnie zainstalowany ($scope)." "Info&Notification"
         return $true
     }
@@ -202,6 +255,49 @@ function Resolve-HTGraphUri {
     return "https://graph.microsoft.com/$version/$($Uri.TrimStart('/'))"
 }
 
+# Kod i komunikat błędu Microsoft Graph z treści odpowiedzi. Invoke-MgGraphRequest zgłasza tylko «Response status code
+# does not indicate success: BadRequest», a przyczynę zapisuje w ErrorDetails (cała odpowiedź HTTP z JSON-em błędu).
+function Get-HTGraphErrorDetail {
+    param ([AllowNull()][object]$ErrorRecord)
+    $text = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { if ($ErrorRecord.ErrorDetails) { [string]$ErrorRecord.ErrorDetails.Message } else { '' } }
+    else { [string]$ErrorRecord }
+    if (-not $text) { return '' }
+    $match = [regex]::Match($text, '\{\s*"error"\s*:')
+    if (-not $match.Success) { return '' }
+    $json = $text.Substring($match.Index)
+    $end = $json.LastIndexOf('}')
+    if ($end -lt 0) { return '' }
+    try { $body = $json.Substring(0, $end + 1) | ConvertFrom-Json -ErrorAction Stop }
+    catch { return '' }
+    $code = [string]$body.error.code
+    $message = [string]$body.error.message
+    if ($message -and $message -match '^\s*\{') {
+        # Część usług (np. Search API) zagnieżdża w komunikacie kolejny JSON
+        try { $inner = $message | ConvertFrom-Json -ErrorAction Stop; if ($inner.error.message) { $message = [string]$inner.error.message } elseif ($inner.message) { $message = [string]$inner.message } } catch { Write-Verbose "Błąd Graph: $message" }
+    }
+    return (@($code, $message) | Where-Object { $_ }) -join ': '
+}
+
+# Invoke-MgGraphRequest z przyczyną błędu Graph dopisaną do komunikatu wyjątku (widoczną w oknie błędu i dzienniku)
+function Invoke-HTMgGraphRequest {
+    param ([Parameter(Mandatory)][hashtable]$Params)
+    $watch = if ($Global:DebugLogging) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
+    try {
+        $response = Invoke-MgGraphRequest @Params
+        if ($watch) { Write-HTDebug "Graph $($Params.Method) $($Params.Uri) - OK ($($watch.ElapsedMilliseconds) ms)" }
+        return $response
+    }
+    catch {
+        $detail = Get-HTGraphErrorDetail -ErrorRecord $_
+        if ($watch) { Write-HTDebug "Graph $($Params.Method) $($Params.Uri) - błąd ($($watch.ElapsedMilliseconds) ms): $($_.Exception.Message) $detail" }
+        $message = [string]$_.Exception.Message
+        if ($detail -and $message -notlike "*$detail*") {
+            throw [System.InvalidOperationException]::new("$message $detail", $_.Exception)
+        }
+        throw
+    }
+}
+
 # Wywołanie Microsoft Graph z obsługą stronicowania (-All) i treści JSON
 function Invoke-HTGraphRequest {
     [CmdletBinding()]
@@ -232,7 +328,7 @@ function Invoke-HTGraphRequest {
         $params.ContentType = "application/json"
     }
 
-    $response = Invoke-MgGraphRequest @params
+    $response = Invoke-HTMgGraphRequest -Params $params
 
     if (-not $All) {
         if ($null -ne $response -and $response.PSObject.Properties.Name -contains "value" -and $response.PSObject.Properties.Name -notcontains "id") {
@@ -251,7 +347,7 @@ function Invoke-HTGraphRequest {
         $params.Uri = $next
         $params.Remove("Body")
         $params.Method = "GET"
-        $response = Invoke-MgGraphRequest @params
+        $response = Invoke-HTMgGraphRequest -Params $params
     }
     return $results.ToArray()
 }
@@ -354,6 +450,22 @@ function Disable-HTGraphWam {
     }
 }
 
+# Nazwa organizacji Exchange Online do paska połączeń - nigdy pusta (pusta oznacza w pasku «niepołączono»)
+function Get-HTExchangeTenantName {
+    $name = ''
+    try { $name = [string](Get-OrganizationConfig -ErrorAction Stop).DisplayName }
+    catch { Write-Log "Nie udało się pobrać nazwy organizacji Exchange: $($_.Exception.Message)" "Warn" }
+    if (-not $name) {
+        try {
+            $info = Get-ConnectionInformation -ErrorAction Stop | Where-Object { "$($_.State)" -eq 'Connected' } | Select-Object -First 1
+            if ($info) { $name = @([string]$info.Organization, [string]$info.TenantID, [string]$info.UserPrincipalName) | Where-Object { $_ } | Select-Object -First 1 }
+        }
+        catch { Write-Verbose "Get-ConnectionInformation: $_" }
+    }
+    if (-not $name) { $name = 'Exchange Online' }
+    return $name
+}
+
 # Funkcja do połączenia z modułem
 function Connect-Module {
     param (
@@ -380,13 +492,14 @@ function Connect-Module {
         [string]$PartnerAccount = ''
     )
 
+    Write-HTDebug { "Łączenie: $Name; PSModulePath: $($env:PSModulePath -replace [regex]::Escape([string][System.IO.Path]::PathSeparator), ' | ')" }
     if (-not (Install-ModuleIfMissing -Name $Name)) { return $false }
     $moduleName = $script:ModuleNameMap[$Name]
 
     Set-HTBusy -Busy $true -Text "Łączenie: $Name..."
 
     try {
-        if ($SkipCompatibilityCheck) { Import-Module -Name $moduleName -ErrorAction Stop -Global }
+        if ($SkipCompatibilityCheck) { Restore-HTSkippedModulePaths | Out-Null; Import-Module -Name $moduleName -ErrorAction Stop -Global }
         else { Import-HTRequiredModule -Name $moduleName | Out-Null }
 
         switch ($Name) {
@@ -416,7 +529,7 @@ function Connect-Module {
             'ExchangeOnlineManagement' {
                 $params = Get-HTExchangeConnectParams
                 Invoke-HTLogin -Title "Exchange Online" -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
-                $tenant = (Get-OrganizationConfig).DisplayName
+                $tenant = Get-HTExchangeTenantName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
                 Write-Log "Połączono z Exchange Online ($tenant)" "Info&Notification"
@@ -440,7 +553,7 @@ function Connect-Module {
                 $params.UserPrincipalName = $gdap.Account
                 $params.DelegatedOrganization = $gdap.Organization
                 Invoke-HTLogin -Title "Exchange Online (GDAP)" -ScriptBlock { Connect-ExchangeOnline @params }.GetNewClosure()
-                $tenant = (Get-OrganizationConfig).DisplayName
+                $tenant = Get-HTExchangeTenantName
                 $Global:ConnectedToExchange = $true
                 Update-ConnectionButtonText -Service "Exchange" -TenantName $tenant
                 Write-Log "Połączono z Exchange Online ($tenant) korzystając z GDAP." "Info&Notification"
@@ -465,6 +578,11 @@ function Connect-Module {
                     $clientId = $form.ClientId
                 }
 
+                $resolvedUrl = Resolve-HTSharePointUrl -Url $url
+                if ($resolvedUrl.Reason -eq 'onmicrosoft') {
+                    Write-Log "Adres $url to domena tenantu, nie witryna SharePoint - użyto $($resolvedUrl.Url)." "Warn"
+                }
+                $url = $resolvedUrl.Url
                 Invoke-HTLogin -Title "SharePoint" -ScriptBlock { Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop }.GetNewClosure()
                 $connectedUrl = (Get-PnPConnection).Url
                 $Global:ConnectedToSharepointPnP = $true
@@ -524,7 +642,11 @@ function Connect-Module {
             return $false
         }
         Write-Log "Błąd połączenia z '$Name': $($_.Exception.Message)" "Error&Notification"
-        Show-HTError -Text "Nie udało się połączyć z '$Name'." -ErrorObject $_
+        $hint = if ($Name -eq 'PnP.PowerShell' -and "$($_.Exception.Message)" -match '(?i)host not reachable|No such host|nie jest znany|name or service not known|could not be resolved') {
+            "`n`nSprawdź adres witryny - powinien mieć postać https://firma.sharepoint.com/sites/Dzial (nie domena firma.onmicrosoft.com)."
+        }
+        else { '' }
+        Show-HTError -Text "Nie udało się połączyć z '$Name'.$hint" -ErrorObject $_
         Set-HTBusy -Busy $true
         return $false
     }
@@ -613,9 +735,28 @@ function Assert-HTGraphScopes {
     return $true
 }
 
+<#
+    Adres witryny SharePoint z tego, co wpisał użytkownik: bez https:// - dopisane, domena tenantu
+    (firma.onmicrosoft.com) - zamieniona na https://firma.sharepoint.com. Zwraca @{ Url; Changed; Reason }.
+#>
+function Resolve-HTSharePointUrl {
+    param ([AllowNull()][AllowEmptyString()][string]$Url)
+    $original = ([string]$Url).Trim()
+    $value = $original
+    $reason = ''
+    if ($value -and $value -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') { $value = "https://$value"; $reason = 'scheme' }
+    if ($value -match '^https?://([^./:]+)\.onmicrosoft\.com(/.*)?$') {
+        $value = "https://$($matches[1]).sharepoint.com$($matches[2])"
+        $reason = 'onmicrosoft'
+    }
+    $value = $value.TrimEnd('/')
+    return [PSCustomObject]@{ Url = $value; Changed = ($value -ne $original.TrimEnd('/')); Reason = $reason }
+}
+
 # Okno połączenia z SharePoint: adres witryny (z listą witryn) i Client ID (z możliwością utworzenia aplikacji)
 function Show-HTSharePointConnectDialog {
     param ([string]$Url, [string]$ClientId)
+    if ($Url) { $Url = (Resolve-HTSharePointUrl -Url $Url).Url }
     return Show-HTFormDialog -Title "Połączenie z SharePoint" -Description "PnP PowerShell wymaga własnej rejestracji aplikacji w Entra ID (Client ID). Nie masz jej? Kliknij «Utwórz Client ID»." -OkText "Połącz" -Icon "E8F1" -Width 620 -Fields @(
         @{ Name = "Url"; Label = "Adres witryny"; Required = $true; Validation = "Url"; Default = $Url; Placeholder = "https://firma.sharepoint.com/sites/Dzial" }
         @{ Name = "ClientId"; Label = "Client ID aplikacji"; Required = $true; Validation = "Guid"; Default = $ClientId }
@@ -669,7 +810,7 @@ function Set-Connections {
                 $exo = Get-ConnectionInformation -ErrorAction SilentlyContinue | Where-Object { $_.State -eq "Connected" } | Select-Object -First 1
             }
             $Global:ConnectedToExchange = [bool]$exo
-            if ($exo) { Update-ConnectionButtonText -Service "Exchange" -TenantName $exo.Organization }
+            if ($exo) { Update-ConnectionButtonText -Service "Exchange" -TenantName $(if ($exo.Organization) { [string]$exo.Organization } else { 'Exchange Online' }) }
             else { Update-ConnectionButtonText -Service "Exchange" }
 
             # Microsoft Graph
@@ -806,6 +947,27 @@ function Get-HTRuntimeAssemblyVersion {
       RuntimeIssues  - biblioteki wymagające nowszego PowerShell (.NET)
       LoadedIssues   - konflikty z bibliotekami już załadowanymi przez inny moduł (pomaga ponowne uruchomienie)
 #>
+<#
+    Biblioteki załadowane w domyślnym kontekście ładowania .NET (AssemblyLoadContext.Default). Tylko one kolidują
+    z bibliotekami importowanego modułu - moduły izolujące zależności (np. ExchangeOnlineManagement) ładują własne
+    wersje MSAL w osobnym kontekście, które nie blokują innych modułów (wcześniej dawało to fałszywe «konflikty»).
+#>
+function Get-HTLoadedAssemblies {
+    $default = [System.Runtime.Loader.AssemblyLoadContext]::Default
+    $result = @{}
+    foreach ($assembly in [AppDomain]::CurrentDomain.GetAssemblies()) {
+        if ($assembly.IsDynamic) { continue }
+        $context = $null
+        try { $context = [System.Runtime.Loader.AssemblyLoadContext]::GetLoadContext($assembly) } catch { $context = $null }
+        if ($context -and -not [object]::ReferenceEquals($context, $default)) { continue }
+        $name = $assembly.GetName()
+        if (-not $result.ContainsKey($name.Name) -or $result[$name.Name].Version -lt $name.Version) {
+            $result[$name.Name] = [PSCustomObject]@{ Name = $name.Name; Version = $name.Version; Location = $assembly.Location }
+        }
+    }
+    return @($result.Values)
+}
+
 function Test-HTModuleCompatibility {
     param (
         [Parameter(Mandatory)][string]$ModuleBase,
@@ -827,14 +989,10 @@ function Test-HTModuleCompatibility {
     $shipped = @{}
     foreach ($i in $infos) { $shipped[$i.Name] = $i.Version }
 
-    if (-not $SkipLoadedCheck -and -not $LoadedAssemblies) {
-        $LoadedAssemblies = @([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { -not $_.IsDynamic } | ForEach-Object {
-                $n = $_.GetName()
-                [PSCustomObject]@{ Name = $n.Name; Version = $n.Version; Location = $_.Location }
-            })
-    }
+    if (-not $SkipLoadedCheck -and -not $LoadedAssemblies) { $LoadedAssemblies = @(Get-HTLoadedAssemblies) }
     $loaded = @{}
-    foreach ($a in @($LoadedAssemblies)) { if ($a -and $a.Name) { $loaded[$a.Name] = $a } }
+    # Kilka wersji tej samej biblioteki (moduły z własnym kontekstem ładowania) - liczy się najnowsza
+    foreach ($a in @($LoadedAssemblies)) { if ($a -and $a.Name -and (-not $loaded.ContainsKey($a.Name) -or $loaded[$a.Name].Version -lt $a.Version)) { $loaded[$a.Name] = $a } }
 
     $runtimeIssues = @{}
     $loadedIssues = @{}
@@ -944,12 +1102,12 @@ function ConvertFrom-HTAssemblyLoadError {
     $name = $matches[1]
     $required = [version]$matches[2]
     $runtime = Get-HTRuntimeAssemblyVersion -Name $name
-    $loadedAssembly = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { -not $_.IsDynamic -and $_.GetName().Name -eq $name } | Select-Object -First 1
+    $loadedAssembly = @(Get-HTLoadedAssemblies | Where-Object { $_.Name -eq $name })[0]
     if ($runtime -and $required -gt $runtime) {
         return New-HTModuleProblem -Kind Runtime -Module $Module -Issues @([PSCustomObject]@{ Assembly = $name; Required = $required; Available = $runtime; Source = "PowerShell" })
     }
-    if ($loadedAssembly -and $loadedAssembly.GetName().Version -lt $required) {
-        return New-HTModuleProblem -Kind Conflict -Module $Module -Issues @([PSCustomObject]@{ Assembly = $name; Required = $required; Available = $loadedAssembly.GetName().Version; Source = $loadedAssembly.Location })
+    if ($loadedAssembly -and $loadedAssembly.Version -lt $required) {
+        return New-HTModuleProblem -Kind Conflict -Module $Module -Issues @([PSCustomObject]@{ Assembly = $name; Required = $required; Available = $loadedAssembly.Version; Source = $loadedAssembly.Location })
     }
     return $null
 }
@@ -957,7 +1115,9 @@ function ConvertFrom-HTAssemblyLoadError {
 # Import modułu w wersji zgodnej z PowerShell (z pominięciem wersji wymagających nowszego .NET)
 function Import-HTRequiredModule {
     param ([Parameter(Mandatory)][string]$Name)
+    Restore-HTSkippedModulePaths | Out-Null
     $resolved = Resolve-HTModuleVersion -Name $Name
+    Write-HTDebug { "Moduł $($Name): $($resolved.Status)$(if ($resolved.Module) { " $($resolved.Module.Version) ($($resolved.Module.ModuleBase))" }); konflikty: $(@($resolved.Check.LoadedIssues | ForEach-Object { "$($_.Assembly) $($_.Required)>$($_.Available)" }) -join ', ')" }
     switch ($resolved.Status) {
         "Loaded" { return $resolved.Module }
         "Missing" { throw "Moduł $Name nie jest zainstalowany." }
@@ -969,6 +1129,7 @@ function Import-HTRequiredModule {
     if ($resolved.Skipped.Count -gt 0) {
         Write-Log "Pominięto wersje modułu $Name wymagające nowszego PowerShell: $(@($resolved.Skipped | ForEach-Object { $_.Version }) -join ', '). Używana wersja: $($resolved.Module.Version)." "Warn"
     }
+    Write-HTDebug { "Import modułu $Name $($resolved.Module.Version): $($resolved.Module.Path)" }
     Import-Module -Name $resolved.Module.Path -Global -ErrorAction Stop -WarningAction SilentlyContinue
     Write-Log "Zaimportowano moduł $Name $($resolved.Module.Version)." "Info"
     return $resolved.Module
@@ -1011,6 +1172,7 @@ function Install-HTCompatibleModule {
             if ((Test-HTModuleCompatibility -ModuleBase $base.FullName -SkipLoadedCheck).Compatible) {
                 if ($OnProgress) { & $OnProgress "Instalowanie $Name $version…" }
                 Install-Module -Name $Name -RequiredVersion $version -Scope $scope -Repository PSGallery -Force -AllowClobber -AcceptLicense -ErrorAction Stop
+                Restore-HTSkippedModulePaths | Out-Null
                 Write-Log "Zainstalowano zgodną wersję modułu $Name $version ($scope)." "Info&Notification"
                 return $version
             }
@@ -1027,8 +1189,9 @@ function Get-HTEnvironmentReport {
     $rows.Add([PSCustomObject]@{ Składnik = "PowerShell"; Wersja = "$($PSVersionTable.PSVersion)"; Stan = $(if ($PSVersionTable.PSVersion -ge [version]"7.4") { "OK" } else { "Uwaga" }); Szczegóły = "Zalecany PowerShell 7.4 lub nowszy. Folder: $PSHOME"; __flag = $(if ($PSVersionTable.PSVersion -lt [version]"7.4") { "warn" } else { "" }) })
     $rows.Add([PSCustomObject]@{ Składnik = ".NET"; Wersja = "$([System.Environment]::Version)"; Stan = "OK"; Szczegóły = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription; __flag = "" })
     $rows.Add([PSCustomObject]@{ Składnik = "System"; Wersja = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription; Stan = "OK"; Szczegóły = "Wątek: $apartment, administrator: $(if (Test-HTIsAdministrator) { 'tak' } else { 'nie' })"; __flag = "" })
+    Restore-HTSkippedModulePaths | Out-Null
     foreach ($p in @($global:HTSkippedModulePaths | Where-Object { $_ })) {
-        $rows.Add([PSCustomObject]@{ Składnik = "Folder modułów (OneDrive)"; Wersja = ""; Stan = "Pominięty"; Szczegóły = "$p - pliki tylko w chmurze, a OneDrive nie działa. Brakujące moduły są instalowane w C:\Program Files\PowerShell\Modules. Na stałe: usuń ten folder albo uruchom OneDrive i oznacz go «Zawsze przechowuj na tym urządzeniu»."; __flag = "warn" })
+        $rows.Add([PSCustomObject]@{ Składnik = "Folder modułów (OneDrive)"; Wersja = ""; Stan = "Pominięty"; Szczegóły = "$p - pliki tylko w chmurze, a OneDrive nie działa. Program pomija ten folder (zapamiętane w ustawieniach: SkippedModulePaths), brakujące moduły instaluje w C:\Program Files\PowerShell\Modules. Na stałe: usuń ten folder albo uruchom OneDrive i oznacz go «Zawsze przechowuj na tym urządzeniu»; potem wyczyść SkippedModulePaths (Ctrl+K > «Używaj modułów z OneDrive»)."; __flag = "warn" })
     }
     foreach ($name in "Microsoft.Graph.Authentication", "ExchangeOnlineManagement", "PnP.PowerShell") {
         $installed = @(Get-Module -ListAvailable -Name $name | Sort-Object Version -Descending)

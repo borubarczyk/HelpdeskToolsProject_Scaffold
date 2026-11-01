@@ -1,8 +1,18 @@
 ﻿# Skrzynki pocztowe Exchange Online (moduł ExchangeOnlineManagement v3)
 
+# Skrzynka systemowa Exchange (DiscoverySearchMailbox - eDiscovery) - domyślnie ukrywana na listach i w raportach
+function Test-HTSystemMailbox {
+    param ($Mailbox)
+    if (-not $Mailbox) { return $false }
+    return ("$($Mailbox.RecipientTypeDetails)" -eq 'DiscoveryMailbox' -or "$($Mailbox.Name)" -like 'DiscoverySearchMailbox*' -or "$($Mailbox.PrimarySmtpAddress)" -like 'DiscoverySearchMailbox*')
+}
+
+# Czy pomijać skrzynki systemowe (Ustawienia > Microsoft 365 i Exchange > «Pokazuj skrzynki systemowe»)
+function Test-HTHideSystemMailboxes { return (-not $Global:ShowSystemMailboxes) }
+
 # Lista skrzynek
 function Get-HTMailboxes {
-    param ([string[]]$RecipientTypeDetails)
+    param ([string[]]$RecipientTypeDetails, [switch]$IncludeSystem)
     $params = @{
         ResultSize  = "Unlimited"
         Properties  = @("HiddenFromAddressListsEnabled", "ArchiveStatus", "ForwardingSmtpAddress", "ForwardingAddress", "WhenCreated")
@@ -10,7 +20,8 @@ function Get-HTMailboxes {
     }
     if ($RecipientTypeDetails) { $params.RecipientTypeDetails = $RecipientTypeDetails }
 
-    return @(Get-EXOMailbox @params | ForEach-Object {
+    $hideSystem = (-not $IncludeSystem) -and (Test-HTHideSystemMailboxes)
+    return @(Get-EXOMailbox @params | Where-Object { -not ($hideSystem -and (Test-HTSystemMailbox $_)) } | ForEach-Object {
             [PSCustomObject]@{
                 Identity             = "$($_.PrimarySmtpAddress)"
                 ObjectId             = $_.ExternalDirectoryObjectId
@@ -55,10 +66,10 @@ function Get-HTMailboxDetail {
             "Ostatnie logowanie"         = if ($stats) { $stats.LastLogonTime } else { "" }
             "Limit (zakaz wysyłania)"    = "$($mbx.ProhibitSendQuota)"
             "Limit (ostrzeżenie)"        = "$($mbx.IssueWarningQuota)"
-            "Archiwum"                   = "$($mbx.ArchiveStatus)"
+            "Archiwum"                   = switch ("$($mbx.ArchiveStatus)") { 'Active' { 'Aktywne' } { $_ -in '', 'None' } { 'Brak' } default { $_ } }
             "Rozmiar archiwum"           = if ($archiveStats) { "$($archiveStats.TotalItemSize)" } else { "" }
             "Litigation Hold"            = [bool]$mbx.LitigationHoldEnabled
-            "Retencja elementów usuniętych" = "$($mbx.RetainDeletedItemsFor)"
+            "Retencja elementów usuniętych" = ConvertTo-HTDaysText $mbx.RetainDeletedItemsFor
         }
         "Przekierowanie"      = [ordered]@{
             "Przekieruj do"          = $forward
@@ -76,6 +87,59 @@ function Get-HTMailboxDetail {
         "Wysyłanie w imieniu" = [ordered]@{
             "Użytkownicy" = @($mbx.GrantSendOnBehalfTo | ForEach-Object { "$_" })
         }
+    }
+}
+
+# Okres z Exchange (TimeSpan albo tekst «14.00:00:00») jako liczba dni
+function ConvertTo-HTDaysText {
+    param ([AllowNull()][object]$Value)
+    if ($null -eq $Value -or "$Value" -eq '') { return '' }
+    $span = [TimeSpan]::Zero
+    if ($Value -is [TimeSpan]) { $span = $Value }
+    elseif (-not [TimeSpan]::TryParse("$Value", [System.Globalization.CultureInfo]::InvariantCulture, [ref]$span)) { return "$Value" }
+    if ($span.TotalHours % 24 -ne 0) { return "$Value" }
+    $days = [int]$span.TotalDays
+    return $(if ($days -eq 1) { '1 dzień' } else { "$days dni" })
+}
+
+# Rozmiar z Exchange bez liczby bajtów («93.99 MB (98,558,115 bytes)» -> «93.99 MB»)
+function ConvertTo-HTShortSize {
+    param ([AllowNull()][object]$Value)
+    return ("$Value" -replace '\s*\([\d,\.\s]+bytes\)\s*$', '').Trim()
+}
+
+<#
+    Zestawienie skrzynki w jednym wierszu (moduł «Szczegóły skrzynki», widok «Skrzynki»). -Detail: wynik
+    Get-HTMailboxDetail; pełne szczegóły zostają w __detail (dwuklik na wierszu).
+#>
+function ConvertTo-HTMailboxSummaryRow {
+    param ([Parameter(Mandatory)][System.Collections.IDictionary]$Detail)
+    $size = $Detail['Rozmiar i limity']
+    $forward = $Detail['Przekierowanie']
+    $auto = $Detail['Autoodpowiedź']
+    $aliasKey = @($Detail.Keys | Where-Object { "$_" -like 'Adresy*' })[0]
+    $aliases = if ($aliasKey) { @($Detail[$aliasKey]['Aliasy'] | Where-Object { $_ -and "$_" -notmatch '^(SIP|SPO|X500|X400):' }) } else { @() }
+    $delegates = @($Detail['Wysyłanie w imieniu']['Użytkownicy'] | Where-Object { $_ })
+    $forwardTo = [string]$forward['Przekieruj do']
+    if ($forwardTo -eq '(brak)') { $forwardTo = '' }
+    $autoState = switch ([string]$auto['Stan']) { 'Enabled' { 'Włączona' } 'Scheduled' { 'Zaplanowana' } 'Disabled' { 'Wyłączona' } default { $_ } }
+    return [PSCustomObject]@{
+        Skrzynka              = $Detail['Nazwa wyświetlana']
+        Adres                 = $Detail['Adres główny']
+        Typ                   = $Detail['Typ skrzynki']
+        Rozmiar               = ConvertTo-HTShortSize $size['Rozmiar']
+        Elementy              = $size['Liczba elementów']
+        'Limit'               = ConvertTo-HTShortSize $size['Limit (zakaz wysyłania)']
+        'Ostatnie logowanie'  = $size['Ostatnie logowanie']
+        Archiwum              = $size['Archiwum']
+        'Litigation Hold'     = $size['Litigation Hold']
+        Przekierowanie        = $(if ($forwardTo -and $forward['Zachowaj kopię']) { "$forwardTo (z kopią)" } else { $forwardTo })
+        'Autoodpowiedź'       = $autoState
+        'Ukryta w GAL'        = $Detail['Ukryta w GAL']
+        'Adresy SMTP'         = @($aliases | Where-Object { "$_" -match '^smtp:' }).Count
+        'W imieniu'           = $delegates.Count
+        __detail              = $Detail
+        __flag                = $(if ($forwardTo) { 'warn' } elseif ($autoState -in 'Włączona', 'Zaplanowana') { 'info' } else { '' })
     }
 }
 
@@ -148,6 +212,27 @@ function Remove-HTMailboxPermission {
 }
 
 # Konwersja typu skrzynki
+# Typ, widoczność w GAL i archiwum skrzynki - przegląd przed zmianą (moduł «Typ i widoczność»)
+function Get-HTMailboxTypeInfo {
+    param ([Parameter(Mandatory)][string]$Identity, [string]$TargetType = '')
+    $mbx = Get-EXOMailbox -Identity $Identity -Properties HiddenFromAddressListsEnabled, ArchiveStatus, AutoExpandingArchiveEnabled, LitigationHoldEnabled -ErrorAction Stop
+    $names = @{ UserMailbox = 'Użytkownika'; SharedMailbox = 'Współdzielona'; RoomMailbox = 'Sala'; EquipmentMailbox = 'Zasób'; DiscoveryMailbox = 'Systemowa (eDiscovery)' }
+    $typeMap = @{ Regular = 'UserMailbox'; Shared = 'SharedMailbox'; Room = 'RoomMailbox'; Equipment = 'EquipmentMailbox' }
+    $type = "$($mbx.RecipientTypeDetails)"
+    $differs = $TargetType -and $typeMap[$TargetType] -and $typeMap[$TargetType] -ne $type
+    return [PSCustomObject]@{
+        Skrzynka               = $mbx.DisplayName
+        Typ                    = $(if ($names[$type]) { $names[$type] } else { $type })
+        'Typ (Exchange)'       = $type
+        'Ukryta w GAL'         = [bool]$mbx.HiddenFromAddressListsEnabled
+        Archiwum               = $(if ("$($mbx.ArchiveStatus)" -eq 'Active') { 'Aktywne' } else { 'Brak' })
+        'Archiwum rozszerzane' = [bool]$mbx.AutoExpandingArchiveEnabled
+        'Litigation Hold'      = [bool]$mbx.LitigationHoldEnabled
+        __address              = "$($mbx.PrimarySmtpAddress)"
+        __flag                 = $(if ($differs) { 'warn' } else { '' })
+    }
+}
+
 function Convert-HTMailboxType {
     param (
         [Parameter(Mandatory)][string]$Identity,
@@ -368,7 +453,8 @@ function Get-HTMailboxMobileDevices {
 
 # Liczba skrzynek wg typu (Dashboard)
 function Get-HTMailboxSummary {
-    $all = @(Get-EXOMailbox -ResultSize Unlimited -ErrorAction Stop)
+    $hideSystem = Test-HTHideSystemMailboxes
+    $all = @(Get-EXOMailbox -ResultSize Unlimited -ErrorAction Stop | Where-Object { -not ($hideSystem -and (Test-HTSystemMailbox $_)) })
     $byType = $all | Group-Object RecipientTypeDetails
     return [PSCustomObject]@{
         Total  = $all.Count
@@ -455,7 +541,8 @@ function Get-HTUserMailboxAccess {
     $ids = @($ids | Select-Object -Unique)
     $result = New-Object System.Collections.Generic.List[object]
 
-    $mailboxes = @(Get-EXOMailbox -ResultSize Unlimited -Properties GrantSendOnBehalfTo -ErrorAction Stop)
+    $hideSystem = Test-HTHideSystemMailboxes
+    $mailboxes = @(Get-EXOMailbox -ResultSize Unlimited -Properties GrantSendOnBehalfTo -ErrorAction Stop | Where-Object { -not ($hideSystem -and (Test-HTSystemMailbox $_)) })
     $i = 0
     foreach ($mbx in $mailboxes) {
         $i++
@@ -695,7 +782,8 @@ function Get-HTExternalForwardingReport {
         if ($clean -notmatch '@([^@\]\s>]+)') { return $false }
         return $domains -notcontains $matches[1].ToLowerInvariant()
     }
-    $mailboxes = @(Get-EXOMailbox -ResultSize Unlimited -Properties ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward -ErrorAction Stop)
+    $hideSystem = Test-HTHideSystemMailboxes
+    $mailboxes = @(Get-EXOMailbox -ResultSize Unlimited -Properties ForwardingSmtpAddress, ForwardingAddress, DeliverToMailboxAndForward -ErrorAction Stop | Where-Object { -not ($hideSystem -and (Test-HTSystemMailbox $_)) })
     $i = 0
     foreach ($mbx in $mailboxes) {
         $i++

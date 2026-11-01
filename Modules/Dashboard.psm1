@@ -71,7 +71,7 @@ function Get-HTDashboardStats {
     }
     elseif ($Global:ConnectedToGraphAPI) {
         try {
-            $sites = @(Invoke-HTGraphRequest -Uri "sites?search=*&`$select=id" -All)
+            $sites = @(Find-HTSPSites -Search "*")
             $stats.SharePoint = New-HTTileValue -Value "$($sites.Count)" -Note "witryn (Graph)"
         }
         catch { $stats.SharePoint = New-HTTileValue -Note "połącz z SharePoint" -State "Off" }

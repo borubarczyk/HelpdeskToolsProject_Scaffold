@@ -15,19 +15,23 @@ function Write-Log {
         [string]$Message,
 
         [Parameter(Position = 1)]
-        [ValidateSet("Info", "Warn", "Warning", "Error", "Info&Notification", "Warn&Notification", "Warning&Notification", "Error&Notification")]
+        [ValidateSet("Info", "Warn", "Warning", "Error", "Debug", "Info&Notification", "Warn&Notification", "Warning&Notification", "Error&Notification")]
         [string]$Type = "Info"
     )
 
+    # Wpisy diagnostyczne tylko przy włączonym szczegółowym dzienniku (Ustawienia > Aplikacja)
+    if ($Type -eq "Debug" -and -not $Global:DebugLogging) { return }
     $level = switch -Wildcard ($Type) {
         "Info*" { "Info" }
         "Warn*" { "Warn" }
         "Error*" { "Error" }
+        "Debug" { "Debug" }
     }
     $icon = switch ($level) {
         "Info" { "ℹ️" }
         "Warn" { "⚠️" }
         "Error" { "❌" }
+        "Debug" { "🔧" }
     }
 
     # Notify: wpis ma być pokazany jako powiadomienie w oknie (o ile powiadomienia są włączone)
@@ -48,6 +52,15 @@ function Write-Log {
     foreach ($sink in @($script:LogSinks)) {
         try { & $sink $entry | Out-Null } catch { Write-Verbose "Błąd odbiorcy logów: $_" }
     }
+}
+
+# Wpis diagnostyczny (szczegółowy dziennik): zapytania Graph, kroki łączenia, moduły, stos błędów.
+# Bez włączonego ustawienia DebugLogging nie robi nic (także nie buduje komunikatu, gdy podano -Message jako blok).
+function Write-HTDebug {
+    param ([Parameter(Mandatory, Position = 0)][object]$Message)
+    if (-not $Global:DebugLogging) { return }
+    $text = if ($Message -is [scriptblock]) { try { [string](& $Message) } catch { "(błąd budowania wpisu: $($_.Exception.Message))" } } else { [string]$Message }
+    Write-Log -Message $text -Type 'Debug'
 }
 
 # Rejestracja funkcji wywoływanej po każdym wpisie logu (np. aktualizacja GUI)
@@ -181,13 +194,13 @@ function Read-HTLogFile {
     $current = $null
     foreach ($line in [System.IO.File]::ReadLines($Path)) {
         if ($line -match $pattern) {
-            $message = ($Matches[4] -replace '^(ℹ️|⚠️|❌)\s*', '')
+            $message = ($Matches[4] -replace '^(ℹ️|⚠️|❌|🔧)\s*', '')
             $current = [ordered]@{ Czas = $Matches[1]; Poziom = $Matches[2]; Konto = [string]$Matches[3]; Komunikat = $message }
             $entries.Add($current)
         }
         elseif ($current -and $line.Trim()) { $current.Komunikat += "`n" + $line }
     }
-    $levelNames = @{ Info = 'Info'; Warn = 'Ostrzeżenie'; Error = 'Błąd' }
+    $levelNames = @{ Info = 'Info'; Warn = 'Ostrzeżenie'; Error = 'Błąd'; Debug = 'Debug' }
     foreach ($e in $entries) {
         if ($Level -eq 'Problems' -and $e.Poziom -notin 'Warn', 'Error') { continue }
         if ($Level -eq 'Error' -and $e.Poziom -ne 'Error') { continue }
@@ -268,7 +281,7 @@ function Add-LogToFile {
         [AllowEmptyString()]
         [string]$Message,
 
-        [ValidateSet("Info", "Warn", "Error")]
+        [ValidateSet("Info", "Warn", "Error", "Debug")]
         [string]$Type = "Info",
 
         [string]$Path

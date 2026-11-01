@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.3.2"
+$Global:AppVersion = "3.4.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -94,6 +94,7 @@ $moduleNames = @(
     "Utils",
     "Security",
     "Mfa",
+    "QrCode",
     "UiState",
     "ColumnFilters",
     "Reports",
@@ -233,7 +234,7 @@ finally {
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
         "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting", "HTActiveAccount",
-        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds"
+        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds", "ShowSystemMailboxes", "HTSkippedModulePaths", "DebugLogging"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

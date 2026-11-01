@@ -379,14 +379,77 @@ function Get-HTSPSiteInfo {
     }
 }
 
-# Wyszukiwanie witryn w tenancie przez Microsoft Graph (Sites.Read.All)
+# Zapytanie KQL wyszukiwania witryn: słowa jako prefiksy («Dział kadr» -> Dział* kadr*), tylko witryny i podwitryny
+function ConvertTo-HTSiteSearchQuery {
+    param ([AllowNull()][AllowEmptyString()][string]$Search)
+    $scope = '(contentclass:STS_Site OR contentclass:STS_Web)'
+    $words = @(([string]$Search -replace '["()*:\\]', ' ') -split '\s+' | Where-Object { $_ -and $_ -cnotin 'AND', 'OR', 'NOT' })
+    if ($words.Count -eq 0) { return $scope }
+    return "($(@($words | ForEach-Object { "$_*" }) -join ' ')) AND $scope"
+}
+
+# Czy połączenie z Microsoft Graph jest logowaniem aplikacji (certyfikat) - bez zalogowanego użytkownika
+function Test-HTGraphAppOnly {
+    try { return ("$((Get-MgContext).AuthType)" -eq 'AppOnly') } catch { return $false }
+}
+
+<#
+    Witryny tenantu z Microsoft Graph (surowe obiekty site). Zapytanie «sites?search=» nie działa przez Invoke-MgGraphRequest:
+    moduł Microsoft Graph dopisuje «$» do parametru «search» (sites?$search=…), czego adres /sites nie obsługuje
+    (400 Bad Request). Dlatego: logowanie użytkownika - Microsoft Search API (POST search/query, Sites.Read.All),
+    logowanie aplikacji - sites/getAllSites (Search API wymagałby wtedy regionu).
+#>
+function Get-HTGraphSites {
+    param ([string]$Search = '*', [int]$Max = 5000)
+    $text = if ([string]::IsNullOrWhiteSpace($Search) -or $Search.Trim() -eq '*') { '' } else { $Search.Trim() }
+    if (Test-HTGraphAppOnly) {
+        $all = @(Invoke-HTGraphRequest -Uri 'sites/getAllSites' -All)
+        if (-not $text) { return $all }
+        $pattern = "*$text*"
+        return @($all | Where-Object { "$($_.displayName)" -like $pattern -or "$($_.name)" -like $pattern -or "$($_.webUrl)" -like $pattern })
+    }
+    $query = ConvertTo-HTSiteSearchQuery -Search $text
+    $items = New-Object System.Collections.Generic.List[object]
+    $from = 0
+    $size = 500
+    while ($from -lt $Max) {
+        $body = @{ requests = @(@{ entityTypes = @('site'); query = @{ queryString = $query }; from = $from; size = $size }) }
+        $response = @(Invoke-HTGraphRequest -Uri 'search/query' -Method POST -Body $body)
+        $container = @(@($response | Where-Object { $_ })[0].hitsContainers)[0]
+        $hits = @($container.hits | Where-Object { $_ -and $_.resource })
+        foreach ($hit in $hits) { $items.Add($hit.resource) }
+        if ($hits.Count -eq 0 -or -not $container.moreResultsAvailable) { break }
+        $from += $size
+    }
+    return $items.ToArray()
+}
+
+# Nazwa witryny: displayName, name, a gdy wyszukiwanie ich nie zwróci - ostatni człon adresu
+function Get-HTSiteDisplayName {
+    param ($Site)
+    foreach ($candidate in @($Site.displayName, $Site.name, $Site.title)) { if (-not [string]::IsNullOrWhiteSpace([string]$candidate)) { return [string]$candidate } }
+    $url = [string]$Site.webUrl
+    if (-not $url) { return '' }
+    try {
+        $uri = [System.Uri]$url
+        $segment = @($uri.AbsolutePath.Trim('/') -split '/' | Where-Object { $_ })[-1]
+        if ($segment) { return [System.Uri]::UnescapeDataString($segment) }
+        return $uri.Host
+    }
+    catch { return $url }
+}
+
+# Wyszukiwanie witryn w tenancie przez Microsoft Graph (Sites.Read.All); bez OneDrive użytkowników
 function Find-HTSPSites {
     param ([string]$Search = "*")
-    $query = if ([string]::IsNullOrWhiteSpace($Search)) { "*" } else { $Search.Trim() }
-    $items = Invoke-HTGraphRequest -Uri "sites?search=$([uri]::EscapeDataString($query))&`$select=id,name,displayName,webUrl,createdDateTime,lastModifiedDateTime,description" -All
-    return @($items | Where-Object { $_.webUrl -notmatch '/personal/' } | ForEach-Object {
+    $seen = @{}
+    return @(Get-HTGraphSites -Search $Search | Where-Object {
+            $url = [string]$_.webUrl
+            $url -and $url -notmatch '/personal/' -and -not $_.isPersonalSite -and -not $seen.ContainsKey($url.TrimEnd('/').ToLowerInvariant())
+        } | ForEach-Object {
+            $seen[([string]$_.webUrl).TrimEnd('/').ToLowerInvariant()] = $true
             [PSCustomObject]@{
-                Nazwa           = $(if ($_.displayName) { $_.displayName } else { $_.name })
+                Nazwa           = Get-HTSiteDisplayName -Site $_
                 Adres           = $_.webUrl
                 Id              = $_.id
                 Opis            = $_.description

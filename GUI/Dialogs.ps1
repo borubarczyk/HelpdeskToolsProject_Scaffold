@@ -180,6 +180,7 @@ function Show-HTSettingsDialog {
         @{ Name = 'NotifyLongOperationsSeconds'; Label = 'Powiadomienie Windows po operacji dłuższej niż (sekundy, 0 = wyłączone)'; Type = 'Number'; Default = [int]$cfg.NotifyLongOperationsSeconds; Min = 0; Max = 3600; Hint = 'Gdy okno programu nie jest aktywne: dymek w obszarze powiadomień i miganie przycisku na pasku zadań.' }
         @{ Name = 'ExportPath'; Label = 'Katalog eksportu'; Default = $cfg.ExportPath; Hint = 'Puste = Dokumenty\HelpdeskTools\Eksport' }
         @{ Name = 'LogFileMaxSizeMB'; Label = 'Maks. rozmiar pliku dziennika (MB)'; Type = 'Number'; Default = [int]$cfg.LogFileMaxSizeMB; Min = 1; Max = 100 }
+        @{ Name = 'DebugLogging'; Label = 'Szczegółowy dziennik (debug) - do diagnozy problemów'; Type = 'Check'; Default = [bool]$cfg.DebugLogging; Hint = "Zapisuje m.in. zapytania Microsoft Graph z czasem odpowiedzi, kroki łączenia i logowania, wersje i ścieżki modułów oraz stos błędów. Włącz na czas diagnozy - dziennik rośnie szybciej. Plik: $Global:LogDir" }
         @{ Type = 'Buttons'; Label = 'Pliki i skróty'; Buttons = @(
                 @{ Text = 'Otwórz plik konfiguracji'; Icon = 'E8E5'; OnClick = { param($w) if (Test-Path $Global:ConfigPath) { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"{0}"' -f $Global:ConfigPath) } } }
                 @{ Text = 'Folder konfiguracji'; Icon = 'E838'; OnClick = { param($w) if (Test-Path $Global:ConfigDir) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $Global:ConfigDir) } } }
@@ -205,6 +206,7 @@ function Show-HTSettingsDialog {
         @{ Type = 'Header'; Label = 'Microsoft 365 i Exchange'; Icon = 'E753'; Hint = 'Licencje, raporty, logowanie i uprawnienia Microsoft Graph.' }
         @{ Name = 'DefaultUsageLocation'; Label = 'Domyślna lokalizacja użycia (licencje)'; Default = $cfg.DefaultUsageLocation; Hint = 'Dwuliterowy kod kraju, np. PL.' }
         @{ Name = 'InactiveDays'; Label = 'Próg nieaktywności kont (dni)'; Type = 'Number'; Default = [int]$cfg.InactiveDays; Min = 1; Max = 3650; Hint = 'Domyślna wartość w raportach nieaktywnych kont i urządzeń.' }
+        @{ Name = 'ShowSystemMailboxes'; Label = 'Pokazuj skrzynki systemowe Exchange (DiscoverySearchMailbox)'; Type = 'Check'; Default = [bool]$cfg.ShowSystemMailboxes; Hint = 'Skrzynka eDiscovery tworzona przez Microsoft - domyślnie ukryta na liście skrzynek i w raportach. Po zmianie wczytaj listę skrzynek ponownie.' }
         @{ Name = 'LoginTimeoutMinutes'; Label = 'Limit czasu logowania w przeglądarce (minuty)'; Type = 'Number'; Default = [int]$cfg.LoginTimeoutMinutes; Min = 1; Max = 60; Hint = 'Po tym czasie oczekiwanie na logowanie jest anulowane (np. gdy karta przeglądarki została zamknięta).' }
         @{ Name = 'GraphScopes'; Label = 'Uprawnienia Microsoft Graph (jedno w linii)'; Type = 'Multiline'; Default = (@($cfg.GraphScopes) -join "`r`n"); Height = 120 }
         @{ Type = 'Buttons'; Label = 'Tenanty klientów (GDAP)'; Buttons = @(
@@ -212,7 +214,7 @@ function Show-HTSettingsDialog {
             )
         }
         @{ Type = 'Header'; Label = 'SharePoint'; Icon = 'E8F1'; Hint = 'Połączenie PnP PowerShell.' }
-        @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url' }
+        @{ Name = 'DefaultSharepointSite'; Label = 'Domyślna witryna'; Default = $cfg.DefaultSharepointSite; Validation = 'Url'; Hint = 'Adres witryny, np. https://firma.sharepoint.com/sites/Dzial (nie domena firma.onmicrosoft.com).' }
         @{ Name = 'LastUsedClientID'; Label = 'Client ID aplikacji PnP'; Default = "$($cfg.LastUsedClientID)"; Validation = 'Guid' }
         @{ Name = 'LogClientIDForPnP'; Label = 'Zapamiętuj ostatnio użyty Client ID'; Type = 'Check'; Default = [bool]$cfg.LogClientIDForPnP }
         @{ Type = 'Header'; Label = 'Teams i e-mail'; Icon = 'E8F2'; Hint = 'Powiadomienia na kanale Teams i skrzynka nadawcy raportów.' }
@@ -267,6 +269,7 @@ function Show-HTSettingsDialog {
         $value = $result[$key]
         if ($key -eq 'GraphScopes') { $value = @(Split-HTInputList -Text $value) }
         if ($key -eq 'LastUsedClientID' -and -not $value) { $value = $null }
+        if ($key -eq 'DefaultSharepointSite' -and $value) { $value = (Resolve-HTSharePointUrl -Url $value).Url }
         $cfg.$key = $value
     }
     Set-HTConfig -Config $cfg -Path $Global:ConfigPath
