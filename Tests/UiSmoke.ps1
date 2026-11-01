@@ -93,6 +93,7 @@ foreach ($dialog in @(
                 Show-HTRowDetails -Module $m -Row $m.View[0]
             }; Expect = ''
         }
+        @{ Name = 'Wybór opcji'; Open = { [void](Show-HTChoiceDialog -Title 'Wybór opcji' -Choices @(@{ Key = 'a'; Text = 'Konto organizacji'; Description = 'Logowanie interaktywne'; Icon = 'E77B' }, @{ Key = 'b'; Text = 'Import z pliku…'; Icon = 'E8B5' })) }; Expect = '' }
         @{ Name = 'Potwierdzenie zmiany'; Open = { [void](Confirm-HTChange -Name 'Potwierdzenie zmiany' -Labels @('a@firma.pl', 'b@firma.pl') -Summary @('Tryb: Enabled')) }; Expect = '' }
     )) {
     $errorsBefore = $Global:SmokeErrors.Count
@@ -102,6 +103,26 @@ foreach ($dialog in @(
     elseif ($dialog.Expect -and $Global:SmokeDialogs[$dialogsBefore] -notlike "*$($dialog.Expect)*") { $failures.Add("$($dialog.Name): oczekiwano $($dialog.Expect), jest: $($Global:SmokeDialogs[$dialogsBefore])") }
     for ($i = $errorsBefore; $i -lt $Global:SmokeErrors.Count; $i++) { $failures.Add("$($dialog.Name) - dziennik: $($Global:SmokeErrors[$i])") }
 }
+
+# Przełączniki nad tabelą wyników: podświetlenie, gdy włączone (panel szczegółów, ukryte kolumny, zapisany widok)
+try {
+    $m = $HT_UI.ActiveModule
+    $v = $m.View_
+    $detailBefore = $HT_UI.DetailVisible
+    $HT_UI.DetailVisible = $true; Update-HTDetailPane -Module $m
+    if ($v.btnDetail.Tag -ne 'on') { $failures.Add('Panel szczegółów: przycisk nie jest podświetlony po włączeniu.') }
+    $HT_UI.DetailVisible = $false; Update-HTDetailPane -Module $m
+    if ($v.btnDetail.Tag) { $failures.Add('Panel szczegółów: przycisk podświetlony po wyłączeniu.') }
+    $HT_UI.DetailVisible = $detailBefore; Update-HTDetailPane -Module $m
+    Set-HTFilterPresetView -Module $m -Preset @{ Name = 'Test'; Text = 'a@'; Filters = @(); Hidden = @('Status') }
+    if ($v.btnColumns.Tag -ne 'on') { $failures.Add('Kolumny: przycisk nie jest podświetlony przy ukrytej kolumnie.') }
+    if ($v.btnViews.Tag -ne 'on') { $failures.Add('Zapisane widoki: przycisk nie jest podświetlony po wybraniu widoku.') }
+    $m.FilterBox.Text = 'inny'; Update-HTResultFilter -Module $m
+    if ($v.btnViews.Tag) { $failures.Add('Zapisane widoki: przycisk podświetlony po ręcznej zmianie filtra.') }
+    Set-HTFilterPresetView -Module $m -Preset @{ Name = 'domyślny'; Text = ''; Filters = @(); Hidden = @() }
+    if ($v.btnColumns.Tag -or $v.btnViews.Tag) { $failures.Add('Kolumny / widoki: przyciski podświetlone po wyczyszczeniu widoku.') }
+}
+catch { $failures.Add("Przełączniki nad tabelą: $($_.Exception.Message)") }
 
 $palette = @(Get-HTPaletteItems -Query 'licencje')
 if ($palette.Count -eq 0) { $failures.Add('Paleta poleceń: brak wyników dla «licencje».') }

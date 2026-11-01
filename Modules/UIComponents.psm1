@@ -98,12 +98,14 @@ $script:ThemeXaml = @'
     <Setter Property="MinHeight" Value="30"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="Button">
           <Border x:Name="b" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                   BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7" Padding="{TemplateBinding Padding}">
-            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
           </Border>
           <ControlTemplate.Triggers>
             <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="BorderBrush" Value="#4C7DF0"/></Trigger>
@@ -4354,6 +4356,7 @@ function Update-HTResultFilter {
     $extra = if ($Module.ColumnFilters.Count -gt 0) { @("[__cf] = '1'") } else { @() }
     Set-HTViewFilter -View $Module.View -Text $text -Extra $extra
     Update-HTResultCount -Module $Module
+    Update-HTViewsButton -Module $Module
 }
 
 function Update-HTResultCount {
@@ -4382,10 +4385,50 @@ function Update-HTResultCount {
     }
 }
 
+function Set-HTToggleButtonState {
+    <#
+        Przełącznik na pasku nad tabelą (widok, puste kolumny, kolumny, panel szczegółów): włączony - podświetlony
+        jak chip filtrów kolumn, z dopiskiem w podpowiedzi. Wyłączony - wygląd zwykłego przycisku.
+    #>
+    param($Button, [bool]$Active, [string]$ToolTip = '')
+    if (-not $Button) { return }
+    if ($Active) {
+        $Button.Background = Get-HTBrush '#1A2640'
+        $Button.BorderBrush = Get-HTBrush '#3E6FE0'
+        $Button.Foreground = Get-HTBrush '#8CB0FF'
+    }
+    else {
+        foreach ($dp in [System.Windows.Controls.Control]::BackgroundProperty, [System.Windows.Controls.Control]::BorderBrushProperty, [System.Windows.Controls.Control]::ForegroundProperty) { $Button.ClearValue($dp) }
+    }
+    $Button.Tag = $(if ($Active) { 'on' } else { $null })
+    if ($ToolTip) { $Button.ToolTip = $ToolTip }
+}
+
+function Get-HTViewSignature {
+    # Bieżący stan widoku modułu (filtr tekstowy, filtry kolumn, ukryte kolumny) jako tekst do porównania z zapisanym widokiem
+    param([hashtable]$Module)
+    $text = if ($Module.FilterBox) { [string]$Module.FilterBox.Text } else { '' }
+    $preset = ConvertTo-HTFilterPreset -Name '' -Text $text.Trim() -ColumnFilters $Module.ColumnFilters -Hidden @($Module.UserHidden)
+    $filters = @($preset.Filters | Sort-Object { $_.Column } | ForEach-Object { [ordered]@{ Column = $_.Column; Values = @($_.Values | Sort-Object); Op = $_.Op; Text = $_.Text } })
+    return ([ordered]@{ Text = $preset.Text; Filters = $filters; Hidden = @($preset.Hidden | Sort-Object) } | ConvertTo-Json -Compress -Depth 5)
+}
+
+function Update-HTViewsButton {
+    # Przycisk «Zapisane widoki»: podświetlony z nazwą widoku, dopóki widok nie zostanie zmieniony ręcznie
+    param([hashtable]$Module)
+    $b = if ($Module.View_) { $Module.View_['btnViews'] } else { $null }
+    if (-not $b) { return }
+    $active = $Module['ActiveView']
+    if ($active -and $active.Signature -ne (Get-HTViewSignature -Module $Module)) { $Module['ActiveView'] = $null; $active = $null }
+    $b.Content = New-HTIconContent -Text $(if ($active) { [string]$active.Name } else { '' }) -Icon 'E71D'
+    Set-HTToggleButtonState -Button $b -Active ([bool]$active) -ToolTip $(if ($active) { "Widok «$($active.Name)» - zmiana filtra albo kolumn kończy widok. Kliknij: zapisane widoki." } else { 'Zapisane widoki: filtr, filtry kolumn i ukryte kolumny tego modułu' })
+}
+
 function Update-HTDetailPane {
     param([hashtable]$Module)
     $v = $Module.View_
     if (-not $v -or -not $v['detailPane']) { return }
+    Set-HTToggleButtonState -Button $v['btnDetail'] -Active ([bool]$script:UI.DetailVisible) -ToolTip $(if ($script:UI.DetailVisible) { 'Panel szczegółów wiersza - włączony (kliknij, aby ukryć)' } else { 'Panel szczegółów wiersza (kliknij, aby pokazać)' })
     if ($script:UI.DetailVisible) {
         $v.detailPane.Visibility = 'Visible'
         $v.detailSplit.Visibility = 'Visible'
@@ -5144,11 +5187,14 @@ function Update-HTColumnsButton {
     if (-not $b -or -not $Module.Grid) { return }
     $n = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' -and $Module.UserHidden.Contains([string]$_.SortMemberPath) }).Count
     $b.Content = New-HTIconContent -Text $(if ($n) { "ukryte: $n" } else { '' }) -Icon 'E8FD'
+    Set-HTToggleButtonState -Button $b -Active ($n -gt 0) -ToolTip $(if ($n) { "Ukryte kolumny: $n - nie trafiają do kopiowania ani eksportu. Kliknij, aby wybrać kolumny." } else { 'Wybierz kolumny do pokazania - ukryte nie trafiają do kopiowania ani eksportu' })
     $e = $Module.View_['btnEmptyCols']
     if ($e) {
         $k = @($Module.Grid.Columns | Where-Object { $_.Visibility -ne 'Visible' -and @($Module['EmptyHidden']) -contains [string]$_.SortMemberPath }).Count
         $e.Content = New-HTIconContent -Text $(if ($k) { "puste: $k" } else { '' }) -Icon 'ED1A'
+        Set-HTToggleButtonState -Button $e -Active ($k -gt 0) -ToolTip $(if ($k) { "Ukryto kolumny bez wartości: $k (kliknij, aby je pokazać)" } else { 'Ukryj kolumny bez wartości (kliknij ponownie, aby je pokazać)' })
     }
+    Update-HTViewsButton -Module $Module
     # Zapamiętanie ukrytych kolumn modułu (przy następnym uruchomieniu też ukryte)
     if ($Module.Workspace -and $Module.Key) {
         $saved = @(Get-HTModuleHiddenColumns $Module.Key)
@@ -7264,8 +7310,11 @@ function Set-HTFilterPresetView {
     $Module.UserHidden.Clear()
     foreach ($h in @($Preset.Hidden)) { if ($h) { [void]$Module.UserHidden.Add([string]$h) } }
     foreach ($c in @($Module.Grid.Columns)) { $c.Visibility = if ($Module.UserHidden.Contains([string]$c.SortMemberPath)) { 'Collapsed' } else { 'Visible' } }
+    $Module['ActiveView'] = $null
     Update-HTColumnsButton -Module $Module
     if ($Module.FilterBox) { $Module.FilterBox.Text = [string]$Preset.Text }
+    # Widok zapisany (nie «domyślny» z «Wyczyść filtry») - przycisk podświetlony z nazwą do ręcznej zmiany
+    if ($Preset.Name -and [string]$Preset.Name -ne 'domyślny') { $Module['ActiveView'] = @{ Name = [string]$Preset.Name; Signature = (Get-HTViewSignature -Module $Module) } }
     Update-HTColumnFilterState -Module $Module
     Show-HTToast "Widok: $($Preset.Name)" 'info' 2
 }
