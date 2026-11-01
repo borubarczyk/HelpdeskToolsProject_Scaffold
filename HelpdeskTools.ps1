@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.9.0"
+$Global:AppVersion = "3.10.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -107,7 +107,7 @@ $moduleNames = @(
     "UIComponents",
     "Config",
     "ModulesConnection",
-    "ExchangeWorker",
+    "ServiceWorker",
     "PasswordGenerator",
     "LocalActiveDirectory",
     "GraphAPIM365Users",
@@ -229,7 +229,7 @@ catch {
 }
 finally {
     Stop-HTAutoLock
-    try { Stop-HTJobScheduler; Close-HTBackground; Stop-HTExchangeWorker } catch { Write-Verbose $_ }
+    try { Stop-HTJobScheduler; Close-HTBackground; Stop-HTServiceWorker -All } catch { Write-Verbose $_ }
     # Sprzątanie zmiennych globalnych aplikacji (pozostałe zmienne sesji pozostają bez zmian)
     $appVariables = @(
         "HT_UI", "HTConfig", "AppVersion", "ConfigDir", "ConfigPath", "IconsPath", "AppIconPath",
@@ -238,7 +238,7 @@ finally {
         "LogPasswordGeneration", "LogClientIDForPnP", "LastUsedClientID", "IsModuleActiveDirectoryLoaded",
         "DefaultSharepointSite", "DefaultUsageLocation", "GraphScopes", "ShowNotifications", "LogFileMaxSizeMB", "ExportPath",
         "InactiveDays", "AadSyncServer", "LoginTimeoutMinutes", "ConfirmBeforeClose", "AutoLockMinutes", "LogDir", "HTScriptPath", "HTRestarting", "HTActiveAccount",
-        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds", "ShowSystemMailboxes", "HTSkippedModulePaths", "DebugLogging", "ExchangeInBackground"
+        "ShowOnPremises", "BackgroundQueries", "NotifyLongOperationsSeconds", "ShowSystemMailboxes", "HTSkippedModulePaths", "DebugLogging", "ExchangeInBackground", "SharePointInBackground"
     )
     Remove-Variable -Name $appVariables -Scope Global -ErrorAction SilentlyContinue
 }

@@ -73,6 +73,7 @@
   "DebugLogging": false,
   "ShowSystemMailboxes": false,
   "ExchangeInBackground": true,
+  "SharePointInBackground": true,
   "SkippedModulePaths": [],
   "ConfigVersion": 2,
   "LoginTimeoutMinutes": 5,
