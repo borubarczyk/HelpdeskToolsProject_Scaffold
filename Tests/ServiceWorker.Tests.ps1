@@ -91,6 +91,23 @@ Describe "Exchange w osobnym wątku" {
         Remove-Item -LiteralPath Function:Update-HTUi
         Get-HTFakeSlow -Seconds 0 | Should -Be 'koniec'
     }
+    It "nie wczytuje w wątku innych modułów z poleceniami o nazwach używanych w programie (np. AD, Graph, PnP)" {
+        $root = Join-Path $TestDrive 'mods'
+        $dir = Join-Path $root 'HTAutoMod'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $dir 'HTAutoMod.psm1') -Value 'function Get-HTAutoThing { 1 }; Export-ModuleMember -Function Get-HTAutoThing'
+        $old = $env:PSModulePath
+        try {
+            $env:PSModulePath = $root + [System.IO.Path]::PathSeparator + $old
+            $count = Register-HTServiceProxies -Service 'Exchange' -Names @('Get-HTFakeMailbox', 'Set-HTFakeMailbox', 'Get-HTFakeError', 'Get-HTFakeSlow', 'Get-HTAutoThing') -Modules @('HTFakeExo', 'HTAutoMod')
+            $loaded = @((Invoke-HTServiceWorker -Service 'Exchange' -Script '@(Get-Module).Name').Output)
+        }
+        finally { $env:PSModulePath = $old }
+        $count | Should -Be 4
+        $loaded | Should -Not -Contain 'HTAutoMod'
+        Test-Path function:global:Get-HTAutoThing | Should -BeFalse
+        Test-Path function:global:Get-HTFakeMailbox | Should -BeTrue
+    }
 }
 
 Describe "SharePoint (PnP) w osobnym wątku" {
