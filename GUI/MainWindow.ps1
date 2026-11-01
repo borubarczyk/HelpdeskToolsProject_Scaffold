@@ -502,57 +502,142 @@ function Update-HTHeaderLayout {
 }
 
 #region Profile tenantów (szybkie połączenie z zapamiętanym tenantem, przełączanie klientów GDAP)
+# Logika profili (normalizacja, walidacja, CSV) - Modules/TenantProfiles.psm1; lista i edycja - Pulpit > «Profile tenantów»
 function Get-HTTenantProfiles {
-    # Ustawienia > Microsoft 365 i Exchange > «Profile tenantów»: Name, TenantId (Graph), Organization (domena Exchange), PartnerAccount (GDAP), Gdap
-    return @($Global:HTConfig.TenantProfiles | Where-Object { $_ -and $_.Name -and ($_.TenantId -or $_.Organization) })
+    return @($Global:HTConfig.TenantProfiles | Where-Object { $_ } | ForEach-Object { ConvertTo-HTTenantProfile $_ } | Where-Object { $_.Name })
+}
+
+function Set-HTTenantProfiles {
+    param([AllowEmptyCollection()][object[]]$Profiles = @())
+    Set-HTConfigValue -Name 'TenantProfiles' -Value @($Profiles | Where-Object { $_ } | ForEach-Object { ConvertTo-HTTenantProfile $_ } | Sort-Object Name)
+}
+
+function Get-HTTenantProfileTarget {
+    # Krótki opis profilu do list wyboru
+    param($TenantProfile, [string]$Service = '')
+    $p = $TenantProfile
+    $target = switch ($Service) {
+        'Exchange' { if ($p.Organization) { $p.Organization } else { $p.TenantId } }
+        'SharePoint' { $p.SharePointUrl }
+        default { if ($p.TenantId) { $p.TenantId } else { $p.Organization } }
+    }
+    return "$target$(if ($p.Gdap) { ' • GDAP' })$(if ($p.Notes) { " • $($p.Notes)" })"
 }
 
 function Get-HTTenantProfileChoices {
+    # Ostatnio używane profile (do 5) z danymi dla usługi i «Inny profil…» (wyszukiwanie wśród wszystkich)
     param([string]$Service)
-    $i = 0
-    return @(foreach ($tp in Get-HTTenantProfiles) {
-            $target = if ($Service -eq 'Exchange') { if ($tp.Organization) { $tp.Organization } else { $tp.TenantId } } else { if ($tp.TenantId) { $tp.TenantId } else { $tp.Organization } }
-            @{ Key = "profile:$i"; Text = "Profil: $($tp.Name)"; Icon = $(if ($tp.Gdap) { 'E716' } else { 'E77B' }); Description = "$target$(if ($tp.Gdap) { ' • GDAP' })" }
-            $i++
+    $all = @(Get-HTTenantProfiles | Where-Object { -not $Service -or (Get-HTTenantProfileServiceStatus -TenantProfile $_ -DefaultClientId "$($Global:LastUsedClientID)")[$Service].Ready })
+    $recent = @(Find-HTTenantProfiles -Profiles $all | Select-Object -First 5)
+    $choices = @(foreach ($tp in $recent) {
+            @{ Key = "profile:$($tp.Name)"; Text = "Profil: $($tp.Name)"; Icon = $(if ($tp.Gdap) { 'E716' } else { 'E77B' }); Description = (Get-HTTenantProfileTarget -TenantProfile $tp -Service $Service) }
         })
+    if ($all.Count -gt $recent.Count) { $choices += @{ Key = 'profile:*'; Text = 'Inny profil…'; Icon = 'E721'; Description = "Wyszukaj wśród $($all.Count) profili" } }
+    return $choices
+}
+
+function Resolve-HTTenantProfileChoice {
+    # Profil z wyboru w oknie połączenia (profile:<nazwa> albo profile:* - wyszukiwanie); $null - to nie wybór profilu
+    param([string]$Choice, [string]$Service = '')
+    if ("$Choice" -eq 'profile:*') { return (Select-HTTenantProfile -Service $Service) }
+    if ("$Choice" -match '^profile:(.+)$') { $name = $Matches[1]; return @(Get-HTTenantProfiles | Where-Object { $_.Name -eq $name })[0] }
+    return $null
+}
+
+function Select-HTTenantProfile {
+    # Wybór profilu z listy z wyszukiwaniem (-Query: gdy pasuje dokładnie jeden profil - bez okna)
+    param([string]$Title = 'Wybierz profil tenantu', [string]$Query = '', [string]$Service = '')
+    $profiles = @(Find-HTTenantProfiles -Profiles (Get-HTTenantProfiles) -Query $Query)
+    if ($Service) { $profiles = @($profiles | Where-Object { (Get-HTTenantProfileServiceStatus -TenantProfile $_ -DefaultClientId "$($Global:LastUsedClientID)")[$Service].Ready }) }
+    if ($profiles.Count -eq 0) {
+        Show-HTMessage -Title 'Profile tenantów' -Text $(if ($Query) { "Brak profilu pasującego do «$Query»." } else { "Brak zapisanych profili tenantów$(if ($Service) { " z danymi dla usługi $(Get-HTTenantServiceName $Service)" }).`n`nProfile dodasz w Pulpit > «Profile tenantów» (także import z CSV)." })
+        return $null
+    }
+    if ($Query -and $profiles.Count -eq 1) { return $profiles[0] }
+    $items = @($profiles | ForEach-Object { ConvertTo-HTTenantProfileRow -TenantProfile $_ -DefaultClientId "$($Global:LastUsedClientID)" })
+    $columns = @(
+        @{ Text = 'Nazwa'; Property = 'Nazwa' }, @{ Text = 'Tenant'; Property = 'Tenant' }, @{ Text = 'Usługi'; Property = 'Usługi' }
+        @{ Text = 'Ostatnio użyty'; Property = 'Ostatnio użyty' }, @{ Text = 'Notatki'; Property = 'Notatki' }
+    )
+    $selected = Show-HTSelectionDialog -Title $Title -Items $items -Columns $columns -Icon 'E716' -Prompt 'Ostatnio używane na początku.'
+    if (-not $selected) { return $null }
+    return @($selected)[0].__profile
+}
+
+function Select-HTTenantServices {
+    # Usługi do połączenia z profilem (domyślnie zapisane w profilu); zwraca listę albo $null
+    param([Parameter(Mandatory)]$TenantProfile)
+    $status = Get-HTTenantProfileServiceStatus -TenantProfile $TenantProfile -DefaultClientId "$($Global:LastUsedClientID)"
+    $fields = @(foreach ($service in 'Graph', 'Exchange', 'SharePoint') {
+            $ready = $status[$service].Ready
+            @{ Name = $service; Label = "$(Get-HTTenantServiceName $service)$(if (-not $ready) { " - $($status[$service].Reason)" } elseif ($status[$service].Reason) { " ($($status[$service].Reason))" })"; Type = 'Check'; Default = ($ready -and $TenantProfile.Services -contains $service) }
+        })
+    $form = Show-HTFormDialog -Title "Połącz: $($TenantProfile.Name)" -Description 'Bieżące połączenia z wybranymi usługami zostaną zakończone.' -Icon 'E716' -OkText 'Połącz' -Fields $fields
+    if (-not $form) { return $null }
+    $chosen = @('Graph', 'Exchange', 'SharePoint' | Where-Object { $form[$_] })
+    $notReady = @($chosen | Where-Object { -not $status[$_].Ready })
+    if ($notReady.Count) { Show-HTWarning "Profil nie ma danych dla: $(@($notReady | ForEach-Object { "$(Get-HTTenantServiceName $_) ($($status[$_].Reason))" }) -join ', '). Uzupełnij profil."; return $null }
+    if ($chosen.Count -eq 0) { return $null }
+    return $chosen
+}
+
+function Update-HTTenantProfileUsage {
+    # Data ostatniego użycia profilu (sortowanie list - ostatnio używane na początku)
+    param([Parameter(Mandatory)][string]$Name)
+    $profiles = @(Get-HTTenantProfiles)
+    foreach ($p in $profiles) { if ($p.Name -eq $Name) { $p.LastUsed = (Get-Date).ToUniversalTime().ToString('o') } }
+    try { Set-HTTenantProfiles -Profiles $profiles } catch { Write-Log -Message "Nie zapisano użycia profilu: $($_.Exception.Message)" -Type 'Warn' }
 }
 
 function Connect-HTTenantProfile {
     # Połączenie z tenantem z profilu; -Services: usługi do połączenia (bieżące połączenia z innym tenantem są kończone)
-    param([Parameter(Mandatory)]$TenantProfile, [string[]]$Services = @('Graph', 'Exchange'))
-    $results = @{}
+    param([Parameter(Mandatory)]$TenantProfile, [string[]]$Services = @())
+    $tp = ConvertTo-HTTenantProfile $TenantProfile
+    if (-not $Services -or $Services.Count -eq 0) { $Services = @($tp.Services) }
+    $results = [ordered]@{}
     if ('Graph' -in $Services) {
         if ($Global:ConnectedToGraphAPI) {
             Set-Connections -Action 'Disconnect' -Service 'Graph'
             Clear-HTM365Cache
             Clear-HTPanelItems -Service 'Graph'
         }
-        $tenant = if ($TenantProfile.TenantId) { [string]$TenantProfile.TenantId } else { [string]$TenantProfile.Organization }
-        $results.Graph = Connect-Module -Name $(if ($TenantProfile.Gdap) { 'Microsoft.GraphGDAP' } else { 'Microsoft.Graph' }) -TenantId $tenant
+        $tenant = if ($tp.TenantId) { [string]$tp.TenantId } else { [string]$tp.Organization }
+        $results.Graph = Connect-Module -Name $(if ($tp.Gdap) { 'Microsoft.GraphGDAP' } else { 'Microsoft.Graph' }) -TenantId $tenant
         if ($results.Graph) { Clear-HTM365Cache; Invoke-HTPanelAutoLoad -Service 'Graph' }
     }
-    if ('Exchange' -in $Services -and ($TenantProfile.Organization -or -not $TenantProfile.Gdap)) {
+    if ('Exchange' -in $Services -and ($tp.Organization -or -not $tp.Gdap)) {
         if ($Global:ConnectedToExchange) {
             Set-Connections -Action 'Disconnect' -Service 'Exchange'
             Clear-HTPanelItems -Service 'Exchange'
         }
-        $results.Exchange = if ($TenantProfile.Gdap) {
-            Connect-Module -Name 'ExchangeOnlineManagementGDAP' -Organization ([string]$TenantProfile.Organization) -PartnerAccount ([string]$TenantProfile.PartnerAccount)
+        $results.Exchange = if ($tp.Gdap) {
+            Connect-Module -Name 'ExchangeOnlineManagementGDAP' -Organization ([string]$tp.Organization) -PartnerAccount ([string]$tp.PartnerAccount)
         }
         else { Connect-Module -Name 'ExchangeOnlineManagement' }
         if ($results.Exchange) { Invoke-HTPanelAutoLoad -Service 'Exchange' }
     }
+    if ('SharePoint' -in $Services -and $tp.SharePointUrl) {
+        if ($Global:ConnectedToSharepointPnP) { Set-Connections -Action 'Disconnect' -Service 'SharePoint' }
+        $results.SharePoint = Connect-Module -Name 'PnP.PowerShell' -SiteUrl $tp.SharePointUrl -AppClientId $tp.PnPClientId -NoPrompt
+        Clear-HTPanelItems -Service 'SharePoint'
+        if ($results.SharePoint) { Invoke-HTPanelAutoLoad -Service 'SharePoint' }
+    }
     if ($results.Values -contains $true) {
-        Write-Log -Message "Profil tenantu «$($TenantProfile.Name)»: $(@($results.Keys | ForEach-Object { "$_ $(if ($results[$_]) { 'połączono' } else { 'bez połączenia' })" }) -join ', ')" -Type 'Info'
+        Update-HTTenantProfileUsage -Name $tp.Name
+        Write-Log -Message "Profil tenantu «$($tp.Name)»: $(@($results.Keys | ForEach-Object { "$(Get-HTTenantServiceName $_) $(if ($results[$_]) { 'połączono' } else { 'bez połączenia' })" }) -join ', ')" -Type 'Info'
     }
     return ($results.Values -contains $true)
 }
 
 function Save-HTTenantProfile {
-    # Zapis profilu w konfiguracji (ta sama nazwa - zastąpienie)
-    param([Parameter(Mandatory)][hashtable]$TenantProfile)
-    $list = @(Get-HTTenantProfiles | Where-Object { $_.Name -ne $TenantProfile.Name })
-    Set-HTConfigValue -Name 'TenantProfiles' -Value @($list + [PSCustomObject]$TenantProfile)
+    # Zapis profilu w konfiguracji (ta sama nazwa albo -OriginalName - zastąpienie)
+    param([Parameter(Mandatory)]$TenantProfile, [string]$OriginalName = '')
+    $p = ConvertTo-HTTenantProfile $TenantProfile
+    $old = if ($OriginalName) { $OriginalName } else { $p.Name }
+    $previous = @(Get-HTTenantProfiles | Where-Object { $_.Name -eq $old })[0]
+    if ($previous -and -not $p.LastUsed) { $p.LastUsed = $previous.LastUsed }
+    $list = @(Get-HTTenantProfiles | Where-Object { $_.Name -ne $old -and $_.Name -ne $p.Name })
+    Set-HTTenantProfiles -Profiles @($list + $p)
 }
 
 function Request-HTSaveTenantProfile {
@@ -560,28 +645,20 @@ function Request-HTSaveTenantProfile {
     param([string]$TenantId = '', [string]$Organization = '', [string]$PartnerAccount = '', [string]$DefaultName = '')
     $known = @(Get-HTTenantProfiles | Where-Object { ($TenantId -and $_.TenantId -eq $TenantId) -or ($Organization -and $_.Organization -eq $Organization) })
     if ($known.Count) { return }
-    $form = Show-HTFormDialog -Title 'Zapisać profil tenantu?' -Description 'Profil pozwala połączyć się z tym tenantem jednym kliknięciem (Microsoft 365 i Exchange) i przełączać klientów GDAP (Ctrl+K > Przełącz tenant).' -Icon 'E716' -OkText 'Zapisz profil' -Fields @(
-        @{ Name = 'Name'; Label = 'Nazwa profilu'; Required = $true; Default = $DefaultName }
-        @{ Name = 'TenantId'; Label = 'ID lub domena tenantu (Microsoft 365)'; Default = $TenantId }
-        @{ Name = 'Organization'; Label = 'Domena organizacji (Exchange Online)'; Default = $Organization; Placeholder = 'klient.onmicrosoft.com' }
-        @{ Name = 'PartnerAccount'; Label = 'Konto partnera (Exchange GDAP)'; Default = $PartnerAccount }
-    )
-    if (-not $form) { return }
-    Save-HTTenantProfile -TenantProfile @{ Name = $form.Name; TenantId = $form.TenantId; Organization = $form.Organization; PartnerAccount = $form.PartnerAccount; Gdap = $true }
-    Show-HTToast "Zapisano profil «$($form.Name)»." 'ok'
+    $edited = Edit-HTTenantProfile -TenantProfile ([PSCustomObject]@{ Name = $DefaultName; TenantId = $TenantId; Organization = $Organization; PartnerAccount = $PartnerAccount; Gdap = $true }) -Title 'Zapisać profil tenantu?' -New
+    if (-not $edited) { return }
+    Save-HTTenantProfile -TenantProfile $edited
+    Show-HTToast "Zapisano profil «$($edited.Name)»." 'ok'
 }
 
 function Show-HTTenantSwitch {
-    # Przełączenie Microsoft 365 i Exchange na inny zapamiętany tenant
-    $choices = @(Get-HTTenantProfileChoices -Service 'Graph')
-    if (-not $choices.Count) {
-        Show-HTMessage -Title 'Profile tenantów' -Text "Brak zapisanych profili tenantów.`n`nProfil zapisuje się po połączeniu z tenantem klienta (GDAP) albo w Ustawieniach > Microsoft 365 i Exchange > «Profile tenantów»."
-        return
-    }
-    $choice = Show-HTChoiceDialog -Title 'Przełącz tenant' -Prompt 'Bieżące połączenia z Microsoft 365 i Exchange zostaną zakończone.' -Icon 'E8AB' -Choices $choices
-    if ("$choice" -notmatch '^profile:(\d+)$') { return }
-    $tp = @(Get-HTTenantProfiles)[[int]$Matches[1]]
-    [void](Connect-HTTenantProfile -TenantProfile $tp)
+    # Przełączenie usług na inny zapamiętany tenant: wybór profilu (wyszukiwanie) i usług
+    param([string]$Query = '')
+    $tp = Select-HTTenantProfile -Title 'Przełącz tenant' -Query $Query
+    if (-not $tp) { return }
+    $services = Select-HTTenantServices -TenantProfile $tp
+    if (-not $services) { return }
+    [void](Connect-HTTenantProfile -TenantProfile $tp -Services $services)
 }
 #endregion
 
@@ -595,7 +672,7 @@ function Invoke-HTConnectionClick {
                     @{ Key = 'GDAP'; Text = 'Konto partnera (GDAP)'; Icon = 'E716'; Description = 'Zarządzanie tenantem klienta w ramach GDAP' }
                     @(Get-HTTenantProfileChoices -Service 'Exchange')
                 )
-                if ("$choice" -match '^profile:(\d+)$') { [void](Connect-HTTenantProfile -TenantProfile @(Get-HTTenantProfiles)[[int]$Matches[1]] -Services @('Exchange')); return }
+                if ("$choice" -like 'profile:*') { $tp = Resolve-HTTenantProfileChoice -Choice $choice -Service 'Exchange'; if ($tp) { [void](Connect-HTTenantProfile -TenantProfile $tp -Services @('Exchange')) }; return }
                 $ok = if ($choice -eq 'GDAP') { Connect-Module -Name 'ExchangeOnlineManagementGDAP' } elseif ($choice -eq 'Standard') { Connect-Module -Name 'ExchangeOnlineManagement' } else { $false }
                 if ($ok) { Invoke-HTPanelAutoLoad -Service 'Exchange' }
             }
@@ -611,7 +688,7 @@ function Invoke-HTConnectionClick {
                     @{ Key = 'GDAP'; Text = 'Tenant klienta (GDAP)'; Icon = 'E716'; Description = 'Logowanie do wskazanego tenantu klienta' }
                     @(Get-HTTenantProfileChoices -Service 'Graph')
                 )
-                if ("$choice" -match '^profile:(\d+)$') { [void](Connect-HTTenantProfile -TenantProfile @(Get-HTTenantProfiles)[[int]$Matches[1]] -Services @('Graph')); return }
+                if ("$choice" -like 'profile:*') { $tp = Resolve-HTTenantProfileChoice -Choice $choice -Service 'Graph'; if ($tp) { [void](Connect-HTTenantProfile -TenantProfile $tp -Services @('Graph')) }; return }
                 $ok = if ($choice -eq 'GDAP') { Connect-Module -Name 'Microsoft.GraphGDAP' } elseif ($choice -eq 'Standard') { Connect-Module -Name 'Microsoft.Graph' } else { $false }
                 if ($ok) {
                     Clear-HTM365Cache
@@ -637,6 +714,16 @@ function Invoke-HTConnectionClick {
         }
         'SharePoint' {
             if (-not $Global:ConnectedToSharepointPnP) {
+                # Profile tenantów z adresem SharePoint - wybór profilu albo zwykłe okno połączenia
+                $profileChoices = @(Get-HTTenantProfileChoices -Service 'SharePoint')
+                if ($profileChoices.Count) {
+                    $choice = Show-HTChoiceDialog -Title 'Połączenie z SharePoint' -Prompt 'Wybierz witrynę i aplikację PnP albo profil tenantu.' -Icon 'E8F1' -Choices @(
+                        @{ Key = 'Standard'; Text = 'Adres witryny i Client ID…'; Icon = 'E8F1'; Description = 'Okno połączenia PnP PowerShell' }
+                        $profileChoices
+                    )
+                    if ("$choice" -like 'profile:*') { $tp = Resolve-HTTenantProfileChoice -Choice $choice -Service 'SharePoint'; if ($tp) { [void](Connect-HTTenantProfile -TenantProfile $tp -Services @('SharePoint')) }; return }
+                    if ($choice -ne 'Standard') { return }
+                }
                 if (Connect-Module -Name 'PnP.PowerShell') {
                     Clear-HTPanelItems -Service 'SharePoint'
                     Invoke-HTPanelAutoLoad -Service 'SharePoint'

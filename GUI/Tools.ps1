@@ -100,31 +100,34 @@ function New-HTShortcutInteractive {
 
 #region Profile tenantów i webhook Teams
 function Show-HTTenantProfilesEditor {
-    # Lista zapisanych tenantów: dodawanie, edycja, usuwanie (zapis od razu w konfiguracji)
+    # Okno z poziomu Ustawień (okno modalne): dodawanie, edycja, usuwanie, import i eksport. Pełna lista - Pulpit > «Profile tenantów».
     while ($true) {
         $profiles = @(Get-HTTenantProfiles)
-        $list = if ($profiles.Count) { (@($profiles | ForEach-Object { "• $($_.Name) - $(if ($_.TenantId) { $_.TenantId } else { $_.Organization })$(if ($_.Gdap) { ' (GDAP)' })" }) -join "`n") } else { 'Brak zapisanych profili.' }
+        $recent = @(Find-HTTenantProfiles -Profiles $profiles | Select-Object -First 8 | ForEach-Object { "• $($_.Name) - $(Get-HTTenantProfileTarget -TenantProfile $_)" })
+        $list = if ($profiles.Count) { "Profili: $($profiles.Count)$(if ($profiles.Count -gt 8) { ' (ostatnio używane)' }):`n$($recent -join "`n")" } else { 'Brak zapisanych profili.' }
         $choices = @(
             @{ Key = 'Add'; Text = 'Dodaj profil…'; Icon = 'E710'; Description = 'Tenant klienta (GDAP) albo drugi własny tenant' }
-            if ($profiles.Count) { @{ Key = 'Edit'; Text = 'Edytuj profil…'; Icon = 'E70F' } }
+            if ($profiles.Count) { @{ Key = 'Edit'; Text = 'Edytuj profil…'; Icon = 'E70F'; Description = 'Wyszukaj profil i zmień jego ustawienia' } }
+            @{ Key = 'Import'; Text = 'Import z pliku CSV…'; Icon = 'E8B5'; Description = 'Wiele profili naraz (szablon: Pulpit > Profile tenantów > «Szablon CSV»)' }
+            if ($profiles.Count) { @{ Key = 'Export'; Text = 'Eksport do pliku CSV…'; Icon = 'EDE1'; Description = 'Kopia profili albo przeniesienie na inny komputer' } }
             if ($profiles.Count) { @{ Key = 'Remove'; Text = 'Usuń profile…'; Icon = 'E74D'; Style = 'Danger' } }
         )
         $choice = Show-HTChoiceDialog -Title 'Profile tenantów' -Prompt $list -Icon 'E716' -Choices $choices
         switch ($choice) {
-            'Add' { $edited = Edit-HTTenantProfile; if ($edited) { Save-HTTenantProfile -TenantProfile $edited } }
+            'Add' { $edited = Edit-HTTenantProfile -New; if ($edited) { Save-HTTenantProfile -TenantProfile $edited } }
             'Edit' {
-                $sel = @(Show-HTSelectionDialog -Title 'Edytuj profil' -Items @($profiles | ForEach-Object { [string]$_.Name }) -Icon 'E70F')[0]
-                $tp = @($profiles | Where-Object { $_.Name -eq $sel })[0]
-                if ($tp) {
-                    $edited = Edit-HTTenantProfile -TenantProfile $tp
-                    if ($edited) {
-                        Set-HTConfigValue -Name 'TenantProfiles' -Value @(@($profiles | Where-Object { $_.Name -ne $tp.Name }) + [PSCustomObject]$edited)
-                    }
-                }
+                $tp = Select-HTTenantProfile -Title 'Edytuj profil'
+                if ($tp) { $edited = Edit-HTTenantProfile -TenantProfile $tp; if ($edited) { Save-HTTenantProfile -TenantProfile $edited -OriginalName $tp.Name } }
             }
+            'Import' { Import-HTTenantProfilesInteractive | Out-Null }
+            'Export' { Export-HTTenantProfilesInteractive }
             'Remove' {
-                $names = @(Show-HTSelectionDialog -Title 'Usuń profile' -Items @($profiles | ForEach-Object { [string]$_.Name }) -MultiSelect -OkText 'Usuń' -Icon 'E74D')
-                if ($names.Count) { Set-HTConfigValue -Name 'TenantProfiles' -Value @($profiles | Where-Object { $names -notcontains $_.Name }) }
+                $rows = @($profiles | ForEach-Object { ConvertTo-HTTenantProfileRow -TenantProfile $_ })
+                $sel = @(Show-HTSelectionDialog -Title 'Usuń profile' -Items $rows -Columns @(@{ Text = 'Nazwa'; Property = 'Nazwa' }, @{ Text = 'Tenant'; Property = 'Tenant' }, @{ Text = 'Notatki'; Property = 'Notatki' }) -MultiSelect -OkText 'Usuń' -Icon 'E74D')
+                $names = @($sel | Where-Object { $_ } | ForEach-Object { $_.Nazwa })
+                if ($names.Count -and (Show-HTConfirm -Title 'Usuń profile' -Message 'Usunąć zaznaczone profile tenantów?' -Items $names -Danger -ConfirmText 'Usuń')) {
+                    Set-HTTenantProfiles -Profiles @($profiles | Where-Object { $names -notcontains $_.Name })
+                }
             }
             default { return }
         }
@@ -132,17 +135,95 @@ function Show-HTTenantProfilesEditor {
 }
 
 function Edit-HTTenantProfile {
-    param($TenantProfile = $null)
-    $form = Show-HTFormDialog -Title $(if ($TenantProfile) { "Profil: $($TenantProfile.Name)" } else { 'Nowy profil tenantu' }) -Icon 'E716' -OkText 'Zapisz' -Description 'Połączenie z profilem: przyciski Microsoft 365 / Exchange w nagłówku albo Ctrl+K > «Przełącz tenant».' -Fields @(
-        @{ Name = 'Name'; Label = 'Nazwa'; Required = $true; Default = [string]$TenantProfile.Name; Placeholder = 'np. Klient ABC' }
-        @{ Name = 'TenantId'; Label = 'ID lub domena tenantu (Microsoft 365)'; Default = [string]$TenantProfile.TenantId; Placeholder = 'abc.onmicrosoft.com albo GUID' }
-        @{ Name = 'Organization'; Label = 'Domena organizacji (Exchange Online)'; Default = [string]$TenantProfile.Organization; Placeholder = 'abc.onmicrosoft.com' }
-        @{ Name = 'Gdap'; Label = 'Tenant klienta zarządzany przez partnera (GDAP)'; Type = 'Check'; Default = $(if ($TenantProfile) { [bool]$TenantProfile.Gdap } else { $true }) }
-        @{ Name = 'PartnerAccount'; Label = 'Konto administratora partnera (Exchange GDAP)'; Default = [string]$TenantProfile.PartnerAccount; Validation = 'Email' }
-    )
-    if (-not $form) { return $null }
-    if (-not $form.TenantId -and -not $form.Organization) { Show-HTWarning 'Podaj ID tenantu albo domenę organizacji.'; return $null }
-    return @{ Name = $form.Name; TenantId = $form.TenantId; Organization = $form.Organization; PartnerAccount = $form.PartnerAccount; Gdap = [bool]$form.Gdap }
+    <#
+        Formularz profilu. Zwraca znormalizowany profil albo $null. Błędy (Test-HTTenantProfile) - komunikat i formularz
+        ponownie z wpisanymi wartościami. -New: nowy profil (nazwa nie może się powtarzać).
+    #>
+    param($TenantProfile = $null, [string]$Title = '', [switch]$New)
+    $current = if ($TenantProfile) { ConvertTo-HTTenantProfile $TenantProfile } else { ConvertTo-HTTenantProfile ([PSCustomObject]@{ Gdap = $true; Services = @('Graph', 'Exchange') }) }
+    $original = if ($New) { '' } else { [string]$current.Name }
+    if (-not $Title) { $Title = if ($New -or -not $TenantProfile) { 'Nowy profil tenantu' } else { "Profil: $($current.Name)" } }
+    while ($true) {
+        $form = Show-HTFormDialog -Title $Title -Icon 'E716' -OkText 'Zapisz' -Width 660 -Description 'Ustawienia połączeń z tenantem. Bez haseł - logowanie zawsze w przeglądarce. Połączenie: przyciski w nagłówku, Ctrl+K > «Przełącz tenant» albo Pulpit > «Profile tenantów».' -Fields @(
+            @{ Name = 'Name'; Label = 'Nazwa'; Required = $true; Default = $current.Name; Placeholder = 'np. Klient ABC' }
+            @{ Type = 'Header'; Label = 'Microsoft 365 (Graph)' }
+            @{ Name = 'TenantId'; Label = 'Tenant - domena albo ID'; Default = $current.TenantId; Placeholder = 'abc.onmicrosoft.com albo GUID' }
+            @{ Name = 'Gdap'; Label = 'Tenant klienta zarządzany przez partnera (GDAP)'; Type = 'Check'; Default = [bool]$current.Gdap }
+            @{ Type = 'Header'; Label = 'Exchange Online' }
+            @{ Name = 'Organization'; Label = 'Organizacja Exchange (domena)'; Default = $current.Organization; Placeholder = 'abc.onmicrosoft.com' }
+            @{ Name = 'PartnerAccount'; Label = 'Konto administratora partnera (GDAP)'; Default = $current.PartnerAccount; Placeholder = 'admin@partner.pl' }
+            @{ Type = 'Header'; Label = 'SharePoint (PnP PowerShell)' }
+            @{ Name = 'SharePointUrl'; Label = 'Adres witryny'; Default = $current.SharePointUrl; Placeholder = 'https://abc.sharepoint.com' }
+            @{ Name = 'PnPClientId'; Label = 'Client ID aplikacji PnP w tym tenancie (puste - z ustawień)'; Default = $current.PnPClientId; Placeholder = '00000000-0000-0000-0000-000000000000' }
+            @{ Type = 'Buttons'; Buttons = @(
+                    @{ Text = 'Uzupełnij z domeny tenantu'; Icon = 'E8FB'; ToolTip = 'Organizacja Exchange i adres SharePoint z domeny klient.onmicrosoft.com'; OnClick = {
+                            param($w)
+                            $c = $w.Tag.Controls
+                            $domain = $c['TenantId'].Control.Text.Trim()
+                            if ($domain -notmatch '\.') { $domain = $c['Organization'].Control.Text.Trim() }
+                            if ($domain -notmatch '\.') { Show-HTWarning 'Wpisz domenę tenantu (np. klient.onmicrosoft.com).'; return }
+                            if (-not $c['Organization'].Control.Text.Trim()) { $c['Organization'].Control.Text = $domain }
+                            $sp = Get-HTTenantSharePointSuggestion -Domain $domain
+                            if ($sp -and -not $c['SharePointUrl'].Control.Text.Trim()) { $c['SharePointUrl'].Control.Text = $sp }
+                        }
+                    }
+                )
+            }
+            @{ Type = 'Header'; Label = 'Połączenie z profilem' }
+            @{ Name = 'SvcGraph'; Label = 'Microsoft 365 (Graph)'; Type = 'Check'; Default = ($current.Services -contains 'Graph') }
+            @{ Name = 'SvcExchange'; Label = 'Exchange Online'; Type = 'Check'; Default = ($current.Services -contains 'Exchange') }
+            @{ Name = 'SvcSharePoint'; Label = 'SharePoint'; Type = 'Check'; Default = ($current.Services -contains 'SharePoint') }
+            @{ Name = 'Notes'; Label = 'Notatki'; Type = 'Multiline'; Height = 50; Default = $current.Notes; Placeholder = 'np. osoba kontaktowa, umowa' }
+        )
+        if (-not $form) { return $null }
+        $candidate = ConvertTo-HTTenantProfile ([PSCustomObject]@{
+                Name = $form.Name; TenantId = $form.TenantId; Organization = $form.Organization; PartnerAccount = $form.PartnerAccount; Gdap = [bool]$form.Gdap
+                SharePointUrl = $form.SharePointUrl; PnPClientId = $form.PnPClientId; Notes = $form.Notes; LastUsed = $current.LastUsed
+                Services = @(if ($form.SvcGraph) { 'Graph' }; if ($form.SvcExchange) { 'Exchange' }; if ($form.SvcSharePoint) { 'SharePoint' })
+            })
+        if ($candidate.Services.Count -eq 0) { $candidate.Services = @((ConvertTo-HTTenantProfile ([PSCustomObject]@{ TenantId = $candidate.TenantId; Organization = $candidate.Organization; PartnerAccount = $candidate.PartnerAccount; SharePointUrl = $candidate.SharePointUrl })).Services) }
+        $problems = @(Test-HTTenantProfile -TenantProfile $candidate -Existing @(Get-HTTenantProfiles) -OriginalName $original)
+        if ($problems.Count -eq 0) { return $candidate }
+        Show-HTWarning ("Popraw profil:`n• " + ($problems -join "`n• "))
+        $current = $candidate
+    }
+}
+
+function Import-HTTenantProfilesInteractive {
+    # Import profili z CSV: podgląd błędów, wybór - zastąpić czy pominąć profile o tych samych nazwach. Zwraca $true po zapisie.
+    $path = Select-HTOpenFile -Title 'Import profili tenantów' -Filter 'CSV (*.csv)|*.csv|Wszystkie pliki (*.*)|*.*'
+    if (-not $path) { return $false }
+    try { $import = Import-HTTenantProfilesCsv -Path $path }
+    catch { Show-HTError 'Nie odczytano pliku CSV.' $_; return $false }
+    if ($import.Profiles.Count -eq 0) {
+        Show-HTWarning ("W pliku nie ma poprawnych profili.$(if ($import.Errors.Count) { "`n`n" + (@($import.Errors | Select-Object -First 15) -join "`n") })")
+        return $false
+    }
+    $existing = @(Get-HTTenantProfiles)
+    $same = @($import.Profiles | Where-Object { $n = $_.Name; @($existing | Where-Object { $_.Name -ieq $n }).Count })
+    $message = "Profile w pliku: $($import.Profiles.Count)$(if ($same.Count) { ", w tym o istniejących nazwach: $($same.Count)" })$(if ($import.Errors.Count) { ".`nPominięte wiersze z błędami: $($import.Errors.Count):`n" + (@($import.Errors | Select-Object -First 10) -join "`n") })"
+    $mode = if ($same.Count) {
+        Show-HTChoiceDialog -Title 'Import profili tenantów' -Prompt $message -Icon 'E8B5' -Choices @(
+            @{ Key = 'Replace'; Text = 'Zastąp istniejące profile'; Icon = 'E72C'; Description = 'Profile o tych samych nazwach zostaną zastąpione danymi z pliku' }
+            @{ Key = 'Skip'; Text = 'Pomiń istniejące profile'; Icon = 'E8FB'; Description = 'Zostaną dodane tylko nowe profile' }
+        )
+    }
+    elseif (Show-HTConfirm -Title 'Import profili tenantów' -Message $message -ConfirmText 'Importuj') { 'Replace' }
+    else { $null }
+    if (-not $mode) { return $false }
+    $merge = Merge-HTTenantProfiles -Existing $existing -Incoming $import.Profiles -Mode $mode
+    Set-HTTenantProfiles -Profiles $merge.Profiles
+    Write-Log -Message "Profile tenantów z pliku $(Split-Path $path -Leaf): dodane $($merge.Added), zastąpione $($merge.Replaced), pominięte $($merge.Skipped + $import.Errors.Count)." -Type 'Info&Notification'
+    return $true
+}
+
+function Export-HTTenantProfilesInteractive {
+    $profiles = @(Get-HTTenantProfiles)
+    if ($profiles.Count -eq 0) { Show-HTWarning 'Brak profili do eksportu.'; return }
+    $path = Select-HTSaveFile -Title 'Eksport profili tenantów' -Filter 'CSV (*.csv)|*.csv' -FileName ("Profile_tenantow_{0:yyyyMMdd}.csv" -f (Get-Date)) -DefaultExt '.csv'
+    if (-not $path) { return }
+    try { Export-HTTenantProfilesCsv -Profiles $profiles -Path $path; Show-HTToast "Zapisano profile ($($profiles.Count)): $path" 'ok' 6 }
+    catch { Show-HTError 'Nie zapisano pliku.' $_ }
 }
 
 function Test-HTTeamsWebhookInteractive {
@@ -154,14 +235,14 @@ function Test-HTTeamsWebhookInteractive {
 
 function Show-HTToolsMenu {
     $choice = Show-HTChoiceDialog -Title 'Narzędzia' -Icon 'E90F' -Choices @(
-        @{ Key = 'Tenants'; Text = 'Profile tenantów…'; Icon = 'E716'; Description = 'Zapisane tenanty klientów (GDAP) do szybkiego łączenia i przełączania' }
+        @{ Key = 'Tenants'; Text = 'Profile tenantów'; Icon = 'E716'; Description = 'Zapisane tenanty klientów (GDAP): Graph, Exchange, SharePoint - lista, import i eksport CSV' }
         @{ Key = 'Update'; Text = 'Sprawdź i zainstaluj aktualizację'; Icon = 'E895'; Description = "Repozytorium: $($Global:HTConfig.UpdateRepository) ($($Global:HTConfig.UpdateBranch))" }
         @{ Key = 'Sign'; Text = 'Podpisz skrypty programu'; Icon = 'EB95'; Description = 'Certyfikat podpisywania kodu (zasada wykonywania AllSigned)' }
         @{ Key = 'Shortcut'; Text = 'Skrót na pulpicie'; Icon = 'E8E5'; Description = 'Uruchamianie jako administrator, bez widocznego okna konsoli' }
         @{ Key = 'Teams'; Text = 'Test webhooka Teams'; Icon = 'E8F2'; Description = 'Wiadomość testowa na skonfigurowany kanał' }
     )
     switch ($choice) {
-        'Tenants' { Show-HTTenantProfilesEditor }
+        'Tenants' { Show-HTModule -Key 'dash.tenants' }
         'Update' { Invoke-HTUpdateInteractive }
         'Sign' { Invoke-HTSigningInteractive }
         'Shortcut' { New-HTShortcutInteractive }
@@ -172,7 +253,9 @@ function Show-HTToolsMenu {
 #region Polecenia palety (Ctrl+K)
 Register-HTPaletteAction -Text 'Podsumowanie do zgłoszenia' -Icon 'E8A5' -Description 'Operacje wykonane w tej sesji - tekst do ticketu' -Keywords 'ticket zgłoszenie podsumowanie raport' -Action { param($q) Show-HTOperationSummaryDialog }
 Register-HTPaletteAction -Text 'Podsumowanie do zgłoszenia' -Icon 'E8A5' -Description 'Operacje dotyczące wpisanego obiektu' -NeedsQuery -Action { param($q) Show-HTOperationSummaryDialog -Object $q }
-Register-HTPaletteAction -Text 'Przełącz tenant' -Icon 'E8AB' -Description 'Microsoft 365 i Exchange z innym zapisanym tenantem (GDAP)' -Keywords 'gdap klient tenant profil' -Action { param($q) Show-HTTenantSwitch }
+Register-HTPaletteAction -Text 'Przełącz tenant' -Icon 'E8AB' -Description 'Microsoft 365, Exchange i SharePoint z innym zapisanym tenantem (GDAP)' -Keywords 'gdap klient tenant profil' -Action { param($q) Show-HTTenantSwitch }
+Register-HTPaletteAction -Text 'Połącz z tenantem' -Icon 'E716' -Description 'Profil tenantu pasujący do wpisanego tekstu (nazwa, domena, notatki)' -NeedsQuery -Action { param($q) Show-HTTenantSwitch -Query $q }
+Register-HTPaletteAction -Text 'Profile tenantów' -Icon 'E716' -Description 'Lista zapisanych tenantów, import i eksport CSV' -Keywords 'gdap klient tenant profil csv' -Action { param($q) Show-HTModule -Key 'dash.tenants' }
 Register-HTPaletteAction -Text 'Zablokuj program' -Icon 'E72E' -Description 'Ctrl+Shift+L' -Keywords 'blokada pin lock' -Action { param($q) Lock-HTApplication }
 Register-HTPaletteAction -Text 'Generator haseł' -Icon 'E8D7' -Description 'Ctrl+G' -Keywords 'hasło password' -Action { param($q) Show-HTPasswordGenerator }
 Register-HTPaletteAction -Text 'Ustawienia' -Icon 'E713' -Keywords 'konfiguracja opcje settings' -Action { param($q) if (Show-HTSettingsDialog) { Show-HTToast 'Zapisano ustawienia.' 'ok' } }

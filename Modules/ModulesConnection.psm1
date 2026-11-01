@@ -489,7 +489,10 @@ function Connect-Module {
 
         # Exchange GDAP: organizacja klienta i konto partnera bez formularza (zapamiętany profil tenantu)
         [string]$Organization = '',
-        [string]$PartnerAccount = ''
+        [string]$PartnerAccount = '',
+
+        # PnP: Client ID aplikacji (np. z profilu tenantu klienta) - bez zmiany zapamiętanego Client ID z ustawień
+        [string]$AppClientId = ''
     )
 
     Write-HTDebug { "Łączenie: $Name; PSModulePath: $($env:PSModulePath -replace [regex]::Escape([string][System.IO.Path]::PathSeparator), ' | ')" }
@@ -565,7 +568,7 @@ function Connect-Module {
                 if (-not $SiteUrl) { $SiteUrl = $Global:DefaultSharepointSite }
 
                 $url = $SiteUrl
-                $clientId = "$($Global:LastUsedClientID)"
+                $clientId = if ($AppClientId) { $AppClientId } else { "$($Global:LastUsedClientID)" }
                 if (-not $NoPrompt -or -not $url -or -not $clientId) {
                     Set-HTBusy -Busy $false
                     $form = Show-HTSharePointConnectDialog -Url $url -ClientId $clientId
@@ -589,10 +592,13 @@ function Connect-Module {
                 $Global:ConnectedToSharepoint = $true
                 Update-ConnectionButtonText -Service "SharePoint" -TenantName $connectedUrl
 
-                if ($Global:LogClientIDForPnP -and $clientId -ne $Global:LastUsedClientID) {
-                    try { Set-HTConfigValue -Name "LastUsedClientID" -Value $clientId } catch { Write-Log "Nie zapisano Client ID w konfiguracji: $_" "Warn" }
+                # Client ID z profilu tenantu nie zastępuje zapamiętanego (własnego) Client ID
+                if (-not $AppClientId -or $clientId -ne $AppClientId) {
+                    if ($Global:LogClientIDForPnP -and $clientId -ne $Global:LastUsedClientID) {
+                        try { Set-HTConfigValue -Name "LastUsedClientID" -Value $clientId } catch { Write-Log "Nie zapisano Client ID w konfiguracji: $_" "Warn" }
+                    }
+                    $Global:LastUsedClientID = $clientId
                 }
-                $Global:LastUsedClientID = $clientId
                 Write-Log "Połączono z PnP PowerShell ($connectedUrl)" "Info&Notification"
             }
         }
@@ -615,11 +621,11 @@ function Connect-Module {
             Set-HTBusy -Busy $true
             if ($action -eq "Retry") {
                 Set-HTBusy -Busy $false
-                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount)
+                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount -AppClientId $AppClientId)
             }
             if ($action -eq "Force") {
                 Set-HTBusy -Busy $false
-                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount -SkipCompatibilityCheck)
+                return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount -AppClientId $AppClientId -SkipCompatibilityCheck)
             }
             return $false
         }
@@ -632,7 +638,7 @@ function Connect-Module {
                 $answer = Show-Dialog -Title "Moduły PowerShell w OneDrive" -Type "Question" -Buttons "YesNo" -Message ("Moduły PowerShell w folderze OneDrive są niedostępne - pliki są tylko w chmurze, a OneDrive nie działa (albo nie jest zainstalowany):`n$($removed -join "`n")`n`nProgram pomija ten folder. Połączyć ponownie? Gdy modułu zabraknie, program zaproponuje instalację dla wszystkich użytkowników (C:\Program Files\PowerShell\Modules) - poza OneDrive.")
                 if ($answer -eq "Yes") {
                     Set-HTBusy -Busy $false
-                    return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount)
+                    return (Connect-Module -Name $Name -SiteUrl $SiteUrl -NoPrompt:$NoPrompt -ExtraScopes $ExtraScopes -TenantId $TenantId -Organization $Organization -PartnerAccount $PartnerAccount -AppClientId $AppClientId)
                 }
                 Set-HTBusy -Busy $true
                 return $false

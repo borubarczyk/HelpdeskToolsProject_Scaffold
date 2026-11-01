@@ -1246,7 +1246,11 @@ $script:FormEvents = @{
     Button       = {
         param($s, $e)
         try { $null = & $s.Tag ([System.Windows.Window]::GetWindow($s)) }
-        catch { Show-HTError 'Operacja nie powiodła się.' $_ }
+        catch {
+            Write-Log -Message "Błąd: $($_.Exception.Message)" -Type 'Error'
+            Write-HTDebug { "Stos błędu ($($_.Exception.GetType().FullName)):`n$($_.ScriptStackTrace)" }
+            Show-HTError 'Operacja nie powiodła się.' $_
+        }
     }
 }
 
@@ -4052,15 +4056,101 @@ function Update-HTDetailText {
     $box.Text = if ($item -is [System.Data.DataRowView]) { Format-HTRowDetails -Module $Module -Row $item } else { '' }
 }
 
+# Pola z treścią (wiadomości, komunikaty, opisy) - zawsze osobna, wyróżniona sekcja na końcu okna szczegółów
+$script:RowDetailBodyPattern = '^(Treść|Komunikat|Opis|Wiadomość|Body|Message|Content|Description|Szczegóły)$'
+
+function Get-HTRowDetailFields {
+    # Pola wiersza do okna szczegółów: Short - krótkie (etykieta: wartość), Long - wielowierszowe lub długie (osobne sekcje)
+    param([hashtable]$Module, $Row)
+    $short = New-Object System.Collections.Generic.List[object]
+    $long = New-Object System.Collections.Generic.List[object]
+    foreach ($col in $Module.Table.Columns) {
+        $name = $col.ColumnName
+        if ($name.StartsWith('__')) { continue }
+        $text = [string](Get-HTExportValue -Module $Module -Row $Row -Column $name)
+        if ($text -eq '') { continue }
+        $field = [PSCustomObject]@{ Name = $name; Text = $text.Trim(); Body = ($name -match $script:RowDetailBodyPattern) }
+        if ($field.Body -or $text -match "[\r\n]" -or $text.Length -gt 160) { $long.Add($field) } else { $short.Add($field) }
+    }
+    # Treść na końcu (najważniejsza - wyróżniona), pozostałe długie pola w kolejności kolumn
+    $ordered = @(@($long | Where-Object { -not $_.Body }) + @($long | Where-Object { $_.Body }))
+    return [PSCustomObject]@{ Short = $short.ToArray(); Long = $ordered }
+}
+
 function Show-HTRowDetails {
+    # Szczegóły wiersza: krótkie pola w siatce, długie (np. treść wiadomości) w osobnych sekcjach z zawijaniem wierszy
     param([hashtable]$Module, $Row)
     if (-not ($Row -is [System.Data.DataRowView])) { return }
     $title = 'Szczegóły'
-    foreach ($c in 'Obiekt', 'Nazwa', 'Użytkownik', 'Skrzynka', 'Urządzenie', 'Name') {
+    foreach ($c in 'Obiekt', 'Nazwa', 'Tytuł', 'Użytkownik', 'Skrzynka', 'Urządzenie', 'Name') {
         $v = Get-HTObjectValue $Row $c
         if ($v) { $title = "Szczegóły - $v"; break }
     }
-    Show-HTTextDialog -Title $title -Subtitle $Module.Title -Text (Format-HTRowDetails -Module $Module -Row $Row)
+    $fields = Get-HTRowDetailFields -Module $Module -Row $Row
+    $body = '<ScrollViewer x:Name="rdScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel x:Name="rdHost" Margin="0,0,10,0"/></ScrollViewer>'
+    $w = New-HTDialog -Title $title -Subtitle $Module.Title -Body $body -Icon 'E8A5' -OkText 'Zamknij' -NoCancel -Width 920 -Height 680 -Resizable
+    $hostPanel = $w.FindName('rdHost')
+    $newValueBox = {
+        param([string]$Text, [double]$Size, [string]$Color)
+        $box = New-Object System.Windows.Controls.TextBox
+        $box.Text = ($Text -replace "`r?`n", "`r`n")
+        $box.IsReadOnly = $true
+        $box.TextWrapping = 'Wrap'
+        $box.BorderThickness = 0
+        $box.Background = [System.Windows.Media.Brushes]::Transparent
+        $box.Foreground = Get-HTBrush $Color
+        $box.FontSize = $Size
+        $box.Padding = '0'
+        $box.Margin = '0'
+        [System.Windows.Controls.TextBlock]::SetLineHeight($box, [Math]::Round($Size * 1.45))
+        return $box
+    }
+    if ($fields.Short.Count) {
+        $grid = New-Object System.Windows.Controls.Grid
+        $c1 = New-Object System.Windows.Controls.ColumnDefinition
+        $c1.Width = [System.Windows.GridLength]::Auto
+        $c1.MaxWidth = 240
+        [void]$grid.ColumnDefinitions.Add($c1)
+        [void]$grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+        $r = 0
+        foreach ($f in $fields.Short) {
+            [void]$grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition))
+            $label = New-HTDialogText -Text $f.Name -Color '#8791A5' -Size 12.5
+            $label.Margin = '0,3,16,3'
+            [System.Windows.Controls.Grid]::SetRow($label, $r)
+            [void]$grid.Children.Add($label)
+            $value = & $newValueBox $f.Text 13 '#E4E8EF'
+            $value.Margin = '0,3,0,3'
+            [System.Windows.Controls.Grid]::SetRow($value, $r)
+            [System.Windows.Controls.Grid]::SetColumn($value, 1)
+            [void]$grid.Children.Add($value)
+            $r++
+        }
+        [void]$hostPanel.Children.Add($grid)
+    }
+    foreach ($f in $fields.Long) {
+        $header = New-HTDialogText -Text $f.Name -Color $(if ($f.Body) { '#8CB0FF' } else { '#C9D0DC' }) -Size $(if ($f.Body) { 15 } else { 13.5 })
+        $header.FontWeight = 'SemiBold'
+        $header.Margin = '0,18,0,6'
+        [void]$hostPanel.Children.Add($header)
+        $card = New-Object System.Windows.Controls.Border
+        $card.Background = Get-HTBrush $(if ($f.Body) { '#161D29' } else { '#161B22' })
+        $card.BorderBrush = Get-HTBrush $(if ($f.Body) { '#4C7DF0' } else { '#262D39' })
+        $card.BorderThickness = $(if ($f.Body) { '3,1,1,1' } else { '1' })
+        $card.CornerRadius = 8
+        $card.Padding = '14,12'
+        $card.Child = & $newValueBox $f.Text $(if ($f.Body) { 14 } else { 13 }) '#E4E8EF'
+        [void]$hostPanel.Children.Add($card)
+    }
+    $w.Tag.CopyText = Format-HTRowDetails -Module $Module -Row $Row
+    $copy = New-HTButton -Text 'Kopiuj' -Icon 'E8C8'
+    $copy.add_Click({
+            param($s, $e)
+            $t = [System.Windows.Window]::GetWindow($s).Tag.CopyText
+            if ($t) { Set-HTClipboard $t; Show-HTToast 'Skopiowano do schowka.' 'ok' }
+        })
+    [void]$w.FindName('dlgExtra').Children.Add($copy)
+    [void](Invoke-HTDialog $w)
 }
 
 function Copy-HTResultView {
@@ -6814,8 +6904,9 @@ function Show-HTCommandPalette {
     $choice = $w.Tag.Choice
     if (-not $choice) { return }
     if ($choice.Kind -eq 'Module') { Invoke-HTUiAction -Module $null -Action { param($m, $key) Show-HTModule -Key $key } -Source $choice.Key; return }
-    $action = $choice.Action
-    Invoke-HTUiAction -Module $null -Action { param($m, $q) & $action.Action $q } -Source ([string]$choice.Query)
+    # Polecenie i tekst przekazane parametrem: zmienna «$action» w bloku wskazywałaby parametr -Action funkcji
+    # Invoke-HTUiAction (ten sam moduł, PowerShell nie rozróżnia wielkości liter) - wtedy żadne polecenie palety nie działało
+    Invoke-HTUiAction -Module $null -Action { param($m, $request) & $request.Run $request.Query } -Source @{ Run = $choice.Action.Action; Query = [string]$choice.Query }
 }
 #endregion
 

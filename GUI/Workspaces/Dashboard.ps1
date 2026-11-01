@@ -139,6 +139,76 @@ function Update-HTLogFileList {
     $combo.SelectedIndex = $index
 }
 
+Register-HTModule -Workspace 'Dashboard' -Category 'Program' -Key 'dash.tenants' -Title 'Profile tenantów' -Icon 'E716' -Service '' `
+    -Description 'Zapisane tenanty (klienci GDAP i własne): Microsoft 365, Exchange, SharePoint z Client ID PnP. Dwuklik - połącz; import i eksport CSV. Bez haseł.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m -Title 'Profile'
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż profile' -Icon 'E72C' -Primary -OnClick {
+        param($m)
+        $defaultClientId = "$($Global:LastUsedClientID)"
+        Invoke-HTQuery -Module $m -Name 'Profile tenantów' -Service '' -ScriptBlock { foreach ($p in @(Find-HTTenantProfiles -Profiles (Get-HTTenantProfiles))) { ConvertTo-HTTenantProfileRow -TenantProfile $p -DefaultClientId $defaultClientId } }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj profil…' -Icon 'E710' -OnClick {
+        param($m)
+        $edited = Edit-HTTenantProfile -New
+        if ($edited) { Save-HTTenantProfile -TenantProfile $edited; Show-HTToast "Zapisano profil «$($edited.Name)»." 'ok'; Invoke-HTModulePrimary $m }
+    } | Out-Null
+    $row2 = Add-HTToolbarRow -Module $m -Title 'Plik CSV'
+    Add-HTButton -Parent $row2 -Module $m -Text 'Import z CSV…' -Icon 'E8B5' -OnClick { param($m) if (Import-HTTenantProfilesInteractive) { Invoke-HTModulePrimary $m } } | Out-Null
+    Add-HTButton -Parent $row2 -Module $m -Text 'Eksport do CSV…' -Icon 'EDE1' -OnClick { param($m) Export-HTTenantProfilesInteractive } | Out-Null
+    Add-HTButton -Parent $row2 -Module $m -Text 'Zapisz szablon CSV' -Icon 'E74E' -OnClick {
+        param($m)
+        $path = Select-HTSaveFile -Title 'Szablon CSV profili tenantów' -Filter 'CSV (*.csv)|*.csv' -FileName 'Profile_tenantow_szablon.csv' -DefaultExt '.csv'
+        if (-not $path) { return }
+        [System.IO.File]::WriteAllText($path, (Get-HTTenantProfilesCsvTemplate) + "`r`n", [System.Text.UTF8Encoding]::new($true))
+        Show-HTToast 'Zapisano szablon: kolumny Nazwa i Tenant (albo Organizacja Exchange) są wymagane, pozostałe - opcjonalne.' 'ok' 8
+    } | Out-Null
+    Add-HTLabel -Parent $row2 -Hint -Text 'Separator ; albo ,. Usługi: Microsoft 365, Exchange, SharePoint. GDAP: Tak/Nie. Client ID PnP - aplikacja w tenancie klienta.' | Out-Null
+    $m.ResultHint = 'Dwuklik - połącz; prawy przycisk - edycja, duplikat, usunięcie'
+    $m.EmptyText = 'Brak profili - «Dodaj profil…» albo «Import z CSV…»'
+    $m.RowDoubleClick = {
+        param($m, $row)
+        $item = Get-HTObjectValue $row '__obj'
+        if (-not $item -or -not $item.__profile) { return }
+        $services = Select-HTTenantServices -TenantProfile $item.__profile
+        if ($services) { [void](Connect-HTTenantProfile -TenantProfile $item.__profile -Services $services); Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Połącz…' -Icon 'E716' -Action {
+        param($m, $rows)
+        $tp = @($rows | Where-Object { $_.__profile } | Select-Object -First 1)[0]
+        if (-not $tp) { return }
+        $services = Select-HTTenantServices -TenantProfile $tp.__profile
+        if ($services) { [void](Connect-HTTenantProfile -TenantProfile $tp.__profile -Services $services); Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Edytuj…' -Icon 'E70F' -Action {
+        param($m, $rows)
+        $tp = @($rows | Where-Object { $_.__profile } | Select-Object -First 1)[0]
+        if (-not $tp) { return }
+        $edited = Edit-HTTenantProfile -TenantProfile $tp.__profile
+        if ($edited) { Save-HTTenantProfile -TenantProfile $edited -OriginalName $tp.__profile.Name; Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Duplikuj…' -Icon 'E8C8' -Action {
+        param($m, $rows)
+        $tp = @($rows | Where-Object { $_.__profile } | Select-Object -First 1)[0]
+        if (-not $tp) { return }
+        $copy = ConvertTo-HTTenantProfile $tp.__profile
+        $copy.Name = "$($copy.Name) (kopia)"
+        $copy.LastUsed = ''
+        $edited = Edit-HTTenantProfile -TenantProfile $copy -New -Title 'Kopia profilu'
+        if ($edited) { Save-HTTenantProfile -TenantProfile $edited; Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Usuń profile' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $names = @($rows | Where-Object { $_.__profile } | ForEach-Object { $_.__profile.Name })
+        if (-not $names.Count) { return }
+        if (-not (Show-HTConfirm -Title 'Usuń profile' -Message 'Usunąć zaznaczone profile tenantów?' -Items $names -Danger -ConfirmText 'Usuń')) { return }
+        Set-HTTenantProfiles -Profiles @(Get-HTTenantProfiles | Where-Object { $names -notcontains $_.Name })
+        Write-Log -Message "Usunięto profile tenantów: $($names -join ', ')." -Type 'Info'
+        Invoke-HTModulePrimary $m
+    }
+    $m.OnShow = { param($m) Invoke-HTModulePrimary $m }
+}
+
 Register-HTModule -Workspace 'Dashboard' -Category 'Program' -Key 'dash.log' -Title 'Dziennik programu' -Icon 'E81C' -Service '' `
     -Description 'Wpisy dziennika z wybranego dnia (pliki z 30 dni): poziom, konto MFA, komunikat. Filtry kolumn (lejki w nagłówkach), eksport do CSV lub raportu HTML.' -Build {
     param($m)
