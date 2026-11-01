@@ -355,3 +355,33 @@ Describe "Usuwanie licencji bezpośrednich po jednej" {
         Should -Invoke -ModuleName GraphAPIM365Users Set-HTM365UserLicense -Times 2 -Exactly
     }
 }
+
+Describe "Nowe grupy Microsoft 365 i zabezpieczeń" {
+    It "tworzy alias poczty z nazwy bez polskich znaków i spacji" {
+        ConvertTo-HTMailNickname 'Dział Księgowości (Kraków)' | Should -Be 'DzialKsiegowosciKrakow'
+        ConvertTo-HTMailNickname 'sp_zarzad.uprawnienia' | Should -Be 'sp_zarzad.uprawnienia'
+    }
+    It "grupa zabezpieczeń: bez poczty, zabezpieczenia włączone, właściciele i członkowie w żądaniu" {
+        $r = Get-HTM365GroupCreateBody -DisplayName 'SP Zarząd' -Type Security -Description 'Uprawnienia witryny' -OwnerIds @('o1') -MemberIds @('u1', 'u2', 'u1')
+        $r.Body.mailEnabled | Should -BeFalse
+        $r.Body.securityEnabled | Should -BeTrue
+        @($r.Body.groupTypes).Count | Should -Be 0
+        $r.Body.mailNickname | Should -Be 'SPZarzad'
+        $r.Body['owners@odata.bind'] | Should -Be @('https://graph.microsoft.com/v1.0/users/o1')
+        @($r.Body['members@odata.bind']).Count | Should -Be 2
+    }
+    It "grupa Microsoft 365: poczta, typ Unified i widoczność; ponad 20 członków - reszta osobno" {
+        $members = @(1..25 | ForEach-Object { "u$_" })
+        $r = Get-HTM365GroupCreateBody -DisplayName 'Projekt X' -Type Microsoft365 -Visibility Public -MailNickname 'projektx' -MemberIds $members
+        $r.Body.groupTypes | Should -Be @('Unified')
+        $r.Body.mailEnabled | Should -BeTrue
+        $r.Body.visibility | Should -Be 'Public'
+        $r.Body.mailNickname | Should -Be 'projektx'
+        @($r.Body['members@odata.bind']).Count | Should -Be 20
+        $r.ExtraMembers | Should -Be @('u21', 'u22', 'u23', 'u24', 'u25')
+    }
+    It "login grupy do uprawnień SharePoint zależy od typu grupy" {
+        Get-HTSPGroupClaim ([PSCustomObject]@{ Id = 'g-1'; Type = 'Microsoft 365' }) | Should -Be 'c:0o.c|federateddirectoryclaimprovider|g-1'
+        Get-HTSPGroupClaim ([PSCustomObject]@{ Id = 'g-2'; Type = 'Zabezpieczeń' }) | Should -Be 'c:0t.c|tenant|g-2'
+    }
+}

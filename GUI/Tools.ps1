@@ -63,7 +63,7 @@ function Invoke-HTSigningInteractive {
     $cert = $null
     if ($certs.Count -eq 0) {
         $choice = Show-HTChoiceDialog -Title 'Podpisywanie skryptów' -Prompt 'Nie znaleziono certyfikatu podpisywania kodu w magazynie bieżącego użytkownika.' -Icon 'EB95' -Choices @(
-            @{ Key = 'New'; Text = 'Utwórz certyfikat z podpisem własnym'; Icon = 'E8D7'; Description = 'Ważny 5 lat, dodany do zaufanych wydawców tego komputera (Windows zapyta o potwierdzenie). W firmie lepiej użyć certyfikatu z firmowego urzędu (PKI).' }
+            @{ Key = 'New'; Text = 'Utwórz certyfikat z podpisem własnym'; Icon = 'E8D7'; Style = 'Create'; Description = 'Ważny 5 lat, dodany do zaufanych wydawców tego komputera (Windows zapyta o potwierdzenie). W firmie lepiej użyć certyfikatu z firmowego urzędu (PKI).' }
             @{ Key = 'Cancel'; Text = 'Anuluj'; Icon = 'E711' }
         )
         if ($choice -ne 'New') { return }
@@ -106,9 +106,9 @@ function Show-HTTenantProfilesEditor {
         $recent = @(Find-HTTenantProfiles -Profiles $profiles | Select-Object -First 8 | ForEach-Object { "• $($_.Name) - $(Get-HTTenantProfileTarget -TenantProfile $_)" })
         $list = if ($profiles.Count) { "Profili: $($profiles.Count)$(if ($profiles.Count -gt 8) { ' (ostatnio używane)' }):`n$($recent -join "`n")" } else { 'Brak zapisanych profili.' }
         $choices = @(
-            @{ Key = 'Add'; Text = 'Dodaj profil…'; Icon = 'E710'; Description = 'Tenant klienta (GDAP) albo drugi własny tenant' }
+            @{ Key = 'Add'; Text = 'Dodaj profil…'; Icon = 'E710'; Style = 'Create'; Description = 'Tenant klienta (GDAP) albo drugi własny tenant' }
             if ($profiles.Count) { @{ Key = 'Edit'; Text = 'Edytuj profil…'; Icon = 'E70F'; Description = 'Wyszukaj profil i zmień jego ustawienia' } }
-            @{ Key = 'Import'; Text = 'Import z pliku CSV…'; Icon = 'E8B5'; Description = 'Wiele profili naraz (szablon: Pulpit > Profile tenantów > «Szablon CSV»)' }
+            @{ Key = 'Import'; Text = 'Import z pliku CSV…'; Icon = 'E8B5'; Style = 'Create'; Description = 'Wiele profili naraz (szablon: Pulpit > Profile tenantów > «Szablon CSV»)' }
             if ($profiles.Count) { @{ Key = 'Export'; Text = 'Eksport do pliku CSV…'; Icon = 'EDE1'; Description = 'Kopia profili albo przeniesienie na inny komputer' } }
             if ($profiles.Count) { @{ Key = 'Remove'; Text = 'Usuń profile…'; Icon = 'E74D'; Style = 'Danger' } }
         )

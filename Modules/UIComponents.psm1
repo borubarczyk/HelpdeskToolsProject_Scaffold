@@ -143,6 +143,24 @@ $script:ThemeXaml = @'
       <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#E85C6E"/></Trigger>
     </Style.Triggers>
   </Style>
+  <!-- Dodawanie i tworzenie (nowe konto, grupa, członkowie, uprawnienia, licencje) - zielone -->
+  <Style x:Key="CreateButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Foreground" Value="#5FD39A"/>
+    <Setter Property="BorderBrush" Value="#244A39"/>
+    <Setter Property="Background" Value="#15211B"/>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#1C3327"/></Trigger>
+    </Style.Triggers>
+  </Style>
+  <Style x:Key="CreatePrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Background" Value="#2C9A5F"/>
+    <Setter Property="BorderBrush" Value="#2C9A5F"/>
+    <Setter Property="Foreground" Value="White"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#36AE6C"/></Trigger>
+    </Style.Triggers>
+  </Style>
   <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
     <Setter Property="Background" Value="Transparent"/>
     <Setter Property="BorderBrush" Value="Transparent"/>
@@ -836,9 +854,11 @@ function New-HTIconContent {
 }
 
 function New-HTButton {
-    param([string]$Text, [string]$Icon = '', [switch]$Primary, [switch]$Danger, [switch]$Ghost, [string]$ToolTip = '')
+    # -Danger: zmiana (czerwony), -Create: dodawanie / tworzenie (zielony), -Primary: wypełniony
+    param([string]$Text, [string]$Icon = '', [switch]$Primary, [switch]$Danger, [switch]$Create, [switch]$Ghost, [string]$ToolTip = '')
     $b = New-Object System.Windows.Controls.Button
-    if ($Primary -and $Danger) { $b.Style = Get-HTThemeResource 'DangerPrimaryButton' }
+    if ($Create) { $b.Style = Get-HTThemeResource $(if ($Primary) { 'CreatePrimaryButton' } else { 'CreateButton' }) }
+    elseif ($Primary -and $Danger) { $b.Style = Get-HTThemeResource 'DangerPrimaryButton' }
     elseif ($Primary) { $b.Style = Get-HTThemeResource 'PrimaryButton' }
     elseif ($Danger) { $b.Style = Get-HTThemeResource 'DangerButton' }
     elseif ($Ghost) { $b.Style = Get-HTThemeResource 'GhostButton' }
@@ -1337,11 +1357,11 @@ function Get-HTFormFieldError {
 }
 
 function New-HTFormButtons {
-    # Rząd przycisków: @(@{ Text; Icon; OnClick = { param($w) }; ToolTip; Danger })
+    # Rząd przycisków: @(@{ Text; Icon; OnClick = { param($w) }; ToolTip; Danger; Create })
     param([object[]]$Buttons = @())
     $panel = New-Object System.Windows.Controls.WrapPanel
     foreach ($def in @($Buttons | Where-Object { $_ })) {
-        $b = New-HTButton -Text ([string]$def.Text) -Icon ([string]$def.Icon) -ToolTip ([string]$def.ToolTip) -Danger:([bool]$def.Danger)
+        $b = New-HTButton -Text ([string]$def.Text) -Icon ([string]$def.Icon) -ToolTip ([string]$def.ToolTip) -Danger:([bool]$def.Danger) -Create:([bool]$def.Create)
         $b.Margin = '0,3,8,3'
         $b.Tag = $def.OnClick
         $b.add_Click($script:FormEvents.Button)
@@ -1673,7 +1693,7 @@ function Get-HTFormControlValue {
 }
 
 function Show-HTChoiceDialog {
-    # Wybór jednej z opcji. Choices: tablica tekstów lub @{ Key; Text; Description; Icon (kod glifu); Style = Danger }
+    # Wybór jednej z opcji. Choices: tablica tekstów lub @{ Key; Text; Description; Icon (kod glifu); Style = Danger / Create }
     param([Parameter(Mandatory)][string]$Title, [Parameter(Mandatory)][object[]]$Choices, [string]$Prompt = '', [string]$Icon = 'E8FD')
     $w = New-HTDialog -Title $Title -Subtitle $Prompt -Body '<StackPanel x:Name="chHost"/>' -Icon $Icon -Width 520
     $w.FindName('btnOk').Visibility = 'Collapsed'
@@ -1690,7 +1710,7 @@ function Show-HTChoiceDialog {
         $c1.Width = [System.Windows.GridLength]::Auto
         [void]$grid.ColumnDefinitions.Add($c1)
         [void]$grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
-        $glyph = New-HTGlyphBlock -Code $(if ($c.Icon) { $c.Icon } else { 'E76C' }) -Size 16 -Color $(if ($c.Style -eq 'Danger') { '#FF8A95' } else { '#8CB0FF' })
+        $glyph = New-HTGlyphBlock -Code $(if ($c.Icon) { $c.Icon } else { 'E76C' }) -Size 16 -Color $(if ($c.Style -eq 'Danger') { '#FF8A95' } elseif ($c.Style -eq 'Create') { '#5FD39A' } else { '#8CB0FF' })
         $glyph.Margin = '0,0,14,0'
         [void]$grid.Children.Add($glyph)
         $texts = New-Object System.Windows.Controls.StackPanel
@@ -3763,8 +3783,8 @@ function Complete-HTModuleView {
 function Add-HTParamRow {
     <#
         Wiersz panelu parametrów z podpisem po lewej (-Title) i dowolną zawartością. Kolumna podpisów jest wspólna dla
-        wierszy modułu (SharedSizeGroup): gdy którykolwiek wiersz ma podpis, wiersze bez podpisu zaczynają się w kolumnie
-        treści (np. czerwone przyciski zmian pod «Sprawdź stan», a nie pod podpisem «Stan»); bez podpisów - bez wcięcia.
+        wierszy modułu (SharedSizeGroup) i ma szerokość najdłuższego podpisu: gdy którykolwiek wiersz ma podpis, wiersze
+        bez podpisu zaczynają się w kolumnie treści (np. przyciski zmian pod «Sprawdź stan»); bez podpisów - bez wcięcia.
     #>
     param([Parameter(Mandatory)][hashtable]$Module, [string]$Title = '', [Parameter(Mandatory)]$Content)
     $stack = $Module.ParamsStack
@@ -3782,9 +3802,9 @@ function Add-HTParamRow {
         $caption.Foreground = Get-HTBrush '#8791A5'
         $caption.FontWeight = 'SemiBold'
         $caption.FontSize = 12
-        # Szerokość podpisu 116 + odstęp 12 = 128 (jak dotąd)
-        $caption.Width = 116
-        $caption.Margin = '0,8,12,0'
+        # Kolumna podpisów tak szeroka jak najdłuższy podpis modułu (długie - zawijane), bez stałej przerwy
+        $caption.MaxWidth = 150
+        $caption.Margin = '0,8,14,0'
         $caption.VerticalAlignment = 'Top'
         $caption.TextWrapping = 'Wrap'
         [void]$grid.Children.Add($caption)
@@ -3792,7 +3812,13 @@ function Add-HTParamRow {
     [System.Windows.Controls.Grid]::SetColumn($Content, 1)
     [void]$grid.Children.Add($Content)
     if ($stack.Children.Count -gt 0) { $grid.Margin = '0,4,0,0' }
-    [void]$stack.Children.Add($grid)
+    # Wiersz zmian (czerwone przyciski akcji na wierszach) zostaje ostatni - nowe wiersze trafiają przed niego
+    $changeRow = $Module['ChangeRowContainer']
+    if ($changeRow -and $stack.Children.Contains($changeRow)) {
+        [void]$stack.Children.Insert($stack.Children.IndexOf($changeRow), $grid)
+        $changeRow.Margin = '0,4,0,0'
+    }
+    else { [void]$stack.Children.Add($grid) }
     $Module.ParamsCard.Visibility = 'Visible'
     return $Content
 }
@@ -3953,19 +3979,22 @@ function Add-HTButton {
         [string]$ToolTip = '',
         [switch]$Primary,
         [switch]$Danger,
-        # Czerwony przycisk bez pozycji w menu wierszy wyników (nie działa na zaznaczonych wierszach, np. przywracanie z pliku)
+        # Dodawanie / tworzenie (nowe konto, grupa, członkowie, uprawnienia, licencje): zmiana jak -Danger, ale zielona
+        [switch]$Create,
+        # Przycisk zmiany bez pozycji w menu wierszy wyników (nie działa na zaznaczonych wierszach, np. przywracanie z pliku)
         [switch]$NoRowMenu
     )
-    $b = New-HTButton -Text $Text -Icon $Icon -Primary:$Primary -Danger:$Danger -ToolTip $ToolTip
+    $change = $Danger -or $Create
+    $b = New-HTButton -Text $Text -Icon $Icon -Primary:$Primary -Danger:($Danger -and -not $Create) -Create:$Create -ToolTip $ToolTip
     $b.Margin = '0,0,8,6'
     Register-HTControlHandler -Control $b -EventName 'Click' -Module $Module -Action $OnClick
     [void]$Module.Buttons.Add($b)
     # F5 (główna akcja modułu) nigdy nie wykonuje zmiany - tylko odczyt (zasada trzech etapów)
-    if ($Primary -and -not $Danger -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
-    # Przyciski zmian (czerwone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
-    if ($Danger -and -not $NoRowMenu) {
+    if ($Primary -and -not $change -and -not $Module.PrimaryButton) { $Module.PrimaryButton = $b }
+    # Przyciski zmian (czerwone i zielone) są też w menu prawego przycisku na wierszach wyników (zaznaczone obiekty)
+    if ($change -and -not $NoRowMenu) {
         if (-not $Module['ChangeButtons']) { $Module['ChangeButtons'] = New-Object System.Collections.Generic.List[hashtable] }
-        $Module['ChangeButtons'].Add(@{ Button = $b; Text = $Text; Icon = $Icon })
+        $Module['ChangeButtons'].Add(@{ Button = $b; Text = $Text; Icon = $Icon; Create = [bool]$Create })
     }
     [void]$Parent.Children.Add($b)
     return $b
@@ -4001,13 +4030,31 @@ function Add-HTRowAction {
         -Danger (zmiana): czerwona pozycja menu z liczbą zaznaczonych wierszy i czerwony przycisk u góry modułu
         (w ostatnim wierszu przycisków) działający na wierszach zaznaczonych w wynikach. -NoButton: tylko w menu.
     #>
-    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][scriptblock]$Action, [string]$Icon = 'E76C', [switch]$Danger, [switch]$NoButton)
-    $entry = @{ Text = $Text; Action = $Action; Icon = $Icon; Danger = [bool]$Danger }
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][scriptblock]$Action, [string]$Icon = 'E76C', [switch]$Danger, [switch]$Create, [switch]$NoButton)
+    # -Create: dodawanie / tworzenie (zielone) - zachowanie jak -Danger (liczba zaznaczonych, przycisk u góry)
+    if ($Create) { $Danger = $true }
+    $entry = @{ Text = $Text; Action = $Action; Icon = $Icon; Danger = [bool]$Danger; Create = [bool]$Create }
     [void]$Module.RowActions.Add($entry)
     if (-not $Danger -or $NoButton) { return }
-    $parent = $Module['LastToolbarRow']
-    if (-not $parent) { $parent = Add-HTToolbarRow -Module $Module; $parent = $Module['LastToolbarRow'] }
-    $b = New-HTButton -Text $Text -Icon $Icon -Danger -ToolTip "$($Text.TrimEnd('…')) - na wierszach zaznaczonych w wynikach (także prawy przycisk na wierszach)"
+    <#
+        Układ: dodawanie (zielone) w ostatnim wierszu przycisków obok odczytu; zmiany (czerwone) w osobnym wierszu na dole
+        panelu - usuwanie / odbieranie na końcu wiersza.
+    #>
+    if ($Create) {
+        $parent = $Module['LastToolbarRow']
+        if (-not $parent) { $parent = Add-HTToolbarRow -Module $Module; $parent = $Module['LastToolbarRow'] }
+    }
+    else {
+        $parent = $Module['ChangeRow']
+        if (-not $parent) {
+            $parent = New-Object System.Windows.Controls.WrapPanel
+            $parent.Orientation = 'Horizontal'
+            [void](Add-HTParamRow -Module $Module -Content $parent)
+            $Module['ChangeRow'] = $parent
+            $Module['ChangeRowContainer'] = $parent.Parent
+        }
+    }
+    $b = New-HTButton -Text $Text -Icon $Icon -Danger:(-not $Create) -Create:$Create -ToolTip "$($Text.TrimEnd('…')) - na wierszach zaznaczonych w wynikach (także prawy przycisk na wierszach)"
     $b.Margin = '0,0,8,6'
     $b.Tag = $entry
     Register-HTControlHandler -Control $b -EventName 'Click' -Module $Module -Action {
@@ -4018,9 +4065,15 @@ function Add-HTRowAction {
     }
     [void]$Module.Buttons.Add($b)
     $entry.Button = $b
-    # Za ostatnim przyciskiem wiersza (przed podpowiedziami)
+    # Za ostatnim przyciskiem wiersza (przed podpowiedziami); w wierszu zmian usuwanie zawsze na końcu
+    $removal = { param($t) [string]$t -match '^(Usuń|Odbierz|Wyczyść)' }
     $index = 0
-    for ($i = 0; $i -lt $parent.Children.Count; $i++) { if ($parent.Children[$i] -is [System.Windows.Controls.Button]) { $index = $i + 1 } }
+    for ($i = 0; $i -lt $parent.Children.Count; $i++) {
+        $child = $parent.Children[$i]
+        if ($child -isnot [System.Windows.Controls.Button]) { continue }
+        if (-not $Create -and -not (& $removal $Text) -and $child.Tag -is [hashtable] -and (& $removal $child.Tag.Text)) { break }
+        $index = $i + 1
+    }
     $parent.Children.Insert($index, $b)
 }
 
@@ -4114,7 +4167,7 @@ function Update-HTGridMenu {
     foreach ($a in $Module.RowActions) {
         # Akcja dostaje oryginalne obiekty zaznaczonych wierszy: { param($m, $rows) }; zmiany - z liczbą zaznaczonych
         $text = if ($a.Danger -and $hasRows) { "$($a.Text) - zaznaczone ($($selected.Count))" } else { $a.Text }
-        [void]$menu.Items.Add((New-HTMenuItem -Text $text -Icon $a.Icon -Module $Module -Danger:$a.Danger -Enabled $hasRows -Data $a.Action -Action {
+        [void]$menu.Items.Add((New-HTMenuItem -Text $text -Icon $a.Icon -Module $Module -Danger:$a.Danger -Create:([bool]$a['Create']) -Enabled $hasRows -Data $a.Action -Action {
                     param($m, $s)
                     $rows = @(Get-HTResultSelection -Module $m)
                     if ($rows.Count -eq 0) { Show-HTWarning 'Zaznacz wiersze w tabeli wyników.'; return }
@@ -4125,7 +4178,7 @@ function Update-HTGridMenu {
     $rowTargets = if ($hasRows) { @(Get-HTSelectedResultTargets -Module $Module) } else { @() }
     if ($rowTargets.Count -and $Module['ChangeButtons']) {
         foreach ($cb in @($Module['ChangeButtons'] | Where-Object { $_ -and $_.Button.IsEnabled -and $_.Button.IsVisible })) {
-            [void]$menu.Items.Add((New-HTMenuItem -Text "$($cb.Text) - zaznaczone ($($rowTargets.Count))" -Icon $cb.Icon -Danger -Module $Module -Data $cb.Button -Action {
+            [void]$menu.Items.Add((New-HTMenuItem -Text "$($cb.Text) - zaznaczone ($($rowTargets.Count))" -Icon $cb.Icon -Danger:(-not $cb['Create']) -Create:([bool]$cb['Create']) -Module $Module -Data $cb.Button -Action {
                         param($m, $s)
                         $button = $s.Tag.Data
                         $button.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $button)))
@@ -4776,10 +4829,10 @@ $script:MenuEvents = @{
 }
 
 function New-HTMenuItem {
-    param([string]$Text, [string]$Icon = '', [hashtable]$Module, [scriptblock]$Action, $Data = $null, [switch]$Danger, [bool]$Enabled = $true)
+    param([string]$Text, [string]$Icon = '', [hashtable]$Module, [scriptblock]$Action, $Data = $null, [switch]$Danger, [switch]$Create, [bool]$Enabled = $true)
     $mi = New-Object System.Windows.Controls.MenuItem
     $mi.Header = $Text
-    if ($Icon) { $mi.Icon = New-HTGlyphBlock -Code $Icon -Size 13 -Color $(if ($Danger) { '#FF7A86' } else { '' }) }
+    if ($Icon) { $mi.Icon = New-HTGlyphBlock -Code $Icon -Size 13 -Color $(if ($Create) { '#5FD39A' } elseif ($Danger) { '#FF7A86' } else { '' }) }
     $mi.IsEnabled = $Enabled
     $mi.Tag = @{ Module = $Module; Action = $Action; Data = $Data }
     if ($Action) { $mi.add_Click($script:MenuEvents.Click) }
@@ -6629,7 +6682,7 @@ function Show-HTMfaManager {
             @{ Key = 'Rekey'; Text = 'Nowy klucz…'; Icon = 'E72C' },
             @{ Key = 'Access'; Text = 'Uprawnienia…'; Icon = 'E72E' },
             @{ Key = 'Remove'; Text = 'Usuń…'; Icon = 'E74D' })) {
-        $b = New-HTButton -Text $def.Text -Icon $def.Icon -Danger:($def.Key -eq 'Remove')
+        $b = New-HTButton -Text $def.Text -Icon $def.Icon -Danger:($def.Key -eq 'Remove') -Create:($def.Key -eq 'Add')
         $b.Tag = $def.Key
         $b.Margin = '0,0,8,6'
         $b.Name = 'mf' + $def.Key

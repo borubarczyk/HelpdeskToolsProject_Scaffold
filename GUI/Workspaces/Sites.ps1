@@ -64,7 +64,7 @@ Register-HTModule -Workspace 'Sites' -Category 'Witryna' -Key 'sites.subsites' -
             $subs
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Dodaj do listy witryn' -Icon 'E710' -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj do listy witryn' -Create -Icon 'E710' -Action {
         param($m, $rows)
         $p = Get-HTPanel 'graphSites'
         $items = @($p.Objects.Values) + @($rows | Where-Object { $_.Id } | ForEach-Object { [PSCustomObject]@{ Nazwa = $_.Nazwa; Adres = $_.Adres; Id = $_.Id; Opis = $_.Opis; Utworzono = $_.Utworzono; 'Ostatnia zmiana' = $_.Zmodyfikowano } })

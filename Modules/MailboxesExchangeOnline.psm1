@@ -307,6 +307,12 @@ function Set-HTMailboxAutoReply {
     Set-MailboxAutoReplyConfiguration @params
 }
 
+function Clear-HTMailboxAutoReply {
+    # Wyczyszczenie autoodpowiedzi niezależnie od stanu: wyłączenie i usunięcie treści (wewnętrznej i zewnętrznej) oraz terminów
+    param ([Parameter(Mandatory)][string]$Identity)
+    Set-MailboxAutoReplyConfiguration -Identity $Identity -AutoReplyState Disabled -InternalMessage $null -ExternalMessage $null -ErrorAction Stop
+}
+
 # Zamiana zwykłego tekstu na prosty HTML (zachowanie nowych linii)
 function ConvertTo-HTAutoReplyHtml {
     param ([AllowEmptyString()][AllowNull()][string]$Text)

@@ -330,7 +330,7 @@ Register-HTModule -Workspace 'Intune' -Category 'Autopilot' -Key 'int.autopilot'
         if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementServiceConfig.ReadWrite.All') -Feature 'Windows Autopilot')) { return }
         & $m.Data.Refresh $m
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Importuj skróty (CSV)…' -Icon 'E8B5' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Importuj skróty (CSV)…' -Create -NoRowMenu -Icon 'E8B5' -OnClick {
         param($m)
         if (-not (Assert-HTGraphScopes -Scopes @('DeviceManagementServiceConfig.ReadWrite.All') -Feature 'Windows Autopilot')) { return }
         $path = Select-HTOpenFile -Title 'Plik skrótów sprzętowych Autopilot' -Filter 'CSV (*.csv)|*.csv'

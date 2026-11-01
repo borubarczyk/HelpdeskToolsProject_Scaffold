@@ -181,5 +181,8 @@ Describe "Pośrednicy poleceń usług - treść i lista poleceń" {
         $names | Should -Contain 'Get-OrganizationConfig'
         $names | Should -Contain 'Get-PnPList'
         $names | Should -Contain 'Invoke-PnPQuery'
+        # Wywołania dynamiczne (& $command): nazwa zapisana jako tekst
+        $names | Should -Contain 'Get-MessageTraceV2'
+        $names | Should -Contain 'Get-MessageTrace'
     }
 }

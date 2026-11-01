@@ -375,6 +375,38 @@ function ConvertTo-HTDisplayValue {
 }
 
 # Rozbija tekst (np. wklejoną listę) na unikalne, niepuste wpisy
+function Get-HTAddressCompletion {
+    <#
+        Podpowiedź końcówki adresu podczas pisania: najdłuższy wspólny początek znanych adresów zaczynających się od -Token
+        (bez rozróżniania wielkości liter); po «@» - także sama domena znanych adresów (jan.nowy@fi -> jan.nowy@firma.pl).
+        Zwraca -Token z dopisaną końcówką albo '' (brak dopasowania albo nic do dopisania).
+    #>
+    param([AllowEmptyString()][AllowNull()][string]$Token, [AllowEmptyCollection()][string[]]$Addresses = @(), [int]$MinLength = 2)
+    if (-not $Token -or $Token.Length -lt $MinLength) { return '' }
+    $common = {
+        param([string[]]$Items)
+        $prefix = $Items[0]
+        foreach ($item in $Items) {
+            $i = 0
+            while ($i -lt $prefix.Length -and $i -lt $item.Length -and [char]::ToLowerInvariant($prefix[$i]) -eq [char]::ToLowerInvariant($item[$i])) { $i++ }
+            $prefix = $prefix.Substring(0, $i)
+        }
+        return $prefix
+    }
+    $found = @($Addresses | Where-Object { $_ -and $_.StartsWith($Token, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -Unique)
+    if (-not $found.Count -and $Token.Contains('@')) {
+        $at = $Token.IndexOf('@')
+        $local = $Token.Substring(0, $at + 1)
+        $domainPart = $Token.Substring($at + 1)
+        $domains = @($Addresses | Where-Object { $_ -and $_.Contains('@') } | ForEach-Object { $_.Substring($_.IndexOf('@') + 1) } | Where-Object { $_.StartsWith($domainPart, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -Unique)
+        $found = @($domains | ForEach-Object { $local + $_ })
+    }
+    if (-not $found.Count) { return '' }
+    $prefix = & $common $found
+    if ($prefix.Length -le $Token.Length) { return '' }
+    return $Token + $prefix.Substring($Token.Length)
+}
+
 function Split-HTInputList {
     param ([AllowEmptyString()][AllowNull()][string]$Text)
     if (-not $Text) { return @() }

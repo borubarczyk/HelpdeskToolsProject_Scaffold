@@ -228,7 +228,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.mfa' 
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj telefon…' -Icon 'E717' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj telefon…' -Icon 'E717' -Create -OnClick {
         param($m)
         $t = @(Get-HTChangeTargets -Module $m -Single)[0]
         if (-not $t) { return }
@@ -239,7 +239,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.mfa' 
         if (-not $form) { return }
         Invoke-HTTargetAction -Module $m -Name 'Dodanie telefonu MFA' -Targets @($t) -Label { param($t) Get-HTM365Label $t } -Action { param($t) "Dodano: $(Add-HTM365PhoneMethod -UserId $t.Id -PhoneNumber $form.Phone -PhoneType $form.Type)" }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Temporary Access Pass…' -Icon 'E8D7' -ToolTip 'Jednorazowy kod do zalogowania i zarejestrowania nowych metod (np. nowy telefon)' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Temporary Access Pass…' -Icon 'E8D7' -ToolTip 'Jednorazowy kod do zalogowania i zarejestrowania nowych metod (np. nowy telefon)' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -266,7 +266,7 @@ Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.mfa' 
 Register-HTModule -Workspace 'M365' -Category 'Bezpieczeństwo' -Key 'm365.signins' -Title 'Logowania' -Icon 'E81C' `
     -Description 'Ostatnie logowania użytkownika: aplikacja, adres IP, lokalizacja, wynik i dostęp warunkowy (Entra ID P1, AuditLog.Read.All).' -Build {
     param($m)
-    $row = Add-HTToolbarRow -Module $m -Title 'Zakres'
+    $row = Add-HTToolbarRow -Module $m
     Add-HTLabel -Parent $row -Text 'Liczba wpisów:' | Out-Null
     $m.C.Top = Add-HTNumeric -Parent $row -Value 50 -Minimum 1 -Maximum 1000
     $m.C.Failed = Add-HTCheckBox -Parent $row -Text 'Tylko nieudane'
@@ -294,7 +294,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
             foreach ($l in $licenses) { [PSCustomObject]@{ Licencja = Get-HTSkuFriendlyName $l.SkuPartNumber; SKU = $l.SkuPartNumber; __sku = $l } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Przypisz licencję…' -Icon 'E710' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Przypisz licencję…' -Icon 'E710' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -332,8 +332,62 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.lice
     } | Out-Null
 }
 
+function New-HTM365GroupInteractive {
+    <#
+        Nowa grupa Entra ID (zabezpieczeń albo Microsoft 365): formularz (rodzaj, nazwa, alias, opis, widoczność, właściciele,
+        członkowie - UPN; -Members: wstępnie wpisani), potwierdzenie, utworzenie i wpis do podsumowania. Zwraca grupę albo $null.
+    #>
+    param([string[]]$Members = @())
+    if (-not (Assert-HTConnection -Service 'Graph')) { return $null }
+    if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa Microsoft 365')) { return $null }
+    $types = @('Zabezpieczeń - uprawnienia (np. SharePoint), aplikacje, licencje grupowe', 'Microsoft 365 - wspólna poczta, kalendarz, Teams i witryna')
+    $pick = {
+        param($w, [string]$Field, [string]$Title)
+        $users = @(Select-HTM365User -Title $Title -Multi)
+        if (-not $users.Count) { return }
+        $box = $w.Tag.Controls[$Field].Control
+        $box.Text = (@(Split-HTInputList $box.Text) + @($users | Where-Object { $_ } | ForEach-Object { [string]$_.UserPrincipalName }) | Select-Object -Unique) -join "`r`n"
+    }
+    $form = Show-HTFormDialog -Title 'Nowa grupa (Microsoft 365 / Entra ID)' -Icon 'E902' -OkText 'Dalej' -Width 660 -MaxHeight 660 -Fields @(
+        @{ Name = 'Type'; Label = 'Rodzaj grupy'; Type = 'Combo'; Options = $types }
+        @{ Name = 'Name'; Label = 'Nazwa wyświetlana'; Required = $true }
+        @{ Name = 'Alias'; Label = 'Alias (część adresu przed @; puste - z nazwy)'; Hint = 'Litery, cyfry, myślnik, podkreślenie, kropka - bez polskich znaków i spacji.' }
+        @{ Name = 'Description'; Label = 'Opis (np. do czego służy grupa)' }
+        @{ Name = 'Visibility'; Label = 'Widoczność'; Type = 'Combo'; Options = @('Prywatna', 'Publiczna'); ShowWhen = @{ Field = 'Type'; Values = @($types[1]) } }
+        @{ Name = 'Owners'; Label = 'Właściciele (UPN, jeden w linii)'; Type = 'Multiline'; Height = 50 }
+        @{ Type = 'Buttons'; Buttons = @(@{ Text = 'Wybierz właścicieli…'; Icon = 'E716'; OnClick = { param($w) & $pick $w 'Owners' 'Właściciele grupy' }.GetNewClosure() }) }
+        @{ Name = 'Members'; Label = 'Członkowie (UPN, jeden w linii)'; Type = 'Multiline'; Height = 90; Default = (@($Members | Where-Object { $_ }) -join "`r`n") }
+        @{ Type = 'Buttons'; Buttons = @(@{ Text = 'Wybierz członków…'; Icon = 'E716'; OnClick = { param($w) & $pick $w 'Members' 'Członkowie grupy' }.GetNewClosure() }) }
+    )
+    if (-not $form) { return $null }
+    $type = if ([string]$form.Type -eq $types[1]) { 'Microsoft365' } else { 'Security' }
+    $alias = ([string]$form.Alias).Trim()
+    if ($alias -and $alias -notmatch '^[A-Za-z0-9][A-Za-z0-9\-_\.]{0,63}$') { Show-HTWarning "Alias «$alias» ma niedozwolone znaki (dozwolone: litery bez polskich znaków, cyfry, - _ .)." -Title 'Nowa grupa'; return $null }
+    $ownerUpns = @(Split-HTInputList $form.Owners)
+    $memberUpns = @(Split-HTInputList $form.Members)
+    if (-not (Confirm-HTChange -Name 'Nowa grupa' -Labels @([string]$form.Name) -Summary @(Get-HTPendingFormSummary) -Confirm "Utworzyć grupę $($form.Name)?")) { return $null }
+    Set-HTBusy -Busy $true -Text "Tworzenie grupy $($form.Name)…"
+    try {
+        $resolve = { param([string[]]$Upns) foreach ($upn in $Upns) { try { [string](Resolve-HTM365User -Identity $upn).id } catch { throw "Nie znaleziono konta $upn ($($_.Exception.Message))" } } }
+        $ownerIds = @(& $resolve $ownerUpns)
+        $memberIds = @(& $resolve $memberUpns)
+        $group = New-HTM365Group -DisplayName ([string]$form.Name) -Type $type -MailNickname $alias -Description ([string]$form.Description) -Visibility $(if ($form.Visibility -eq 'Publiczna') { 'Public' } else { 'Private' }) -OwnerIds $ownerIds -MemberIds $memberIds
+        $details = "$($group.Type)$(if ($group.Mail) { ", $($group.Mail)" }), właścicieli: $($ownerIds.Count), członków: $($memberIds.Count)"
+        Add-HTOperationRecord -Operation 'Nowa grupa (Microsoft 365 / Entra ID)' -Object $group.DisplayName -Details $details -Module 'Grupy'
+        Write-Log -Message "Utworzono grupę $($group.DisplayName) ($details)." -Type 'Info'
+        Show-HTToast "Utworzono grupę $($group.DisplayName)." 'ok'
+        return $group
+    }
+    catch {
+        Add-HTOperationRecord -Operation 'Nowa grupa (Microsoft 365 / Entra ID)' -Object ([string]$form.Name) -Status 'Błąd' -Details $_.Exception.Message -Module 'Grupy'
+        Show-HTError -Text "Nie utworzono grupy $($form.Name)." -ErrorObject $_
+        return $null
+    }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+}
+
 Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.groups' -Title 'Grupy' -Icon 'E902' `
-    -Description 'Członkostwo w grupach (Microsoft 365, zabezpieczeń, dystrybucyjnych - te ostatnie wymagają Exchange). Kopiowanie grup z innego użytkownika.' -Build {
+    -Description 'Członkostwo w grupach (Microsoft 365, zabezpieczeń, dystrybucyjnych - te ostatnie wymagają Exchange). Kopiowanie grup z innego użytkownika. Nowe grupy zabezpieczeń i Microsoft 365 (np. do uprawnień SharePoint).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż grupy' -Icon 'E8A1' -Primary -OnClick {
@@ -345,7 +399,12 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Icon 'E902' -Create -NoRowMenu -ToolTip 'Nowa grupa zabezpieczeń albo Microsoft 365 (Entra ID) - członkowie: konta zaznaczone na liście po lewej' -OnClick {
+        param($m)
+        $members = @(Get-HTTargets -Module $m -Quiet | ForEach-Object { [string]$_.UserPrincipalName } | Where-Object { $_ })
+        [void](New-HTM365GroupInteractive -Members $members)
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj do grup…' -Icon 'E710' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -360,7 +419,7 @@ Register-HTModule -Workspace 'M365' -Category 'Licencje i grupy' -Key 'm365.grou
             "Dodano do: $(@($done) -join ', ')"
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -ToolTip 'Dodaje zaznaczonych użytkowników do grup, do których należy wskazany użytkownik wzorcowy' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Kopiuj grupy od…' -Icon 'E8C8' -ToolTip 'Dodaje zaznaczonych użytkowników do grup, do których należy wskazany użytkownik wzorcowy' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -471,10 +530,10 @@ function Show-HTUserProfilesEditor {
         $profiles = @(Get-HTUserProfiles)
         $list = if ($profiles.Count) { "Profili: $($profiles.Count)`n$(@($profiles | Select-Object -First 10 | ForEach-Object { "• $($_.Name) - $(Get-HTUserProfileDescription $_)" }) -join "`n")" } else { 'Brak profili. Profil zapamiętuje, jak tworzyć konta u danego klienta: format loginu, domenę, firmę, licencje, grupy i konto wzorcowe.' }
         $choices = @(
-            @{ Key = 'Add'; Text = 'Nowy profil…'; Icon = 'E710'; Description = 'Np. dla klienta albo działu' }
+            @{ Key = 'Add'; Text = 'Nowy profil…'; Icon = 'E710'; Style = 'Create'; Description = 'Np. dla klienta albo działu' }
             if ($profiles.Count) { @{ Key = 'Edit'; Text = 'Edytuj profil…'; Icon = 'E70F' } }
             if ($profiles.Count) { @{ Key = 'Copy'; Text = 'Duplikuj profil…'; Icon = 'E8C8'; Description = 'Nowy profil na podstawie istniejącego' } }
-            @{ Key = 'Import'; Text = 'Import z pliku…'; Icon = 'E8B5'; Description = 'Plik JSON z eksportu (np. z innego komputera)' }
+            @{ Key = 'Import'; Text = 'Import z pliku…'; Icon = 'E8B5'; Style = 'Create'; Description = 'Plik JSON z eksportu (np. z innego komputera)' }
             if ($profiles.Count) { @{ Key = 'Export'; Text = 'Eksport do pliku…'; Icon = 'EDE1' } }
             if ($profiles.Count) { @{ Key = 'Remove'; Text = 'Usuń profile…'; Icon = 'E74D'; Style = 'Danger' } }
         )
@@ -537,7 +596,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Tit
     param($m)
     $m.SecretColumns = @('Hasło')
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz użytkownika…' -Icon 'E8FA' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz użytkownika…' -Create -NoRowMenu -Icon 'E8FA' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Graph')) { return }
         Set-HTBusy -Busy $true -Text 'Pobieranie domen i licencji…'
@@ -903,7 +962,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.deleted' 
             'Konto usunięte (kosz 30 dni)'
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć konto' -Icon 'E777' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć konto' -Icon 'E777' -Create -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie konta' -Rows $rows -Confirm 'Przywrócić zaznaczone konta?' -Action { param($r) Restore-HTM365DeletedUser -Id $r.Id | Out-Null } `
             -Refresh { param($m) Invoke-HTQuery -Module $m -Name 'Usunięci użytkownicy' -ScriptBlock { Get-HTM365DeletedUsers } }
@@ -1172,7 +1231,7 @@ Register-HTModule -Workspace 'M365' -Category 'Konto' -Key 'm365.compare' -Title
             }
         }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Uzupełnij brakujące grupy (drugie konto)' -Icon 'E902' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Uzupełnij brakujące grupy (drugie konto)' -Icon 'E902' -Create -Action {
         param($m, $rows)
         $a = $m.Data.A
         $b = $m.Data.B
@@ -1306,7 +1365,7 @@ Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title '
         if ((Test-HTChecked $m.C.Activity) -and -not (Assert-HTGraphScopes -Scopes @('Reports.Read.All') -Feature 'Aktywność zespołów')) { return }
         Invoke-HTQuery -Module $m -Name 'Zespoły Teams' -Background -Arguments @{ Issues = (Test-HTChecked $m.C.Issues); Activity = (Test-HTChecked $m.C.Activity) } -ScriptBlock { param($a) Get-HTTeamsOverview -OnlyIssues:$a.Issues -NoActivity:(-not $a.Activity) }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Dodaj właściciela…' -Icon 'E8FA' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj właściciela…' -Icon 'E8FA' -Create -Action {
         param($m, $rows)
         $owner = Select-HTM365User -Title 'Nowy właściciel' -Prompt "Właściciel dla zespołów: $($rows.Count)."
         if (-not $owner) { return }
@@ -1322,7 +1381,7 @@ Register-HTModule -Workspace 'M365' -Category 'Teams' -Key 'm365.teams' -Title '
             'Zarchiwizowano'
         }
     }
-    Add-HTRowAction -Module $m -Text 'Przywróć z archiwum' -Icon 'E777' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć z archiwum' -Icon 'E777' -Create -Action {
         param($m, $rows)
         if (-not (Assert-HTGraphScopes -Scopes @('TeamSettings.ReadWrite.All') -Feature 'Archiwizacja zespołów')) { return }
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie zespołu' -Rows $rows -Label { param($r) $r.Zespół } -Action { param($r) Set-HTTeamArchived -TeamId $r.Id -Archived $false; 'Przywrócono' }
@@ -1373,7 +1432,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.bulk' -Ti
         $bad = @($m.Data.Bulk | Where-Object { -not $_.Valid }).Count
         if ($m.Data.Bulk.Count) { Show-HTToast "Wierszy: $($m.Data.Bulk.Count), z błędami: $bad. Popraw plik albo utwórz poprawne konta." $(if ($bad) { 'warn' } else { 'ok' }) 6 }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz poprawne konta' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz poprawne konta' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $valid = @($m.Data.Bulk | Where-Object { $_.Valid })
         if (-not $valid.Count) { Show-HTWarning 'Najpierw wczytaj i sprawdź plik CSV (brak poprawnych wierszy).'; return }
@@ -1460,7 +1519,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.onedrive'
     $m.C.GrantTo = Add-HTTextBox -Parent $row -Width 300 -Placeholder 'Dla (UPN, puste - przełożony z Entra ID)'
     Add-HTLabel -Parent $row -Text 'Odbierz po (dni, 0 - nie):' | Out-Null
     $m.C.Days = Add-HTNumeric -Parent $row -Value 30 -Minimum 0 -Maximum 365
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj dostęp' -Icon 'E8FA' -Primary -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj dostęp' -Icon 'E8FA' -Primary -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }

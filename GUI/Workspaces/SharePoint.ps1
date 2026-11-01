@@ -44,6 +44,118 @@ $panel.pTree.AddHandler([System.Windows.Controls.Primitives.ButtonBase]::ClickEv
 function Get-HTSPNodeLabel { param($n) [string]$n.ServerRelativeUrl }
 
 #region Uprawnienia
+#region Podmioty uprawnień: grupy SharePoint i grupy Microsoft 365 / zabezpieczeń (Entra ID)
+$script:SPPrincipalTypes = @('Użytkownik lub grupa zabezpieczeń (e-mail)', 'Grupa SharePoint', 'Grupa Microsoft 365 / zabezpieczeń (Entra ID)')
+$script:SPEntraGroups = @{}
+
+function New-HTSPGroupInteractive {
+    # Nowa grupa SharePoint witryny (formularz, potwierdzenie, utworzenie, wpis do podsumowania). Zwraca nazwę albo $null.
+    if (-not (Assert-HTConnection -Service 'SharePoint')) { return $null }
+    if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa SharePoint')) { return $null }
+    $none = '(bez uprawnień do witryny)'
+    $roles = @($none) + @(Get-HTSPRoleDefinitions)
+    $form = Show-HTFormDialog -Title 'Nowa grupa SharePoint' -Icon 'E902' -OkText 'Utwórz' -Fields @(
+        @{ Name = 'Title'; Label = 'Nazwa'; Required = $true }
+        @{ Name = 'Description'; Label = 'Opis' }
+        @{ Name = 'Role'; Label = 'Poziom uprawnień grupy do całej witryny'; Type = 'Combo'; Options = $roles; Hint = 'Bez uprawnień - grupę można potem dodać do wybranych bibliotek i folderów (np. w strukturze folderów).' }
+        @{ Name = 'Members'; Label = 'Członkowie (e-mail, jeden w linii)'; Type = 'Multiline'; Height = 80 }
+    )
+    if (-not $form) { return $null }
+    $title = ([string]$form.Title).Trim()
+    if (-not (Confirm-HTChange -Name 'Nowa grupa SharePoint' -Labels @($title) -Summary @(Get-HTPendingFormSummary) -Confirm "Utworzyć grupę SharePoint $title?")) { return $null }
+    Set-HTBusy -Busy $true -Text "Tworzenie grupy $title…"
+    try {
+        $members = @(Split-HTInputList $form.Members)
+        New-HTSPGroup -Title $title -Description $form.Description -Members $members | Out-Null
+        if ($form.Role -and $form.Role -ne $none) { Set-HTSPGroupWebRole -Group $title -Role $form.Role }
+        $details = "członków: $($members.Count)$(if ($form.Role -and $form.Role -ne $none) { ", witryna: $($form.Role)" })"
+        Add-HTOperationRecord -Operation 'Nowa grupa SharePoint' -Object $title -Details $details -Module 'Grupy SharePoint'
+        Show-HTToast "Utworzono grupę SharePoint $title." 'ok'
+        return $title
+    }
+    catch {
+        Add-HTOperationRecord -Operation 'Nowa grupa SharePoint' -Object $title -Status 'Błąd' -Details $_.Exception.Message -Module 'Grupy SharePoint'
+        Show-HTError -Text "Nie utworzono grupy SharePoint $title." -ErrorObject $_
+        return $null
+    }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+}
+
+function Add-HTSPFormPrincipal {
+    # Podmiot dopisany do formularza uprawnień; zmiana rodzaju podmiotu zastępuje wcześniej wpisane podmioty
+    param([Parameter(Mandatory)]$Window, [Parameter(Mandatory)][string]$Text, [Parameter(Mandatory)][string]$Type)
+    $typeBox = $Window.Tag.Controls['Type'].Control
+    $box = $Window.Tag.Controls['Principal'].Control
+    $sameType = [string]$typeBox.SelectedItem -eq $Type
+    $typeBox.SelectedItem = $Type
+    $current = if ($sameType) { @(([string]$box.Text) -split '[;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
+    $box.Text = (@($current) + $Text | Select-Object -Unique) -join '; '
+}
+
+function Select-HTSPEntraGroups {
+    # Wybór grup Microsoft 365 / zabezpieczeń (Entra ID) do formularza uprawnień SharePoint
+    param([Parameter(Mandatory)]$Window)
+    if (-not (Assert-HTConnection -Service 'Graph')) { return }
+    Set-HTBusy -Busy $true -Text 'Pobieranie grup Microsoft 365…'
+    try { $groups = @(Get-HTM365Groups | Where-Object { $_.Type -ne 'Dystrybucyjna' }) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    $columns = @(@{ Text = 'Nazwa'; Property = 'DisplayName' }, @{ Text = 'Typ'; Property = 'Type' }, @{ Text = 'E-mail'; Property = 'Mail' }, @{ Text = 'Opis'; Property = 'Description' })
+    $selected = @(Show-HTSelectionDialog -Title 'Grupy Microsoft 365 / zabezpieczeń' -Prompt 'Grupy, które dostaną uprawnienia (członkowie grupy - także przyszli - mają dostęp).' -Items $groups -Columns $columns -MultiSelect -Icon 'E902')
+    foreach ($g in @($selected | Where-Object { $_ })) {
+        $script:SPEntraGroups[([string]$g.DisplayName).ToLowerInvariant()] = $g
+        Add-HTSPFormPrincipal -Window $Window -Text ([string]$g.DisplayName) -Type $script:SPPrincipalTypes[2]
+    }
+}
+
+function Get-HTSPPrincipalFormFields {
+    # Pola formularza uprawnień: rodzaj podmiotu, podmioty, przyciski wyboru i tworzenia grup
+    param([string[]]$SharePointGroups = @(), [string]$Label = 'Podmiot (e-mail, login albo nazwa grupy; kilka - średnik)')
+    @{ Name = 'Type'; Label = 'Rodzaj podmiotu'; Type = 'Combo'; Options = $script:SPPrincipalTypes }
+    @{ Name = 'Principal'; Label = $Label; Type = 'Combo'; Editable = $true; Options = $SharePointGroups; Required = $true }
+    @{ Type = 'Buttons'; Buttons = @(
+            @{ Text = 'Grupa z Microsoft 365…'; Icon = 'E902'; ToolTip = 'Grupa zabezpieczeń albo Microsoft 365 z tenanta (Entra ID)'; OnClick = { param($w) Select-HTSPEntraGroups -Window $w } }
+            @{ Text = 'Nowa grupa Microsoft 365…'; Icon = 'E710'; Create = $true; ToolTip = 'Utwórz grupę zabezpieczeń albo Microsoft 365 i nadaj jej uprawnienia'; OnClick = {
+                    param($w)
+                    $g = New-HTM365GroupInteractive
+                    if ($g) { $script:SPEntraGroups[([string]$g.DisplayName).ToLowerInvariant()] = $g; Add-HTSPFormPrincipal -Window $w -Text ([string]$g.DisplayName) -Type $script:SPPrincipalTypes[2] }
+                }
+            }
+            @{ Text = 'Nowa grupa SharePoint…'; Icon = 'E710'; Create = $true; ToolTip = 'Utwórz grupę SharePoint witryny i nadaj jej uprawnienia'; OnClick = {
+                    param($w)
+                    $title = New-HTSPGroupInteractive
+                    if ($title) { Add-HTSPFormPrincipal -Window $w -Text $title -Type $script:SPPrincipalTypes[1] }
+                }
+            }
+        )
+    }
+}
+
+function Resolve-HTSPFormPrincipals {
+    <#
+        Podmioty z formularza uprawnień: @{ Type (User / SharePointGroup); Items = @(@{ Name; Login }) }. Grupy Entra ID
+        (trzeci rodzaj) - login grupy (Get-HTSPGroupClaim) z wybranych w formularzu albo wyszukane po nazwie.
+    #>
+    param([Parameter(Mandatory)]$Form)
+    $names = @(([string]$Form.Principal) -split '[;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $kind = [string]$Form.Type
+    if ($kind -eq $script:SPPrincipalTypes[1]) { return @{ Type = 'SharePointGroup'; Items = @($names | ForEach-Object { @{ Name = $_; Login = $_ } }) } }
+    if ($kind -ne $script:SPPrincipalTypes[2]) { return @{ Type = 'User'; Items = @($names | ForEach-Object { @{ Name = $_; Login = $_ } }) } }
+    $all = $null
+    $items = foreach ($n in $names) {
+        $g = $script:SPEntraGroups[$n.ToLowerInvariant()]
+        if (-not $g) {
+            if (-not $Global:ConnectedToGraphAPI) { throw "Grupa «$n»: połącz się z Microsoft 365 albo wybierz grupę przyciskiem «Grupa z Microsoft 365…»." }
+            if ($null -eq $all) { $all = @(Get-HTM365Groups) }
+            $found = @($all | Where-Object { [string]$_.DisplayName -ieq $n })
+            if ($found.Count -eq 0) { throw "Nie znaleziono grupy Microsoft 365 / zabezpieczeń «$n»." }
+            if ($found.Count -gt 1) { throw "Kilka grup o nazwie «$n» - wybierz właściwą przyciskiem «Grupa z Microsoft 365…»." }
+            $g = $found[0]
+        }
+        @{ Name = $n; Login = (Get-HTSPGroupClaim -Group $g) }
+    }
+    return @{ Type = 'User'; Items = @($items) }
+}
+#endregion
+
 Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.perms' -Title 'Uprawnienia' -Icon 'E8D7' `
     -Description 'Kto ma dostęp do biblioteki / folderu i czy uprawnienia są dziedziczone. Nadawanie i odbieranie uprawnień, zarządzanie dziedziczeniem.' -Build {
     param($m)
@@ -57,7 +169,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.perms
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -67,18 +179,18 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.perms
             $groups = @(Get-HTSPGroups | ForEach-Object { $_.Title })
         }
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
-        $form = Show-HTFormDialog -Title 'Nadaj uprawnienia' -Description "Obiekty: $($targets.Count). Nadanie uprawnień obiektowi z dziedziczeniem przerywa dziedziczenie." -Icon 'E8D7' -OkText 'Nadaj' -Fields @(
-            @{ Name = 'Type'; Label = 'Rodzaj podmiotu'; Type = 'Combo'; Options = @('Użytkownik lub grupa zabezpieczeń (e-mail)', 'Grupa SharePoint') }
-            @{ Name = 'Principal'; Label = 'Podmiot (e-mail, login lub nazwa grupy SharePoint; kilka - średnik)'; Type = 'Combo'; Editable = $true; Options = $groups; Required = $true }
+        $form = Show-HTFormDialog -Title 'Nadaj uprawnienia' -Description "Obiekty: $($targets.Count). Nadanie uprawnień obiektowi z dziedziczeniem przerywa dziedziczenie." -Icon 'E8D7' -OkText 'Nadaj' -Width 640 -Fields @(
+            @(Get-HTSPPrincipalFormFields -SharePointGroups $groups)
             @{ Name = 'Role'; Label = 'Poziom uprawnień'; Type = 'Combo'; Options = $roles }
         )
         if (-not $form) { return }
-        $type = if ($form.Type -like 'Grupa SharePoint*') { 'SharePointGroup' } else { 'User' }
-        $principals = @(([string]$form.Principal) -split '[;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        try { $resolved = Resolve-HTSPFormPrincipals -Form $form } catch { Show-HTWarning $_.Exception.Message -Title 'Nadaj uprawnienia'; return }
+        $type = $resolved.Type
+        $principals = @($resolved.Items)
         Invoke-HTTargetAction -Module $m -Name 'Nadanie uprawnień' -Targets $targets -Label { param($t) Get-HTSPNodeLabel $t } -Action {
             param($t)
-            foreach ($p in $principals) { Grant-HTSPPermission -Node $t -Principal $p -PrincipalType $type -Role $form.Role }
-            "$($principals -join ', '): $($form.Role)"
+            foreach ($p in $principals) { Grant-HTSPPermission -Node $t -Principal $p.Login -PrincipalType $type -Role $form.Role }
+            "$(@($principals | ForEach-Object { $_.Name }) -join ', '): $($form.Role)"
         }
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Dziedziczenie'
@@ -141,7 +253,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.newfo
     param($m)
     $row = Add-HTToolbarRow -Module $m -Title 'Nazwa folderu'
     $m.C.Name = Add-HTTextBox -Parent $row -Width 280
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz' -Icon 'E8F4' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz' -Create -NoRowMenu -Icon 'E8F4' -Primary -OnClick {
         param($m)
         $name = $m.C.Name.Text.Trim()
         if (-not $name) { Show-HTWarning 'Podaj nazwę folderu.'; return }
@@ -169,7 +281,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.recyc
         $by = $m.C.By.Text.Trim()
         Invoke-HTQuery -Module $m -Name 'Kosz witryny' -ScriptBlock { Get-HTSPRecycleBinItems -Days $days -DeletedBy $by }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Create -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie z kosza' -Rows $rows -Confirm 'Przywrócić zaznaczone elementy do pierwotnej lokalizacji?' -Label { param($r) "$($r.Lokalizacja)/$($r.Nazwa)" } `
             -Action { param($r) Restore-HTSPRecycleBinItem -Id $r.Id } -Refresh { param($m) Invoke-HTModulePrimary $m }
@@ -188,24 +300,9 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż grupy' -Icon 'E902' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy SharePoint' -ScriptBlock { Get-HTSPGroups | ForEach-Object { [PSCustomObject]@{ Nazwa = $_.Title; Właściciel = $_.Owner; Opis = $_.Description; Id = $_.Id } } } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
-        if (-not (Assert-HTConnection -Service 'SharePoint')) { return }
-        $none = '(bez uprawnień do witryny)'
-        $roles = @($none) + @(Get-HTSPRoleDefinitions)
-        $form = Show-HTFormDialog -Title 'Nowa grupa SharePoint' -Icon 'E902' -OkText 'Utwórz' -Fields @(
-            @{ Name = 'Title'; Label = 'Nazwa'; Required = $true }
-            @{ Name = 'Description'; Label = 'Opis' }
-            @{ Name = 'Role'; Label = 'Poziom uprawnień grupy do całej witryny'; Type = 'Combo'; Options = $roles; Hint = 'Bez uprawnień - grupę można potem dodać do wybranych bibliotek i folderów (np. w strukturze folderów).' }
-            @{ Name = 'Members'; Label = 'Członkowie (e-mail, jeden w linii)'; Type = 'Multiline'; Height = 80 }
-        )
-        if (-not $form) { return }
-        if (-not (Confirm-HTChange -Name 'Tworzenie grupy' -Labels @([string]$form.Title) -Confirm "Utworzyć grupę SharePoint $($form.Title)?")) { return }
-        Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -Record Change -ScriptBlock {
-            New-HTSPGroup -Title $form.Title -Description $form.Description -Members @(Split-HTInputList $form.Members) | Out-Null
-            if ($form.Role -and $form.Role -ne $none) { Set-HTSPGroupWebRole -Group $form.Title -Role $form.Role }
-            [PSCustomObject]@{ Nazwa = $form.Title; Właściciel = ''; Opis = "Utworzono$(if ($form.Role -ne $none) { " ($($form.Role))" })"; Id = '' }
-        }
+        if (New-HTSPGroupInteractive) { Invoke-HTModulePrimary $m }
     } | Out-Null
     Add-HTRowAction -Module $m -Text 'Członkowie' -Icon 'E716' -Action {
         param($m, $rows)
@@ -213,7 +310,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
         $members = @(Get-HTSPGroupMembers -Group $g.Nazwa)
         Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków" -Data $members -ExportName "sp_$($g.Nazwa)"
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj członków…' -Icon 'E8FA' -Create -Action {
         param($m, $rows)
         $g = @($rows)[0]
         $text = Show-InputBox -Title "Dodaj do: $($g.Nazwa)" -Prompt 'Adresy e-mail lub loginy (jeden w linii):' -Multiline -Icon 'E8FA'
@@ -284,7 +381,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.app' -Tit
     param($m)
     $m.SecretColumns = @('Wartość')
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz Client ID…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz Client ID…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         $site = if ($Global:ConnectedToSharepointPnP) { (Get-PnPConnection).Url } else { $Global:DefaultSharepointSite }
         $result = Show-HTPnPAppRegistrationDialog -SiteUrl $site
@@ -298,7 +395,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.app' -Tit
             )
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowy klucz tajny…' -Icon 'E8D7' -ToolTip 'Client secret dla istniejącej aplikacji (Microsoft Graph)' -OnClick { param($m) Show-HTAppSecretDialog } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowy klucz tajny…' -Create -NoRowMenu -Icon 'E8D7' -ToolTip 'Client secret dla istniejącej aplikacji (Microsoft Graph)' -OnClick { param($m) Show-HTAppSecretDialog } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Bieżący Client ID' -Icon 'E946' -OnClick {
         param($m)
         Reset-HTResults -Module $m
@@ -550,7 +647,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.structu
     $m.C.Mode = Add-HTSegmented -Parent $row -Items @('W zaznaczonych bibliotekach / folderach', 'W witrynie (1. poziom - biblioteki)')
     $row2 = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row2 -Module $m -Text 'Struktura…' -Icon 'E8B7' -Primary -OnClick { param($m) $script:SPStructureModule = $m; Show-HTSPStructureDialog -Module $m } | Out-Null
-    Add-HTButton -Parent $row2 -Module $m -Text 'Utwórz według podglądu' -Icon 'E768' -Danger -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Utwórz według podglądu' -Icon 'E768' -Create -OnClick {
         param($m)
         $pending = $m.Data.PendingStructure
         if (-not $pending) { Show-HTWarning 'Najpierw kliknij «Struktura…» i wykonaj podgląd.'; return }
@@ -565,7 +662,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.newlib'
     -Description 'Nowe biblioteki dokumentów albo listy - jedna lub wiele naraz: adres bez polskich znaków, menu witryny, historia wersji z limitem, wersje robocze, wymagane wyewidencjonowanie, zatwierdzanie, kolumny (np. «Klient: Tekst», «Status: Wybór [Nowy, W toku]») i własne uprawnienia.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz biblioteki…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz biblioteki…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'SharePoint')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa biblioteka')) { return }
@@ -683,7 +780,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.columns
             $cols
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj kolumny…' -Icon 'E710' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj kolumny…' -Icon 'E710' -Create -OnClick {
         param($m)
         $lists = @(Get-HTChangeTargets -Module $m | Group-Object ListTitle | ForEach-Object { $_.Group[0] })
         if ($lists.Count -eq 0) { return }
@@ -737,7 +834,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Struktura' -Key 'sp.templat
             }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Importuj z pliku…' -Icon 'E8E5' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Importuj z pliku…' -Create -NoRowMenu -Icon 'E8E5' -OnClick {
         param($m)
         $path = Select-HTOpenFile -Title 'Szablon struktury (plik tekstowy)' -Filter 'Pliki tekstowe (*.txt)|*.txt|Wszystkie pliki (*.*)|*.*'
         if (-not $path) { return }
@@ -792,24 +889,23 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Uprawnienia' -Key 'sp.sitep
             catch { [PSCustomObject]@{ Rodzaj = 'Administrator kolekcji'; Podmiot = '(brak uprawnień do odczytu)'; Typ = ''; Uprawnienia = $_.Exception.Message; Login = ''; __flag = 'muted' } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Create -NoRowMenu -Icon 'E8FA' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'SharePoint')) { return }
         Set-HTBusy -Busy $true -Text 'Poziomy uprawnień i grupy…'
         try { $roles = @(Get-HTSPRoleDefinitions); $groups = @(Get-HTSPGroups | ForEach-Object { $_.Title }) }
         catch { Set-HTBusy -Busy $false -Text 'Błąd'; Show-HTError 'Nie odczytano poziomów uprawnień.' $_; return }
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
-        $form = Show-HTFormDialog -Title 'Uprawnienia do witryny' -Icon 'E83D' -OkText 'Nadaj' -Fields @(
-            @{ Name = 'Type'; Label = 'Rodzaj podmiotu'; Type = 'Combo'; Options = @('Użytkownik lub grupa zabezpieczeń (e-mail)', 'Grupa SharePoint') }
-            @{ Name = 'Principal'; Label = 'Podmioty (kilka - średnik)'; Type = 'Combo'; Editable = $true; Options = $groups; Required = $true }
+        $form = Show-HTFormDialog -Title 'Uprawnienia do witryny' -Icon 'E83D' -OkText 'Nadaj' -Width 640 -Fields @(
+            @(Get-HTSPPrincipalFormFields -SharePointGroups $groups -Label 'Podmioty (kilka - średnik)')
             @{ Name = 'Role'; Label = 'Poziom uprawnień'; Type = 'Combo'; Options = $roles }
         )
         if (-not $form) { return }
-        $type = if ($form.Type -like 'Grupa SharePoint*') { 'SharePointGroup' } else { 'User' }
-        $principals = @(([string]$form.Principal) -split '[;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        Invoke-HTRowAction -Module $m -Name 'Uprawnienia do witryny' -Rows $principals -Label { param($p) $p } -Action { param($p) Grant-HTSPWebPermission -Principal $p -PrincipalType $type -Role $form.Role; $form.Role } -Refresh { param($m) Invoke-HTModulePrimary $m }
+        try { $resolved = Resolve-HTSPFormPrincipals -Form $form } catch { Show-HTWarning $_.Exception.Message -Title 'Uprawnienia do witryny'; return }
+        $type = $resolved.Type
+        Invoke-HTRowAction -Module $m -Name 'Uprawnienia do witryny' -Rows @($resolved.Items) -Label { param($p) $p.Name } -Action { param($p) Grant-HTSPWebPermission -Principal $p.Login -PrincipalType $type -Role $form.Role; $form.Role } -Refresh { param($m) Invoke-HTModulePrimary $m }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj administratora kolekcji…' -Icon 'E7EF' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj administratora kolekcji…' -Create -NoRowMenu -Icon 'E7EF' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'SharePoint')) { return }
         $users = @(Split-HTInputList (Show-InputBox -Title 'Administrator kolekcji witryn' -Prompt 'Adresy e-mail (jeden w linii). Administrator ma pełny dostęp do całej witryny i jej podwitryn:' -Multiline -Icon 'E7EF'))
@@ -970,7 +1066,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.newsite' 
     -Description 'Nowa witryna zespołu (z grupą Microsoft 365, gotowa do Teams), witryna zespołu bez grupy albo witryna komunikacyjna: nazwa, adres, właściciele, język, prywatność. Od razu można połączyć się z nią i zastosować szablon struktury (biblioteki, foldery, uprawnienia).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz witrynę…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz witrynę…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'SharePoint')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa witryna')) { return }

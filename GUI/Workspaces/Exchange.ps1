@@ -156,7 +156,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.perms'
             foreach ($p in @(Get-HTMailboxPermissions -Identity $t.PrimarySmtpAddress)) { [PSCustomObject]@{ Uprawnienie = $p.Type; Użytkownik = $p.User; Prawa = $p.AccessRights } }
         }
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $targets = @(Get-HTChangeTargets -Module $m)
         if ($targets.Count -eq 0) { return }
@@ -248,7 +248,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.calend
 
 #region Poczta
 Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' -Title 'Autoodpowiedź' -Icon 'E8BD' `
-    -Description 'Odpowiedzi automatyczne (poza biurem): podgląd, włączenie, zaplanowanie w czasie i wyłączenie.' -Build {
+    -Description 'Odpowiedzi automatyczne (poza biurem): podgląd, włączenie, zaplanowanie w czasie, wyłączenie i wyczyszczenie treści.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż stan' -Icon 'E8A1' -Primary -OnClick {
@@ -286,6 +286,10 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
     Add-HTButton -Parent $row -Module $m -Text 'Wyłącz' -Icon 'E711' -Danger -OnClick {
         param($m)
         Invoke-HTTargetAction -Module $m -Name 'Wyłączenie autoodpowiedzi' -Summary 'Tryb: Disabled (odpowiedzi automatyczne wyłączone)' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Set-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress -State Disabled; 'Wyłączona' }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Wyczyść' -Icon 'E894' -Danger -ToolTip 'Wyłącza autoodpowiedź i usuwa jej treść (dla osób z firmy i spoza firmy) - niezależnie od tego, czy jest włączona' -OnClick {
+        param($m)
+        Invoke-HTTargetAction -Module $m -Name 'Wyczyszczenie autoodpowiedzi' -Summary @('Tryb: Disabled', 'Treść wewnętrzna i zewnętrzna: usunięta') -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Clear-HTMailboxAutoReply -Identity $t.PrimarySmtpAddress; 'Wyłączona, treść usunięta' }
     } | Out-Null
 }
 
@@ -370,7 +374,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.trace' -Tit
 
 #region Grupy i adresy
 Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.aliases' -Title 'Adresy e-mail' -Icon 'E910' `
-    -Description 'Aliasy (dodatkowe adresy) skrzynki. Dla skrzynek synchronizowanych z AD adresy zmienia się w lokalnym AD (proxyAddresses).' -Build {
+    -Description 'Aliasy (dodatkowe adresy) skrzynki: dodawanie, usuwanie i zmiana adresu głównego. Adresy systemowe (SIP - Teams, SPO - SharePoint, X500) są tylko do podglądu. Dla skrzynek synchronizowanych z AD adresy zmienia się w lokalnym AD (proxyAddresses).' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż adresy' -Icon 'E8A1' -Primary -OnClick {
@@ -378,7 +382,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
         Invoke-HTTargetQuery -Module $m -Name 'Adresy e-mail' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTMailboxAddresses -Identity $t.PrimarySmtpAddress }
     } | Out-Null
     $m.C.Alias = Add-HTTextBox -Parent $row -Width 260 -Placeholder 'nowy.alias@domena.pl'
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj alias' -Icon 'E710' -Danger -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj alias' -Icon 'E710' -Create -OnClick {
         param($m)
         $alias = $m.C.Alias.Text.Trim()
         $t = @(Get-HTChangeTargets -Module $m -Single)[0]
@@ -387,7 +391,13 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.ali
     } | Out-Null
     Add-HTRowAction -Module $m -Text 'Usuń adres' -Icon 'E74D' -Danger -Action {
         param($m, $rows)
-        Invoke-HTRowAction -Module $m -Name 'Usunięcie adresu' -Rows @($rows | Where-Object { $_.Wartość }) -Confirm 'Usunąć zaznaczone adresy?' -Label { param($r) "$($r.Obiekt): $($r.Adres)" } `
+        # Tylko dodatkowe adresy SMTP (aliasy): adres główny zmienia się przez «Ustaw jako adres główny», a adresy systemowe
+        # (SIP - Teams / Skype, SPO - SharePoint, X500 - migracje) tworzy i potrzebuje Microsoft 365
+        $smtp = @($rows | Where-Object { $_ -and $_.Wartość -and [string]$_.Typ -eq 'SMTP' -and -not $_.Główny })
+        $skipped = @($rows | Where-Object { $_ -and $smtp -notcontains $_ })
+        if ($skipped.Count) { Write-Log -Message "Usunięcie adresu - pominięto (adres główny albo systemowy): $(@($skipped | ForEach-Object { "$($_.Typ) $($_.Adres)" }) -join ', ')" -Type 'Warn' }
+        if (-not $smtp.Count) { Show-HTWarning 'Usunąć można tylko dodatkowe adresy SMTP (aliasy). Adres główny zmień przez «Ustaw jako adres główny». Adresów systemowych (SIP - Teams, SPO - SharePoint, X500) nie usuwaj - tworzy je i używa Microsoft 365.' -Title 'Adresy e-mail'; return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie adresu' -Rows $smtp -Confirm "Usunąć zaznaczone aliasy?$(if ($skipped.Count) { " Pominięte (główny albo systemowy): $($skipped.Count)." })" -Label { param($r) "$($r.Obiekt): $($r.Adres)" } `
             -Action { param($r) Remove-HTMailboxAddress -Identity $r.__target.PrimarySmtpAddress -Value $r.Wartość } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
     Add-HTRowAction -Module $m -Text 'Ustaw jako adres główny' -Icon 'E8FB' -Danger -Action {
@@ -404,7 +414,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Wszystkie grupy' -Icon 'E902' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dystrybucyjne' -ScriptBlock { Get-HTDistributionGroups } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Icon 'E710' -OnClick { param($m) New-HTDistributionGroupInteractive -Module $m } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa…' -Create -NoRowMenu -Icon 'E710' -OnClick { param($m) New-HTDistributionGroupInteractive -Module $m } | Out-Null
     Add-HTButton -Parent $row -Module $m -Text 'Grupy zaznaczonych skrzynek' -Icon 'E716' -OnClick {
         param($m)
         Invoke-HTTargetQuery -Module $m -Name 'Przynależność do grup' -AlwaysShowObject -Label { param($t) Get-HTMailboxLabel $t } -Action {
@@ -419,7 +429,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         try { $members = @(Get-HTDistributionGroupMembers -Identity $g.Identity) } finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Członkowie: $($g.Nazwa)" -Description "$($members.Count) członków" -Data $members -ExportName "czlonkowie_$($g.Nazwa)"
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj zaznaczone skrzynki do grupy' -Icon 'E710' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj zaznaczone skrzynki do grupy' -Icon 'E710' -Create -Action {
         param($m, $rows)
         $mailboxes = @(Get-HTTargets -Module $m)
         if ($mailboxes.Count -eq 0) { return }
@@ -455,7 +465,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
         $plan = ConvertTo-HTMailboxSettingPlan -Changes @($changes)
         Invoke-HTRowAction -Module $m -Name 'Ustawienia grupy' -Rows $groups -NoConfirm -Label { param($r) $r.Nazwa } -Action { param($r) Invoke-HTMailboxSettingPlan -Identity $r.Identity -Plan $plan } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
-    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Dodaj członków (adresy)…' -Icon 'E8FA' -Create -Action {
         param($m, $rows)
         $g = @($rows | Where-Object { $_.Identity })[0]
         if (-not $g) { return }
@@ -482,7 +492,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dl'
 Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.quarantine' -Title 'Kwarantanna' -Icon 'EA18' -Service 'Exchange' `
     -Description 'Wiadomości zatrzymane przez filtr spamu / phishingu / malware. Zwolnienie, podgląd treści i usunięcie (prawy przycisk).' -Build {
     param($m)
-    $row = Add-HTToolbarRow -Module $m -Title 'Zakres'
+    $row = Add-HTToolbarRow -Module $m
     $m.C.Scope = Add-HTSegmented -Parent $row -Items @('Zaznaczone skrzynki', 'Cała organizacja')
     Add-HTLabel -Parent $row -Text 'Dni:' | Out-Null
     $m.C.Days = Add-HTNumeric -Parent $row -Value 7 -Minimum 1 -Maximum 30
@@ -532,7 +542,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Zgodność' -Key 'exo.recover
         $subject = $m.C.Subject.Text.Trim()
         Invoke-HTTargetQuery -Module $m -Name 'Elementy do odzyskania' -Label { param($t) Get-HTMailboxLabel $t } -Action { param($t) Get-HTRecoverableItems -Identity $t.PrimarySmtpAddress -Days $days -SubjectContains $subject }
     } | Out-Null
-    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Przywróć' -Icon 'E777' -Create -Action {
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Przywrócenie elementów' -Rows @($rows | Where-Object { $_.EntryID }) -Confirm 'Przywrócić zaznaczone elementy do pierwotnych folderów?' -Label { param($r) "$($r.Skrzynka): $($r.Temat)" } `
             -Action { param($r) Restore-HTRecoverableItem -Identity $r.Skrzynka -EntryID $r.EntryID }
@@ -740,7 +750,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Przepływ poczty' -Key 'exo.t
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pobierz listę' -Icon 'E72C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Dozwoleni i zablokowani' -ScriptBlock { Get-HTTenantAllowBlockList } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Dodaj wpisy…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Dodaj wpisy…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         $form = Show-HTFormDialog -Title 'Lista dozwolonych i zablokowanych' -Icon 'E8F8' -OkText 'Dodaj' -Fields @(
             @{ Name = 'Type'; Label = 'Rodzaj'; Type = 'Combo'; Options = @('Nadawca / domena', 'Adres URL', 'Plik (SHA256)') }
@@ -999,7 +1009,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.newmailbo
     -Description 'Tworzenie skrzynek współdzielonych, sal konferencyjnych i zasobów - pojedynczo albo wiele naraz - z pełnym dostępem i «Wyślij jako» dla osób, kopiami wiadomości wysłanych przez delegatów, danymi sali (pojemność, budynek, piętro, miasto) i listą sal. Skrzynka współdzielona do 50 GB nie wymaga licencji.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
-    Add-HTButton -Parent $row -Module $m -Text 'Utwórz skrzynki…' -Icon 'E710' -Primary -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz skrzynki…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa skrzynka')) { return }
@@ -1061,7 +1071,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Skrzynka' -Key 'exo.newmailbo
         }
         Show-HTToast 'Nowe skrzynki pojawią się na liście po lewej po odświeżeniu (replikacja trwa do kilku minut).' 'info' 8
     } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa lista sal…' -Icon 'E8FD' -ToolTip 'Lista sal grupuje sale (np. budynek) w wyszukiwarce sal Outlooka' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa lista sal…' -Create -NoRowMenu -Icon 'E8FD' -ToolTip 'Lista sal grupuje sale (np. budynek) w wyszukiwarce sal Outlooka' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa lista sal')) { return }
@@ -1120,7 +1130,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.dyn
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż grupy' -Icon 'E71C' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Grupy dynamiczne' -ScriptBlock { Get-HTDynamicGroups } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowa grupa dynamiczna…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowa grupa dynamiczna')) { return }
@@ -1178,7 +1188,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Grupy i adresy' -Key 'exo.con
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż kontakty' -Icon 'E77B' -Primary -OnClick { param($m) Invoke-HTQuery -Module $m -Name 'Kontakty zewnętrzne' -ScriptBlock { Get-HTMailContacts } } | Out-Null
-    Add-HTButton -Parent $row -Module $m -Text 'Nowe kontakty…' -Icon 'E710' -OnClick {
+    Add-HTButton -Parent $row -Module $m -Text 'Nowe kontakty…' -Create -NoRowMenu -Icon 'E710' -OnClick {
         param($m)
         if (-not (Assert-HTConnection -Service 'Exchange')) { return }
         if (-not (Assert-HTWriteAllowed -Operation 'Nowe kontakty')) { return }
@@ -1257,7 +1267,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.folder
         finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
         Show-HTDataViewer -Title "Uprawnienia: $($f.Folder)" -Description $f.Skrzynka -Data $perms -ExportName 'uprawnienia_folderu' -Icon 'E8D7'
     }
-    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Danger -Action {
+    Add-HTRowAction -Module $m -Text 'Nadaj uprawnienia…' -Icon 'E8FA' -Create -Action {
         param($m, $rows)
         $folders = @($rows | Where-Object { $_.__path })
         if ($folders.Count -eq 0) { return }
@@ -1301,6 +1311,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyac
     param($m)
     $row = Add-HTToolbarRow -Module $m -Title 'Pracownik'
     $m.C.User = Add-HTTextBox -Parent $row -Width 280 -Placeholder 'adres e-mail (puste - zaznaczona skrzynka)'
+    Add-HTAddressPicker -Parent $row -Module $m -TextBox $m.C.User | Out-Null
     $m.C.Groups = Add-HTCheckBox -Parent $row -Text 'Grupy' -Checked $true
     $m.C.Calendars = Add-HTCheckBox -Parent $row -Text 'Kalendarze innych skrzynek (wolno)'
     Add-HTButton -Parent $row -Module $m -Text 'Pokaż dostęp' -Icon 'E8A1' -Primary -OnClick {
@@ -1320,8 +1331,9 @@ Register-HTModule -Workspace 'Exchange' -Category 'Uprawnienia' -Key 'exo.copyac
     } | Out-Null
     $row2 = Add-HTToolbarRow -Module $m -Title 'Następca'
     $m.C.Target = Add-HTTextBox -Parent $row2 -Width 380 -Placeholder 'adresy osób, które mają dostać dostęp (kilka - przecinek)'
+    Add-HTAddressPicker -Parent $row2 -Module $m -TextBox $m.C.Target -Multiple | Out-Null
     $m.C.AutoMap = Add-HTCheckBox -Parent $row2 -Text 'AutoMapping' -Checked $true
-    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -Danger -OnClick {
+    Add-HTButton -Parent $row2 -Module $m -Text 'Nadaj zaznaczone uprawnienia' -Icon 'E8FA' -Create -OnClick {
         param($m)
         $targetUsers = @(Split-HTInputList $m.C.Target.Text)
         if ($targetUsers.Count -eq 0) { Show-HTWarning 'Wpisz adresy osób, które mają dostać dostęp.'; return }

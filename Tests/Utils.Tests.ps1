@@ -379,3 +379,23 @@ Describe "Blok w wątku w tle (Test-HTBackgroundSafeBlock)" {
         Test-HTBackgroundSafeBlock -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeFalse
     }
 }
+
+Describe "Podpowiadanie adresów e-mail" {
+    BeforeAll { $Global:HTTestAddresses = @('jan.kowalski@firma.pl', 'jan.nowak@firma.pl', 'anna.zielinska@firma.pl', 'biuro@firma.onmicrosoft.com') }
+    AfterAll { Remove-Variable -Name HTTestAddresses -Scope Global -ErrorAction SilentlyContinue }
+    It "dopisuje końcówkę jednoznacznego adresu, zachowując wpisany tekst" {
+        Get-HTAddressCompletion -Token 'Anna' -Addresses $Global:HTTestAddresses | Should -Be 'Anna.zielinska@firma.pl'
+    }
+    It "przy kilku adresach dopisuje tylko wspólny początek" {
+        Get-HTAddressCompletion -Token 'ja' -Addresses $Global:HTTestAddresses | Should -Be 'jan.'
+        Get-HTAddressCompletion -Token 'jan.' -Addresses $Global:HTTestAddresses | Should -Be ''
+    }
+    It "po @ podpowiada domenę znanych adresów" {
+        Get-HTAddressCompletion -Token 'nowy.pracownik@fi' -Addresses $Global:HTTestAddresses | Should -Be 'nowy.pracownik@firma.'
+        Get-HTAddressCompletion -Token 'nowy@firma.p' -Addresses $Global:HTTestAddresses | Should -Be 'nowy@firma.pl'
+    }
+    It "nie podpowiada przy krótkim tekście ani bez dopasowania" {
+        Get-HTAddressCompletion -Token 'j' -Addresses $Global:HTTestAddresses | Should -Be ''
+        Get-HTAddressCompletion -Token 'xyz' -Addresses $Global:HTTestAddresses | Should -Be ''
+    }
+}
