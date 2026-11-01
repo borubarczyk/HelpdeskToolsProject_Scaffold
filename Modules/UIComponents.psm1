@@ -5296,6 +5296,8 @@ function Invoke-HTTargetQuery {
         Dla każdego obiektu docelowego wykonuje -Action { param($t) } zwracające wiersze wyników.
         Przy kilku obiektach wiersze dostają kolumnę «Obiekt»; każdy wiersz zna swój obiekt (__target).
         Błąd dla obiektu daje wiersz ze statusem «Błąd» - pozostałe obiekty są przetwarzane dalej.
+        Microsoft 365 (Graph), kilka obiektów: gdy blok używa tylko funkcji modułów (Test-HTBackgroundSafeBlock),
+        wykonuje się w wątku w tle - okno reaguje, wiersze pojawiają się na bieżąco, «Przerwij» działa od razu.
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Module,
@@ -5313,47 +5315,91 @@ function Invoke-HTTargetQuery {
     if ($Targets.Count -eq 0) { return }
     if (-not $Label) { $Label = { param($t) Get-HTTargetLabel $t } }
     $showObject = $AlwaysShowObject -or $Targets.Count -gt 1
+    $captions = @($Targets | ForEach-Object { [string](& $Label $_) })
     Reset-HTResults -Module $Module
     Set-HTBusy -Busy $true -Text "$Name…"
     if ($Targets.Count -gt 1) { Start-HTStoppable }
-    $failed = 0
-    $stoppedAt = -1
+    $state = @{ Failed = 0; Done = 0; StoppedAt = -1; AuthFailed = $false }
+    # Wiersze wyników jednego obiektu (wspólne dla wątku okna i wątku w tle)
+    $addRows = {
+        param([int]$Index, [object[]]$Items, [string]$ErrorText)
+        $t = $Targets[$Index]
+        $caption = $captions[$Index]
+        $rows = New-Object System.Collections.Generic.List[object]
+        if ($ErrorText) {
+            $state.Failed++
+            Write-Log -Message "$Name - $($caption): $ErrorText" -Type 'Warn'
+            $rows.Add([PSCustomObject][ordered]@{ Obiekt = $caption; Status = 'Błąd'; Szczegóły = $ErrorText; __target = $t; __flag = 'crit' })
+        }
+        else {
+            foreach ($r in @($Items)) {
+                if ($null -eq $r) { continue }
+                $o = [ordered]@{}
+                if ($showObject) { $o['Obiekt'] = $caption }
+                $base = if ($r -is [System.Management.Automation.PSObject]) { $r.PSObject.BaseObject } else { $r }
+                if ($base -is [System.Collections.IDictionary]) { foreach ($k in $base.Keys) { $o[[string]$k] = $base[$k] } }
+                elseif ($base -is [string] -or $base -is [System.ValueType]) { $o['Wynik'] = $base }
+                else { foreach ($p in $r.PSObject.Properties) { $o[$p.Name] = $p.Value } }
+                $o['__target'] = $t
+                $rows.Add([PSCustomObject]$o)
+            }
+        }
+        $state.Done = $Index + 1
+        if ($rows.Count -gt 0) { Add-HTResultRows -Module $Module -Objects $rows.ToArray() }
+    }
     try {
-        for ($i = 0; $i -lt $Targets.Count; $i++) {
-            if ($Targets.Count -gt 1 -and (Test-HTStopRequested)) { $stoppedAt = $i; break }
-            $t = $Targets[$i]
-            $caption = [string](& $Label $t)
-            if ($Targets.Count -gt 1) { Set-HTProgress -Value ($i + 1) -Maximum $Targets.Count -Text "$Name [$($i + 1)/$($Targets.Count)] $caption" }
-            $rows = New-Object System.Collections.Generic.List[object]
+        $background = $Targets.Count -gt 1 -and $service -eq 'Graph' -and (Test-HTBackgroundAvailable -Service 'Graph') -and (Test-HTBackgroundSafeBlock -ScriptBlock $Action -AllowedModules (@($script:BackgroundModuleNames) + 'Microsoft.Graph.Authentication'))
+        if ($background) {
+            Write-HTDebug { "$($Name): $($Targets.Count) obiekt. w wątku w tle" }
             try {
-                foreach ($r in @(& $Action $t)) {
-                    if ($null -eq $r) { continue }
-                    $o = [ordered]@{}
-                    if ($showObject) { $o['Obiekt'] = $caption }
-                    $base = if ($r -is [System.Management.Automation.PSObject]) { $r.PSObject.BaseObject } else { $r }
-                    if ($base -is [System.Collections.IDictionary]) { foreach ($k in $base.Keys) { $o[[string]$k] = $base[$k] } }
-                    elseif ($base -is [string] -or $base -is [System.ValueType]) { $o['Wynik'] = $base }
-                    else { foreach ($p in $r.PSObject.Properties) { $o[$p.Name] = $p.Value } }
-                    $o['__target'] = $t
-                    $rows.Add([PSCustomObject]$o)
+                Invoke-HTBackground -Name $Name -Arguments @{ Action = $Action.ToString(); Targets = $Targets; Labels = $captions; Name = $Name } -ScriptBlock {
+                    param($a)
+                    $run = [scriptblock]::Create($a.Action)
+                    for ($i = 0; $i -lt $a.Targets.Count; $i++) {
+                        Write-Progress -Activity $a.Name -Status "[$($i + 1)/$($a.Targets.Count)] $($a.Labels[$i])" -PercentComplete ([int](100 * $i / $a.Targets.Count))
+                        try { [PSCustomObject]@{ Index = $i; Items = @(& $run $a.Targets[$i]); Error = '' } }
+                        catch { [PSCustomObject]@{ Index = $i; Items = @(); Error = [string]$_.Exception.Message } }
+                    }
+                } -OnItem {
+                    param($item)
+                    if ($null -eq $item) { return }
+                    if ($item.Error -and $item.Error -match 'Authentication needed|Connect-MgGraph|not connected|Nie zalogowano') { $state.AuthFailed = $true }
+                    & $addRows ([int]$item.Index) @($item.Items) ([string]$item.Error)
                 }
             }
+            catch [System.OperationCanceledException] { $state.StoppedAt = $state.Done }
             catch {
-                $failed++
-                Write-Log -Message "$Name - $($caption): $($_.Exception.Message)" -Type 'Warn'
-                $rows.Add([PSCustomObject][ordered]@{ Obiekt = $caption; Status = 'Błąd'; Szczegóły = $_.Exception.Message; __target = $t; __flag = 'crit' })
+                if (-not (Test-HTBackgroundAuthError $_)) { throw }
+                $state.AuthFailed = $true
             }
-            if ($rows.Count -gt 0) { Add-HTResultRows -Module $Module -Objects $rows.ToArray() }
+            if ($state.AuthFailed) {
+                # Połączenie Graph niedostępne w wątku w tle - całość jeszcze raz w wątku okna
+                $script:Background.Disabled = $true
+                Write-Log -Message "Operacje w tle wyłączone (brak połączenia w wątku w tle) - $Name w wątku okna." -Type 'Warn'
+                Reset-HTResults -Module $Module
+                $state.Failed = 0
+                $background = $false
+            }
+        }
+        if (-not $background) {
+            for ($i = 0; $i -lt $Targets.Count; $i++) {
+                if ($Targets.Count -gt 1 -and (Test-HTStopRequested)) { $state.StoppedAt = $i; break }
+                if ($Targets.Count -gt 1) { Set-HTProgress -Value ($i + 1) -Maximum $Targets.Count -Text "$Name [$($i + 1)/$($Targets.Count)] $($captions[$i])" }
+                $items = $null
+                $errorText = ''
+                try { $items = @(& $Action $Targets[$i]) } catch { $errorText = [string]$_.Exception.Message }
+                & $addRows $i $items $errorText
+            }
         }
     }
     finally {
         if ($Targets.Count -gt 1) { Stop-HTStoppable }
         $count = $Module.Table.Rows.Count
-        $stopText = if ($stoppedAt -ge 0) { ", przerwano po $stoppedAt z $($Targets.Count) obiekt." } else { '' }
-        Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($failed) { ", błędy: $failed" })$stopText"
+        $stopText = if ($state.StoppedAt -ge 0) { ", przerwano po $($state.StoppedAt) z $($Targets.Count) obiekt." } else { '' }
+        Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($state.Failed) { ", błędy: $($state.Failed)" })$stopText"
     }
-    $stopText = if ($stoppedAt -ge 0) { " - przerwano po $stoppedAt z $($Targets.Count) obiekt." } else { '' }
-    Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($failed) { ", błędy: $failed" })$stopText" -Type $(if ($failed -or $stoppedAt -ge 0) { 'Warn' } else { 'Info' })
+    $stopText = if ($state.StoppedAt -ge 0) { " - przerwano po $($state.StoppedAt) z $($Targets.Count) obiekt." } else { '' }
+    Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($state.Failed) { ", błędy: $($state.Failed)" })$stopText" -Type $(if ($state.Failed -or $state.StoppedAt -ge 0) { 'Warn' } else { 'Info' })
 }
 
 function Get-HTSelectedResultTargets {

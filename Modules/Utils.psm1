@@ -486,6 +486,39 @@ function Select-HTDetailFields {
     return [PSCustomObject]$row
 }
 
+function Test-HTBackgroundSafeBlock {
+    <#
+        Czy blok -Action można wykonać w wątku w tle: używa tylko swoich parametrów i zmiennych, zmiennych automatycznych,
+        poleceń PowerShell i funkcji modułów z -AllowedModules (pula w tle) - bez funkcji okna (GUI) i zmiennych z otaczającego kodu.
+    #>
+    param([Parameter(Mandatory)][scriptblock]$ScriptBlock, [string[]]$AllowedModules = @())
+    $ast = $ScriptBlock.Ast
+    $known = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($n in 'true', 'false', 'null', '_', 'PSItem', 'args', 'input', 'Matches', 'this', 'PSBoundParameters', 'LASTEXITCODE') { [void]$known.Add($n) }
+    $find = { param([type]$Type) @($ast.FindAll([Func[System.Management.Automation.Language.Ast, bool]] { param($n) $n -is $Type }.GetNewClosure(), $true)) }
+    foreach ($p in (& $find ([System.Management.Automation.Language.ParameterAst]))) { [void]$known.Add($p.Name.VariablePath.UserPath) }
+    foreach ($f in (& $find ([System.Management.Automation.Language.ForEachStatementAst]))) { [void]$known.Add($f.Variable.VariablePath.UserPath) }
+    foreach ($a in (& $find ([System.Management.Automation.Language.AssignmentStatementAst]))) {
+        foreach ($v in @($a.Left.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true))) { [void]$known.Add($v.VariablePath.UserPath) }
+    }
+    foreach ($v in (& $find ([System.Management.Automation.Language.VariableExpressionAst]))) {
+        $path = $v.VariablePath
+        if ($path.IsDriveQualified -and $path.DriveName -eq 'env') { continue }
+        if (-not $known.Contains($path.UserPath)) { return $false }
+    }
+    foreach ($c in (& $find ([System.Management.Automation.Language.CommandAst]))) {
+        $name = $c.GetCommandName()
+        if (-not $name) { return $false }
+        $cmd = @(Get-Command -Name $name -ErrorAction SilentlyContinue)[0]
+        if ($cmd -and $cmd.CommandType -eq 'Alias') { $cmd = $cmd.ResolvedCommand }
+        if (-not $cmd) { return $false }
+        if ($cmd.CommandType -eq 'Cmdlet' -and "$($cmd.ModuleName)" -like 'Microsoft.PowerShell.*') { continue }
+        if ($cmd.CommandType -eq 'Function' -and $AllowedModules -contains "$($cmd.ModuleName)") { continue }
+        return $false
+    }
+    return $true
+}
+
 # Liczba dni od podanej daty (null, gdy brak daty)
 function Get-HTDaysSince {
     param ([AllowNull()][object]$Date)

@@ -360,3 +360,22 @@ Describe "Wybór pól ze szczegółów (Sprawdź stan)" {
         $row.Brak | Should -BeNullOrEmpty
     }
 }
+
+Describe "Blok w wątku w tle (Test-HTBackgroundSafeBlock)" {
+    BeforeAll {
+        function global:Get-HTGuiOnlyThing { 1 }
+        $Global:HTTestForm = @{ X = 1 }
+    }
+    AfterAll { Remove-Item function:global:Get-HTGuiOnlyThing -ErrorAction SilentlyContinue }
+    It "dopuszcza bloki z parametrami, zmiennymi lokalnymi, poleceniami PowerShell i funkcjami modułów puli" {
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeTrue
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $x = @($t.A | ForEach-Object { $_ }); foreach ($y in $x) { [PSCustomObject]@{ A = $y; U = $env:USERNAME } } } | Should -BeTrue
+    }
+    It "odrzuca funkcje okna, zmienne z otaczającego kodu, globalne i wywołania dynamiczne" {
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) Get-HTGuiOnlyThing } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $HTTestForm.X } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $Global:HTTestForm } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) & $t.Run } | Should -BeFalse
+        Test-HTBackgroundSafeBlock -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeFalse
+    }
+}
