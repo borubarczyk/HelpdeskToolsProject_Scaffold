@@ -3,48 +3,82 @@
 # Pliki danych w katalogu konfiguracji: Jobs.json, Checklists.json, Undo.json, Snapshots\<rodzaj>\*.json.
 # Moduł nie zależy od interfejsu.
 
-#region Dziennik operacji (zmiany wykonane w tej sesji)
+#region Dziennik operacji (zmiany i sprawdzenia wykonane w tej sesji)
 $script:Operations = New-Object System.Collections.Generic.List[object]
 
 function Add-HTOperationRecord {
-    # Wpis po operacji zmieniającej (Invoke-HTTargetAction, Invoke-HTRowAction, offboarding, zadania)
+    <#
+        Wpis po operacji: -Kind Change (domyślnie) - zmiana (Invoke-HTTargetAction, Invoke-HTRowAction, offboarding,
+        zadania), -Kind Check - sprawdzenie (zapytania i «Sprawdź stan»: co sprawdzono i z jakim wynikiem).
+        Powtórzone sprawdzenie (ta sama operacja i obiekt zaraz po poprzednim) zastępuje poprzedni wpis.
+    #>
     param (
         [Parameter(Mandatory)][string]$Operation,
         [AllowEmptyString()][string]$Object = '',
         [string]$Status = 'OK',
         [AllowEmptyString()][AllowNull()][string]$Details = '',
-        [string]$Module = ''
+        [string]$Module = '',
+        [ValidateSet('Change', 'Check')][string]$Kind = 'Change'
     )
-    $script:Operations.Add([PSCustomObject]@{
-            Time      = Get-Date
-            Operation = $Operation
-            Object    = $Object
-            Status    = $Status
-            Details   = [string]$Details
-            Module    = $Module
-            Account   = [string]$Global:HTActiveAccount
-        })
+    $record = [PSCustomObject]@{
+        Time      = Get-Date
+        Operation = $Operation
+        Object    = $Object
+        Status    = $Status
+        Details   = [string]$Details
+        Module    = $Module
+        Account   = [string]$Global:HTActiveAccount
+        Kind      = $Kind
+    }
+    $last = if ($script:Operations.Count) { $script:Operations[$script:Operations.Count - 1] } else { $null }
+    if ($Kind -eq 'Check' -and $last -and $last.Kind -eq 'Check' -and $last.Operation -eq $Operation -and $last.Object -eq $Object -and $last.Module -eq $Module) {
+        $script:Operations[$script:Operations.Count - 1] = $record
+        return
+    }
+    $script:Operations.Add($record)
     if ($script:Operations.Count -gt 5000) { $script:Operations.RemoveRange(0, 1000) }
 }
 
+function Get-HTOperationKind {
+    # Rodzaj wpisu (wpisy bez rodzaju - zmiany)
+    param ($Record)
+    if ($Record -and $Record.PSObject.Properties['Kind'] -and $Record.Kind) { return [string]$Record.Kind }
+    return 'Change'
+}
+
 function Get-HTOperationRecords {
-    # -Object: fragment nazwy obiektu albo operacji (bez rozróżniania wielkości liter)
-    param ([string]$Object = '', [datetime]$Since = [datetime]::MinValue)
+    # -Object: fragment nazwy obiektu albo operacji (bez rozróżniania wielkości liter); -Kind: Change / Check (puste - wszystkie)
+    param ([string]$Object = '', [datetime]$Since = [datetime]::MinValue, [ValidateSet('', 'Change', 'Check')][string]$Kind = '')
     return @($script:Operations | Where-Object {
-            $_.Time -ge $Since -and (-not $Object -or $_.Object.IndexOf($Object, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.Operation.IndexOf($Object, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+            $_.Time -ge $Since -and (-not $Kind -or (Get-HTOperationKind $_) -eq $Kind) -and
+            (-not $Object -or $_.Object.IndexOf($Object, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.Operation.IndexOf($Object, [StringComparison]::OrdinalIgnoreCase) -ge 0)
         })
 }
 
 function Clear-HTOperationRecords { $script:Operations.Clear() }
 
 function Format-HTOperationSummary {
-    # Tekst do zgłoszenia (ticketu): data, wykonane operacje, obiekty i wyniki
+    # Tekst do zgłoszenia (ticketu): data, sprawdzenia (co i z jakim wynikiem), wykonane zmiany, obiekty i wyniki
     param ([AllowEmptyCollection()][object[]]$Records = @(), [string]$Title = '')
     $lines = New-Object System.Collections.Generic.List[string]
     $heading = if ($Title) { $Title } else { 'Wykonane czynności' }
     $lines.Add("$heading (Helpdesk Tools, $((Get-Date).ToString('yyyy-MM-dd')), $env:USERNAME$(if ($Global:HTActiveAccount) { " / $($Global:HTActiveAccount)" }))")
     if (@($Records).Count -eq 0) { $lines.Add('- brak operacji'); return ($lines -join "`r`n") }
-    foreach ($group in @($Records | Group-Object Operation)) {
+    $checks = @($Records | Where-Object { (Get-HTOperationKind $_) -eq 'Check' })
+    $changes = @($Records | Where-Object { (Get-HTOperationKind $_) -ne 'Check' })
+    if ($checks.Count) {
+        $lines.Add('')
+        $lines.Add('Sprawdzenia:')
+        foreach ($r in $checks) {
+            $scope = if ($r.Object) { " ($($r.Object))" } else { '' }
+            $result = if ($r.Status -eq 'OK') { $r.Details } elseif ($r.Details) { "$("$($r.Status)".ToLowerInvariant()) - $($r.Details)" } else { "$($r.Status)".ToLowerInvariant() }
+            $lines.Add(("  - {0:HH:mm} {1}{2}: {3}" -f $r.Time, $r.Operation, $scope, $result))
+        }
+        $lines.Add('')
+        $lines.Add('Zmiany:')
+        if (-not $changes.Count) { $lines.Add('  - brak zmian') }
+    }
+    foreach ($group in @($changes | Group-Object Operation)) {
         $lines.Add('')
         $lines.Add("$($group.Name):")
         foreach ($r in $group.Group) {
@@ -53,9 +87,10 @@ function Format-HTOperationSummary {
             $lines.Add(("  - {0:HH:mm} {1}: {2}{3}" -f $r.Time, $r.Object, $result, $detail))
         }
     }
-    $failed = @($Records | Where-Object { $_.Status -ne 'OK' -and $_.Status -notlike 'Pominięto*' }).Count
+    $failed = @($changes | Where-Object { $_.Status -ne 'OK' -and $_.Status -notlike 'Pominięto*' }).Count
     $lines.Add('')
-    $lines.Add("Razem: $(@($Records).Count) operacji$(if ($failed) { ", w tym z błędem: $failed" }).")
+    if ($checks.Count) { $lines.Add("Razem: zmian: $($changes.Count)$(if ($failed) { " (w tym z błędem: $failed)" }), sprawdzeń: $($checks.Count).") }
+    else { $lines.Add("Razem: $($changes.Count) operacji$(if ($failed) { ", w tym z błędem: $failed" }).") }
     return ($lines -join "`r`n")
 }
 #endregion

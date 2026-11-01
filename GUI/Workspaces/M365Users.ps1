@@ -599,7 +599,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.new' -Tit
             if ($missingSkus.Count) { "Brak w tenancie licencji z profilu (pominięte): $($missingSkus -join ', ')" }
         )
         if (-not (Confirm-HTChange -Name 'Tworzenie użytkownika' -Labels @($upn) -Summary (@(Get-HTPendingFormSummary) + $extra) -Confirm "Utworzyć konto $($upn)? Hasło zostanie wygenerowane.")) { return }
-        Invoke-HTQuery -Module $m -Name 'Tworzenie użytkownika' -KeepResults -ScriptBlock {
+        Invoke-HTQuery -Module $m -Name 'Tworzenie użytkownika' -KeepResults -Record Change -ScriptBlock {
             $password = New-HTRandomPassword
             $user = New-HTM365User -DisplayName "$($form.Given) $($form.Surname)" -UserPrincipalName $upn -Password $password -GivenName $form.Given -Surname $form.Surname `
                 -JobTitle $form.JobTitle -Department $form.Department -CompanyName $form.CompanyName -OfficeLocation $form.OfficeLocation -UsageLocation $form.UsageLocation -ForceChange $form.Force

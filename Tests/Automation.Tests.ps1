@@ -25,6 +25,34 @@ Describe "Podsumowanie operacji do zgłoszenia" {
     It "bez operacji podaje informację" {
         Format-HTOperationSummary -Records @() | Should -Match "brak operacji"
     }
+    It "pokazuje sprawdzenia (co, gdzie i wynik) przed zmianami" {
+        Add-HTOperationRecord -Kind Check -Operation "Uprawnienia witryny" -Object "https://firma.sharepoint.com/sites/Zarzad" -Details "wyników: 34, ostrzeżenia: 2"
+        Add-HTOperationRecord -Kind Check -Operation "Dostęp: jan" -Object "https://firma.sharepoint.com/sites/Zarzad" -Status "Błąd" -Details "Access denied"
+        Add-HTOperationRecord -Operation "Nadanie uprawnień" -Object "jan@firma.pl" -Details "Edycja"
+        $text = Format-HTOperationSummary -Records @(Get-HTOperationRecords)
+        $text | Should -Match "Sprawdzenia:"
+        $text | Should -Match "Uprawnienia witryny \(https://firma.sharepoint.com/sites/Zarzad\): wyników: 34, ostrzeżenia: 2"
+        $text | Should -Match "Dostęp: jan \(https://firma.sharepoint.com/sites/Zarzad\): błąd - Access denied"
+        $text | Should -Match "Zmiany:"
+        $text | Should -Match "jan@firma.pl: wykonano - Edycja"
+        $text | Should -Match "Razem: zmian: 1, sprawdzeń: 2\."
+        $text.IndexOf('Sprawdzenia:') | Should -BeLessThan $text.IndexOf('Nadanie uprawnień:')
+    }
+    It "powtórzone sprawdzenie zastępuje poprzedni wpis; filtr po rodzaju" {
+        Add-HTOperationRecord -Kind Check -Operation "Kosz witryny" -Object "https://x" -Details "wyników: 1"
+        Add-HTOperationRecord -Kind Check -Operation "Kosz witryny" -Object "https://x" -Details "wyników: 5"
+        Add-HTOperationRecord -Operation "Przywrócenie z kosza" -Object "plik.docx"
+        @(Get-HTOperationRecords -Kind Check).Count | Should -Be 1
+        @(Get-HTOperationRecords -Kind Check)[0].Details | Should -Be "wyników: 5"
+        @(Get-HTOperationRecords -Kind Change).Count | Should -Be 1
+        @(Get-HTOperationRecords).Count | Should -Be 2
+    }
+    It "same sprawdzenia: sekcja zmian z informacją o braku zmian" {
+        Add-HTOperationRecord -Kind Check -Operation "Licencje" -Details "wyników: 3"
+        $text = Format-HTOperationSummary -Records @(Get-HTOperationRecords)
+        $text | Should -Match "brak zmian"
+        $text | Should -Match "Razem: zmian: 0, sprawdzeń: 1\."
+    }
 }
 
 Describe "Zadania zaplanowane" {

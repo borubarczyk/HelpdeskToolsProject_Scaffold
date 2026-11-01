@@ -201,7 +201,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.groups' -
         )
         if (-not $form) { return }
         if (-not (Confirm-HTChange -Name 'Tworzenie grupy' -Labels @([string]$form.Title) -Confirm "Utworzyć grupę SharePoint $($form.Title)?")) { return }
-        Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -ScriptBlock {
+        Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -Record Change -ScriptBlock {
             New-HTSPGroup -Title $form.Title -Description $form.Description -Members @(Split-HTInputList $form.Members) | Out-Null
             if ($form.Role -and $form.Role -ne $none) { Set-HTSPGroupWebRole -Group $form.Title -Role $form.Role }
             [PSCustomObject]@{ Nazwa = $form.Title; Właściciel = ''; Opis = "Utworzono$(if ($form.Role -ne $none) { " ($($form.Role))" })"; Id = '' }
@@ -956,7 +956,7 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.uploa
         $size = ($files | Measure-Object -Property Length -Sum).Sum
         if (-not (Show-HTConfirm -Title 'Wyślij folder' -ConfirmText 'Wyślij' -Message "Wysłać folder $local ($($files.Count) plików, $(Format-HTBytes $size)) do $($target.ServerRelativeUrl)?")) { return }
         $skip = Test-HTChecked $m.C.Skip
-        Invoke-HTQuery -Module $m -Name "Wysyłanie: $(Split-Path $local -Leaf)" -ScriptBlock {
+        Invoke-HTQuery -Module $m -Name "Wysyłanie: $(Split-Path $local -Leaf)" -Record None -ScriptBlock {
             Send-HTSPLocalFolder -LocalPath $local -TargetNode $target -SkipExisting:$skip -OnProgress { param($i, $total, $name) Set-HTProgress -Value $i -Maximum $total -Text "Wysyłanie [$i/$total] $name" }
         }
         Add-HTOperationRecord -Operation 'Wysłanie folderu z dysku' -Object "$local -> $($target.ServerRelativeUrl)" -Details "plików: $($files.Count)" -Module $m.Title

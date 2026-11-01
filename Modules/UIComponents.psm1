@@ -2346,6 +2346,9 @@ function Update-ConnectionButtonText {
     $sub = $c["sub$Service"]
     $button = $script:UI.ConnectButtons[$Service]
     $names = @{ Exchange = 'Exchange Online'; Graph = 'Microsoft 365 (Graph)'; SharePoint = 'SharePoint (PnP)'; AD = 'Active Directory' }
+    # Nazwa połączenia (tenant, witryna SharePoint) - zakres sprawdzeń w podsumowaniu do zgłoszenia
+    if (-not $script:UI['ConnectionNames']) { $script:UI['ConnectionNames'] = @{} }
+    $script:UI.ConnectionNames[$Service] = [string]$TenantName
     if ($dot) { $dot.Fill = Get-HTBrush $(if ($TenantName) { $script:DotColors.ok } else { $script:DotColors.off }) }
     if ($sub) {
         $sub.Text = if ($TenantName) { $TenantName } else { 'niepołączono' }
@@ -5321,12 +5324,46 @@ function Copy-HTColumnValues {
 #endregion
 
 #region Zapytania: wyniki dla zaznaczonych obiektów i dane ogólne
+function Get-HTResultFlagSummary {
+    # Wynik sprawdzenia do podsumowania: liczba wierszy, krytyczne (czerwone) i ostrzeżenia (żółte), błędy obiektów
+    param([Parameter(Mandatory)][hashtable]$Module, [int]$Errors = 0)
+    $t = $Module.Table
+    $count = if ($t) { $t.Rows.Count } else { 0 }
+    $warn = 0
+    $crit = 0
+    if ($t -and $t.Columns.Contains('__flag')) { foreach ($r in $t.Rows) { switch ([string]$r['__flag']) { 'warn' { $warn++ } 'crit' { $crit++ } } } }
+    $crit = [Math]::Max(0, $crit - $Errors)
+    $parts = @("wyników: $count")
+    if ($crit) { $parts += "krytyczne: $crit" }
+    if ($warn) { $parts += "ostrzeżenia: $warn" }
+    if ($Errors) { $parts += "błędy: $Errors" }
+    return ($parts -join ', ')
+}
+
+function Add-HTCheckRecord {
+    # Sprawdzenie do podsumowania «Do zgłoszenia» (co sprawdzono, gdzie i z jakim wynikiem)
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Name, [string]$Object = '', [string]$Status = 'OK', [string]$Details = '')
+    if (-not (Get-Command -Name Add-HTOperationRecord -ErrorAction Ignore)) { return }
+    try { Add-HTOperationRecord -Kind Check -Operation $Name -Object $Object -Status $Status -Details $Details -Module ([string]$Module.Title) }
+    catch { Write-Verbose "Sprawdzenie $($Name): $_" }
+}
+
+function Get-HTCheckScope {
+    # Zakres sprawdzenia: połączona witryna SharePoint albo tenant usługi (z paska połączeń)
+    param([string]$Service = '')
+    $names = $script:UI['ConnectionNames']
+    if ($Service -and $names -and $names[$Service]) { return [string]$names[$Service] }
+    return ''
+}
+
 function Invoke-HTQuery {
     <#
         Pobiera dane i wpisuje je do tabeli wyników modułu: -ScriptBlock zwraca obiekty (wiersze)
         albo sam dopisuje je przez Add-HTResultRows (np. z postępem). Zwraca liczbę wierszy.
         -Background: blok wykonuje się w wątku w tle (okno reaguje, «Przerwij» na pasku stanu), dostaje -Arguments
         jako jedyny parametr i może używać tylko funkcji modułów; wiersze pojawiają się na bieżąco.
+        -Record: wpis w podsumowaniu «Do zgłoszenia» - Check (domyślnie, zapytanie do usługi: co sprawdzono i wynik),
+        Change (zapytanie, które coś tworzy: każdy nowy wiersz jako zmiana) albo None (operacja zapisuje się sama).
     #>
     param(
         [Parameter(Mandatory)][hashtable]$Module,
@@ -5335,11 +5372,16 @@ function Invoke-HTQuery {
         [string]$Service = '',
         [switch]$KeepResults,
         [switch]$Background,
-        [hashtable]$Arguments = @{}
+        [hashtable]$Arguments = @{},
+        [ValidateSet('Check', 'Change', 'None')][string]$Record = 'Check',
+        [string]$Object = ''
     )
     $service = if ($PSBoundParameters.ContainsKey('Service')) { $Service } else { $Module.Service }
     if ($service -and -not (Assert-HTConnection -Service $service)) { return }
     if (-not $KeepResults) { Reset-HTResults -Module $Module }
+    $rowsBefore = if ($Module.Table) { $Module.Table.Rows.Count } else { 0 }
+    $scope = if ($Object) { $Object } else { Get-HTCheckScope -Service $service }
+    $recordKind = if ($Record -eq 'Check' -and -not $service) { 'None' } else { $Record }
     Set-HTBusy -Busy $true -Text "$Name…"
     $count = 0
     try {
@@ -5374,17 +5416,41 @@ function Invoke-HTQuery {
         $count = $Module.Table.Rows.Count
         Write-Log -Message "$Name - wyników: $count" -Type 'Info'
         Set-HTBusy -Busy $false -Text "$Name - wyników: $count"
+        if ($recordKind -eq 'Check') { Add-HTCheckRecord -Module $Module -Name $Name -Object $scope -Details (Get-HTResultFlagSummary -Module $Module) }
+        elseif ($recordKind -eq 'Change') { Add-HTQueryChangeRecords -Module $Module -Name $Name -From $rowsBefore }
     }
     catch [System.OperationCanceledException] {
         $count = $Module.Table.Rows.Count
         Write-Log -Message "$Name - przerwano (wyników: $count)" -Type 'Warn'
         Set-HTBusy -Busy $false -Text "Przerwano: $Name"
         Show-HTToast "Przerwano: $Name (wyników: $count)" 'warn'
+        if ($recordKind -eq 'Check') { Add-HTCheckRecord -Module $Module -Name $Name -Object $scope -Status 'Przerwano' -Details (Get-HTResultFlagSummary -Module $Module) }
+        elseif ($recordKind -eq 'Change') { Add-HTQueryChangeRecords -Module $Module -Name $Name -From $rowsBefore }
     }
     catch {
         Write-Log -Message "$Name - błąd: $($_.Exception.Message)" -Type 'Error'
         Set-HTBusy -Busy $false -Text "Błąd: $Name"
+        if ($recordKind -eq 'Check') { Add-HTCheckRecord -Module $Module -Name $Name -Object $scope -Status 'Błąd' -Details $_.Exception.Message }
+        elseif ($recordKind -eq 'Change' -and (Get-Command -Name Add-HTOperationRecord -ErrorAction Ignore)) { Add-HTOperationRecord -Operation $Name -Object $scope -Status 'Błąd' -Details $_.Exception.Message -Module $Module.Title }
         Show-HTError -Text $Name -ErrorObject $_
+    }
+}
+
+function Add-HTQueryChangeRecords {
+    <#
+        Zapytanie, które coś tworzy (np. tworzenie konta): każdy nowy wiersz wyników jako zmiana w podsumowaniu - obiekt
+        z kolumny Obiekt / Nazwa / UPN, wynik z kolumny Status, szczegóły z kolumn Szczegóły / Opis (bez haseł).
+    #>
+    param([Parameter(Mandatory)][hashtable]$Module, [Parameter(Mandatory)][string]$Name, [int]$From = 0)
+    $t = $Module.Table
+    if (-not $t -or -not (Get-Command -Name Add-HTOperationRecord -ErrorAction Ignore)) { return }
+    $pick = { param($row, [string[]]$Names) foreach ($n in $Names) { if ($t.Columns.Contains($n) -and -not [string]::IsNullOrWhiteSpace([string]$row[$n])) { return [string]$row[$n] } }; return '' }
+    for ($i = [Math]::Max(0, $From); $i -lt $t.Rows.Count; $i++) {
+        $row = $t.Rows[$i]
+        $status = & $pick $row @('Status')
+        $object = & $pick $row @('Obiekt', 'Nazwa', 'UPN', 'UserPrincipalName', 'Grupa')
+        $details = @((& $pick $row @('Grupa')), (& $pick $row @('Szczegóły', 'Opis')) | Where-Object { $_ -and $_ -ne $object }) -join ' - '
+        Add-HTOperationRecord -Operation $Name -Object $object -Status $(if ($status) { $status } else { 'OK' }) -Details $details -Module $Module.Title
     }
 }
 
@@ -5497,6 +5563,13 @@ function Invoke-HTTargetQuery {
     }
     $stopText = if ($state.StoppedAt -ge 0) { " - przerwano po $($state.StoppedAt) z $($Targets.Count) obiekt." } else { '' }
     Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($state.Failed) { ", błędy: $($state.Failed)" })$stopText" -Type $(if ($state.Failed -or $state.StoppedAt -ge 0) { 'Warn' } else { 'Info' })
+    # Podsumowanie «Do zgłoszenia»: co sprawdzono (obiekty) i z jakim wynikiem
+    if ($service) {
+        $shown = @($captions | Select-Object -First 5)
+        $scope = ($shown -join ', ') + $(if ($captions.Count -gt $shown.Count) { " i $($captions.Count - $shown.Count) innych" } else { '' })
+        $status = if ($state.StoppedAt -ge 0) { 'Przerwano' } elseif ($state.Failed -and $state.Failed -ge $Targets.Count) { 'Błąd' } else { 'OK' }
+        Add-HTCheckRecord -Module $Module -Name $Name -Object $scope -Status $status -Details ((Get-HTResultFlagSummary -Module $Module -Errors $state.Failed) + $(if ($state.StoppedAt -ge 0) { ", sprawdzono $($state.StoppedAt) z $($Targets.Count)" } else { '' }))
+    }
 }
 
 function Get-HTSelectedResultTargets {
@@ -7544,14 +7617,18 @@ function Show-HTCommandPalette {
 $script:OperationSummaryXaml = @'
 <StackPanel>
   <Grid Margin="0,0,0,8">
-    <TextBox x:Name="osFilter" Width="320" HorizontalAlignment="Left" Tag="Obiekt lub operacja (np. jan.kowalski)…"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+      <TextBox x:Name="osFilter" Width="320" Tag="Obiekt lub operacja (np. jan.kowalski)…"/>
+      <CheckBox x:Name="osChecks" Content="Uwzględnij sprawdzenia" IsChecked="True" Margin="14,0,0,0"
+                ToolTip="Co i gdzie zostało sprawdzone (zapytania, «Sprawdź stan») i z jakim wynikiem - przed zmianami"/>
+    </StackPanel>
     <Border Style="{StaticResource Chip}" HorizontalAlignment="Right">
       <TextBlock x:Name="osCount" Foreground="#AEB6C4" FontSize="11.5"/>
     </Border>
   </Grid>
   <TextBox x:Name="osText" Style="{StaticResource MultiText}" IsReadOnly="True" Height="360" TextWrapping="Wrap"/>
   <TextBlock Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
-             Text="Operacje zmieniające wykonane w tej sesji programu (bez haseł i danych poufnych). Wklej tekst do zgłoszenia albo wyślij na kanał Teams."/>
+             Text="Sprawdzenia (co i gdzie sprawdzono, z jakim wynikiem) i zmiany wykonane w tej sesji programu, bez haseł i danych poufnych. Wklej tekst do zgłoszenia albo wyślij na kanał Teams."/>
 </StackPanel>
 '@
 
@@ -7568,7 +7645,8 @@ $script:OperationSummaryEvents = @{
         $records = @($w.Tag.Records)
         if (-not $records.Count) { return }
         $facts = [ordered]@{}
-        foreach ($g in @($records | Group-Object Operation | Select-Object -First 10)) { $facts[$g.Name] = (@($g.Group | ForEach-Object { "$($_.Object) ($($_.Status))" }) -join ', ') }
+        $groups = @($records | Group-Object { if ((Get-HTOperationKind $_) -eq 'Check') { "Sprawdzenie: $($_.Operation)" } else { $_.Operation } } | Select-Object -First 10)
+        foreach ($g in $groups) { $facts[$g.Name] = (@($g.Group | ForEach-Object { if ((Get-HTOperationKind $_) -eq 'Check') { "$(if ($_.Object) { "$($_.Object): " })$($_.Details)" } else { "$($_.Object) ($($_.Status))" } }) -join ', ') }
         if (Send-HTTeamsMessage -Title 'Podsumowanie wykonanych czynności' -Text $w.FindName('osFilter').Text -Facts $facts -Tone 'ok' -Event 'Manual') { Show-HTToast 'Wysłano na kanał Teams.' 'ok' }
         else { Show-HTWarning 'Nie wysłano - ustaw adres webhooka Teams w Ustawieniach (sekcja «Teams i e-mail») i sprawdź dziennik.' }
     }
@@ -7577,16 +7655,18 @@ $script:OperationSummaryEvents = @{
 function Update-HTOperationSummary {
     param([Parameter(Mandatory)]$Window)
     $q = $Window.FindName('osFilter').Text.Trim()
-    $records = @(Get-HTOperationRecords -Object $q)
+    $withChecks = $Window.FindName('osChecks').IsChecked -eq $true
+    $records = @(Get-HTOperationRecords -Object $q | Where-Object { $withChecks -or (Get-HTOperationKind $_) -ne 'Check' })
     $Window.Tag.Records = $records
     $Window.FindName('osText').Text = Format-HTOperationSummary -Records $records -Title $(if ($q) { "Wykonane czynności - $q" } else { '' })
-    $Window.FindName('osCount').Text = "operacji: $($records.Count)"
+    $checks = @($records | Where-Object { (Get-HTOperationKind $_) -eq 'Check' }).Count
+    $Window.FindName('osCount').Text = "zmian: $($records.Count - $checks) • sprawdzeń: $checks"
 }
 
 function Show-HTOperationSummaryDialog {
     # Tekst do zgłoszenia z operacji wykonanych w tej sesji (filtr po obiekcie)
     param([string]$Object = '')
-    $w = New-HTDialog -Title 'Podsumowanie do zgłoszenia' -Subtitle 'Co zostało zrobione w tej sesji programu - gotowy tekst do zgłoszenia (ticketu).' -Body $script:OperationSummaryXaml -Icon 'E8A5' -OkText 'Zamknij' -NoCancel -Width 760
+    $w = New-HTDialog -Title 'Podsumowanie do zgłoszenia' -Subtitle 'Co zostało sprawdzone i zrobione w tej sesji programu - gotowy tekst do zgłoszenia (ticketu).' -Body $script:OperationSummaryXaml -Icon 'E8A5' -OkText 'Zamknij' -NoCancel -Width 760
     $copy = New-HTButton -Text 'Kopiuj' -Icon 'E8C8'
     $copy.Margin = '0,0,8,0'
     $copy.add_Click($script:OperationSummaryEvents.Copy)
@@ -7599,6 +7679,8 @@ function Show-HTOperationSummaryDialog {
     $filter = $w.FindName('osFilter')
     $filter.Text = $Object
     $filter.add_TextChanged($script:OperationSummaryEvents.Filter)
+    $w.FindName('osChecks').add_Checked($script:OperationSummaryEvents.Filter)
+    $w.FindName('osChecks').add_Unchecked($script:OperationSummaryEvents.Filter)
     Update-HTOperationSummary -Window $w
     [void](Invoke-HTDialog $w)
 }

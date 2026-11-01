@@ -260,7 +260,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Grupy' -Key 'adu.groups' -Titl
         if (-not (Assert-HTWriteAllowed -Operation 'Kopiowanie grup')) { return }
         if (-not (Confirm-HTChange -Name 'Kopiowanie grup' -Labels @($targets | ForEach-Object { Get-HTADLabel $_ }) -Summary "Wzorzec: $(Get-HTADLabel $source) - konta zostaną dodane do jego grup" -Confirm 'Dodać konta do grup konta wzorcowego?')) { return }
         Reset-HTResults -Module $m
-        Invoke-HTQuery -Module $m -Name "Kopiowanie grup od $($source.SamAccountName)" -KeepResults -ScriptBlock {
+        Invoke-HTQuery -Module $m -Name "Kopiowanie grup od $($source.SamAccountName)" -KeepResults -Record Change -ScriptBlock {
             foreach ($t in $targets) {
                 foreach ($r in @(Copy-HTADGroupMembership -SourceIdentity $source.ObjectGUID -TargetIdentity $t.ObjectGUID)) {
                     [PSCustomObject]@{ Obiekt = $t.SamAccountName; Grupa = $r.Grupa; Status = $r.Status; Szczegóły = $r.Szczegóły }
@@ -303,7 +303,7 @@ Register-HTModule -Workspace 'ADUsers' -Category 'Cykl życia' -Key 'adu.new' -T
         if (@(Get-ADUser -Filter "SamAccountName -eq '$($login.Replace("'", "''"))'" -ErrorAction SilentlyContinue).Count -gt 0) { Show-HTWarning "Login $login jest już zajęty."; return }
         $extra = @(if ($ou) { "OU: $($ou.Name)" }; if ($template) { "Grupy z konta wzorcowego: $(Get-HTADLabel $template)" })
         if (-not (Confirm-HTChange -Name 'Tworzenie konta AD' -Labels @($login) -Summary (@(Get-HTPendingFormSummary) + $extra) -Confirm "Utworzyć konto $($login)? Hasło zostanie wygenerowane.")) { return }
-        Invoke-HTQuery -Module $m -Name 'Tworzenie konta AD' -KeepResults -ScriptBlock {
+        Invoke-HTQuery -Module $m -Name 'Tworzenie konta AD' -KeepResults -Record Change -ScriptBlock {
             $password = New-HTRandomPassword
             $user = New-HTADUser -GivenName $form.Given -Surname $form.Surname -SamAccountName $login -UserPrincipalName "$login@$($form.Suffix)" -Password $password `
                 -Path $(if ($ou) { $ou.DistinguishedName }) -Title $form.Title -Department $form.Department -ChangeAtLogon $form.Change
@@ -671,7 +671,7 @@ Register-HTModule -Workspace 'ADGroups' -Category 'Zarządzanie' -Key 'adg.manag
         $ou = Select-HTADOrganizationalUnit -Title 'OU nowej grupy'
         if (-not $ou) { return }
         if (-not (Confirm-HTChange -Name 'Tworzenie grupy' -Labels @([string]$form.Name) -Summary (@(Get-HTPendingFormSummary) + "OU: $($ou.Name)") -Confirm "Utworzyć grupę $($form.Name)?")) { return }
-        Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -ScriptBlock {
+        Invoke-HTQuery -Module $m -Name 'Tworzenie grupy' -KeepResults -Record Change -ScriptBlock {
             New-HTADGroup -Name $form.Name -Category $form.Category -Scope $form.Scope -Path $ou.DistinguishedName -Description $form.Description | Out-Null
             Write-Log -Message "Utworzono grupę AD: $($form.Name)" -Type 'Info&Notification'
             [PSCustomObject]@{ Obiekt = $form.Name; Status = 'OK'; Szczegóły = "$($form.Category) / $($form.Scope) w $($ou.CanonicalName)" }
