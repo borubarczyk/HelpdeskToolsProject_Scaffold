@@ -519,7 +519,7 @@ function Find-HTObjectHistory {
         }
     }
     foreach ($r in @(Get-HTOperationRecords -Object $Text)) {
-        [PSCustomObject]@{ Czas = $r.Time.ToString('yyyy-MM-dd HH:mm:ss'); Źródło = 'ta sesja'; Poziom = $r.Status; Konto = $r.Account; Opis = "$($r.Operation): $($r.Object) $(if ($r.Details) { "- $($r.Details)" })"; __flag = $(if ($r.Status -ne 'OK') { 'warn' } else { '' }) }
+        [PSCustomObject]@{ Czas = $r.Time.ToString('yyyy-MM-dd HH:mm:ss'); Źródło = 'ta sesja'; Poziom = $r.Status; Konto = $r.Account; Opis = "$(if ((Get-HTOperationKind $r) -eq 'Check') { 'Sprawdzenie: ' })$($r.Operation): $($r.Object) $(if ($r.Details) { "- $($r.Details)" })"; __flag = $(if ($r.Status -ne 'OK') { 'warn' } else { '' }) }
     }
     foreach ($u in @(Get-HTUndoRecords | Where-Object { "$($_.Object)".IndexOf($Text, [StringComparison]::OrdinalIgnoreCase) -ge 0 })) {
         [PSCustomObject]@{ Czas = ([datetime]$u.Time).ToString('yyyy-MM-dd HH:mm:ss'); Źródło = 'rejestr zmian'; Poziom = $(if ($u.Undone) { 'cofnięto' } else { 'zmiana' }); Konto = $u.Account; Opis = "$($u.Operation): $($u.Object)"; __flag = '' }
