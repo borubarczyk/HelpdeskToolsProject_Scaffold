@@ -4,7 +4,7 @@
 
 Register-HTWorkspace -Key 'Groups' -Title 'Grupy i zespoły' -Icon 'E902' -Panel 'm365groups' -Service 'Graph' `
     -Description 'Wszystkie grupy Microsoft 365 / Entra ID: członkowie, właściciele, szczegóły, nowe grupy, edycja i usuwanie; zespoły Teams; grupy dynamiczne Exchange' `
-    -Categories @('Grupa', 'Zarządzanie', 'Zespoły Teams', 'Grupy dynamiczne (Exchange)', 'Raporty')
+    -Categories @('Grupa', 'Zarządzanie', 'Licencje', 'Zespoły Teams', 'Grupy dynamiczne (Exchange)', 'Raporty')
 
 $panel = New-HTTargetPanel -Key 'm365groups' -Title 'Grupy Microsoft 365 / Entra ID' -Placeholder 'Szukaj (nazwa, adres, opis)…' -EmptyIcon 'E902' `
     -EmptyText 'Połącz z Microsoft 365 i kliknij «Wczytaj».' -Describe {
@@ -217,6 +217,161 @@ Register-HTModule -Workspace 'Groups' -Category 'Zarządzanie' -Key 'grp.deleted
         param($m, $rows)
         Invoke-HTRowAction -Module $m -Name 'Trwałe usunięcie grupy' -Rows @($rows | Where-Object { $_.Id }) -Danger -TypeToConfirm 'USUŃ' -Confirm 'Usunąć trwale zaznaczone grupy? Poczty, plików i zespołu nie da się potem odzyskać.' -Label { param($r) $r.Grupa } `
             -Action { param($r) Remove-HTM365DeletedGroup -Id $r.Id; 'Usunięto trwale' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+}
+#endregion
+
+#region Licencje grupy (licencjonowanie grupowe)
+Register-HTModule -Workspace 'Groups' -Category 'Licencje' -Key 'grp.licenses' -Title 'Licencje grupy' -Icon 'E8EC' -Service 'Graph' `
+    -Description 'Licencje przypisane do grupy: członkowie dostają je automatycznie, a po wyjściu z grupy tracą. Przypisywanie i usuwanie licencji grupy, członkowie z błędem przypisania (brak wolnych licencji, konflikt planów, brak lokalizacji użycia).' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż licencje' -Icon 'E8EC' -Primary -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Licencje grup' -AlwaysShowObject -Label { param($t) Get-HTGroupLabel $t } -Action {
+            param($t)
+            if (-not (Test-HTM365GroupLicensable -Group $t)) { return [PSCustomObject]@{ Licencja = '(licencje grupowe tylko dla grup zabezpieczeń i grup Microsoft 365 z zabezpieczeniami)'; SKU = ''; __flag = 'muted' } }
+            $licenses = @(Get-HTM365GroupLicenses -Id $t.Id)
+            if ($licenses.Count) { $licenses } else { [PSCustomObject]@{ Licencja = '(brak licencji grupowych)'; SKU = ''; __flag = 'muted' } }
+        }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Członkowie z błędem licencji' -Icon 'E7BA' -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Błędy licencji grup' -AlwaysShowObject -Label { param($t) Get-HTGroupLabel $t } -Action {
+            param($t)
+            $rows = @(Get-HTM365GroupLicenseErrors -Id $t.Id -GroupName $t.DisplayName)
+            if ($rows.Count) { $rows } else { [PSCustomObject]@{ Użytkownik = '(brak błędów przypisania)'; __flag = 'muted' } }
+        }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Przypisz licencję…' -Icon 'E710' -Create -ToolTip 'Licencja dla grupy - wszyscy członkowie (także przyszli) dostaną ją automatycznie' -OnClick {
+        param($m)
+        $targets = @(Get-HTChangeTargets -Module $m)
+        if (-not $targets.Count) { return }
+        $groups = @($targets | Where-Object { Test-HTM365GroupLicensable -Group $_ })
+        $skipped = @($targets | Where-Object { $groups -notcontains $_ })
+        if ($skipped.Count) { Show-HTWarning "Pominięto grupy bez licencji grupowych ($($skipped.Count)): $(@($skipped | ForEach-Object { $_.DisplayName }) -join ', ').`n`nLicencje przypisuje się grupom zabezpieczeń (także dynamicznym i z AD) i grupom Microsoft 365 z włączonymi zabezpieczeniami - nie grupom dystrybucyjnym." -Title 'Licencje grupy' }
+        if (-not $groups.Count) { return }
+        Set-HTBusy -Busy $true -Text 'Pobieranie licencji i członków…'
+        try {
+            $skus = @(Get-HTSubscribedSkus -Force | Where-Object { $_.Status -eq 'Enabled' } | ForEach-Object { [PSCustomObject]@{ Licencja = Get-HTSkuFriendlyName $_.SkuPartNumber; SKU = $_.SkuPartNumber; Dostępne = $_.Available; Przypisane = $_.Consumed; SkuId = $_.SkuId } })
+            $members = 0
+            foreach ($g in $groups) { $members += @(Get-HTM365GroupMembers -Id $g.Id | Where-Object { $_.Rodzaj -in 'Użytkownik', 'Gość' }).Count }
+        }
+        finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+        $selected = Show-HTSelectionDialog -Title 'Licencja dla grupy' -Prompt "Licencje dla grup ($($groups.Count)) - członków (kont): $members." -Items $skus -MultiSelect -Icon 'E8EC'
+        if (-not $selected) { return }
+        $ids = @($selected | ForEach-Object { "$($_.SkuId)" })
+        $names = @($selected | ForEach-Object { $_.Licencja }) -join ', '
+        $short = @($selected | Where-Object { $_.Dostępne -lt $members })
+        if ($short.Count -and -not (Show-HTConfirm -Warning -Title 'Za mało licencji' -Message "Członków (kont): $members, wolnych licencji: $(@($short | ForEach-Object { "$($_.Licencja) ($($_.Dostępne))" }) -join ', '). Część członków dostanie błąd przypisania (widoczny w «Członkowie z błędem licencji»). Kontynuować?")) { return }
+        Invoke-HTTargetAction -Module $m -Name 'Przypisanie licencji grupie' -Targets $groups -Label { param($t) Get-HTGroupLabel $t } -Summary @("Licencje: $names", "Członkowie grup dostaną licencje automatycznie (zwykle w ciągu kilku minut); kont: $members") -Action {
+            param($t)
+            Set-HTM365GroupLicense -Id $t.Id -AddSkuIds $ids
+            "Przypisano: $names"
+        }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Usuń licencję z grupy' -Icon 'E738' -Danger -Action {
+        param($m, $rows)
+        $rows = @($rows | Where-Object { $_.SkuId -and $_.__target })
+        if (-not $rows.Count) { Show-HTWarning 'Zaznacz licencje grup (najpierw «Pokaż licencje»).' -Title 'Usuń licencję z grupy'; return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie licencji grupy' -Rows $rows -Danger -Confirm 'Usunąć zaznaczone licencje z grup? Członkowie stracą je, o ile nie mają ich z innej grupy albo przypisanych bezpośrednio (usunięcie licencji Exchange zaczyna 30-dniowy okres usunięcia skrzynki).' `
+            -Label { param($r) "$($r.__target.DisplayName): $($r.Licencja)" } -Action { param($r) Set-HTM365GroupLicense -Id $r.__target.Id -RemoveSkuIds @($r.SkuId); 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
+    }
+    Add-HTRowAction -Module $m -Text 'Ponów przypisanie licencji' -Icon 'E72C' -Danger -Action {
+        param($m, $rows)
+        $rows = @($rows | Where-Object { $_.Id -and $_.UPN })
+        if (-not $rows.Count) { Show-HTWarning 'Zaznacz członków z błędem (przycisk «Członkowie z błędem licencji»).' -Title 'Ponów przypisanie'; return }
+        Invoke-HTRowAction -Module $m -Name 'Ponowne przetworzenie licencji' -Rows $rows -Label { param($r) $r.UPN } -Action { param($r) Invoke-HTLicenseReprocess -UserId $r.Id; 'Zlecono ponowne przetworzenie' }
+    }
+}
+#endregion
+
+#region Zespół Teams z grupy i kanały
+$script:TeamChannelTypes = [ordered]@{ 'Standardowy - wszyscy członkowie zespołu' = 'standard'; 'Prywatny - tylko wybrane osoby z zespołu' = 'private'; 'Udostępniony - także osoby spoza zespołu' = 'shared' }
+
+Register-HTModule -Workspace 'Groups' -Category 'Zespoły Teams' -Key 'grp.team' -Title 'Zespół i kanały' -Icon 'E8BD' -Service 'Graph' `
+    -Description 'Kanały zespołu zaznaczonej grupy (standardowe, prywatne, udostępnione) i nowy kanał. Zespół Teams z istniejącej grupy Microsoft 365 - z jej członkami, pocztą i plikami. Prawy przycisk - usunięcie kanału.' -Build {
+    param($m)
+    $row = Add-HTToolbarRow -Module $m
+    Add-HTButton -Parent $row -Module $m -Text 'Pokaż kanały' -Icon 'E8BD' -Primary -OnClick {
+        param($m)
+        Invoke-HTTargetQuery -Module $m -Name 'Kanały zespołów' -AlwaysShowObject -Label { param($t) Get-HTGroupLabel $t } -Action {
+            param($t)
+            if (-not $t.IsTeam) { return [PSCustomObject]@{ Kanał = $(if ($t.Type -eq 'Microsoft 365') { '(grupa bez zespołu Teams - «Utwórz zespół z grupy…»)' } else { '(zespół Teams można utworzyć tylko z grupy Microsoft 365)' }); __flag = 'muted' } }
+            Get-HTTeamChannels -TeamId $t.Id -TeamName $t.DisplayName
+        }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Utwórz zespół z grupy…' -Icon 'E902' -Create -ToolTip 'Zespół Teams z zaznaczonej grupy Microsoft 365 - członkowie, właściciele, poczta i witryna zostają' -OnClick {
+        param($m)
+        $targets = @(Get-HTChangeTargets -Module $m)
+        if (-not $targets.Count) { return }
+        $groups = @($targets | Where-Object { $_.Type -eq 'Microsoft 365' -and -not $_.IsTeam })
+        $skipped = @($targets | Where-Object { $groups -notcontains $_ })
+        if ($skipped.Count) { Show-HTWarning "Pominięto ($($skipped.Count)): $(@($skipped | ForEach-Object { "$($_.DisplayName)$(if ($_.IsTeam) { ' - już jest zespołem' } else { ' - nie jest grupą Microsoft 365' })" }) -join '; ').`n`nZespół tworzy się z grupy Microsoft 365; grupę zabezpieczeń albo dystrybucyjną trzeba zastąpić nową grupą Microsoft 365 («Nowa grupa…»)." -Title 'Zespół z grupy' }
+        if (-not $groups.Count) { return }
+        $form = Show-HTFormDialog -Title 'Zespół Teams z grupy' -Icon 'E902' -OkText 'Dalej' -Width 600 -Fields @(
+            @{ Name = 'Create'; Label = 'Członkowie mogą tworzyć i edytować kanały (także prywatne)'; Type = 'Check'; Default = $true }
+            @{ Name = 'Delete'; Label = 'Członkowie mogą usuwać kanały'; Type = 'Check'; Default = $false }
+            @{ Name = 'Guests'; Label = 'Goście mogą tworzyć i edytować kanały'; Type = 'Check'; Default = $false }
+            @{ Name = 'Giphy'; Label = 'Animacje Giphy (filtr treści: ścisły)'; Type = 'Check'; Default = $true }
+            @{ Type = 'Info'; Label = 'Grupa musi mieć właściciela. Grupa utworzona przed chwilą może potrzebować do 15 minut, zanim Teams ją zobaczy - program ponawia próbę.' }
+        )
+        if (-not $form) { return }
+        $settings = @{ MembersCanCreateChannels = [bool]$form.Create; MembersCanDeleteChannels = [bool]$form.Delete; GuestsCanCreateChannels = [bool]$form.Guests; AllowGiphy = [bool]$form.Giphy }
+        Invoke-HTTargetAction -Module $m -Name 'Zespół z grupy' -Targets $groups -Label { param($t) Get-HTGroupLabel $t } -Action {
+            param($t)
+            if (-not @(Get-HTM365GroupOwners -Id $t.Id).Count) { throw 'Grupa nie ma właściciela - dodaj go w module «Właściciele» i spróbuj ponownie.' }
+            New-HTTeamFromGroup -GroupId $t.Id -Settings $settings | Out-Null
+            $t.IsTeam = $true
+            $panel = Get-HTPanel 'm365groups'
+            if ($panel) { Update-HTTargetItem -Panel $panel -Item $t }
+            'Utworzono zespół Teams'
+        }
+    } | Out-Null
+    Add-HTButton -Parent $row -Module $m -Text 'Nowy kanał…' -Icon 'E710' -Create -ToolTip 'Kanał w zespole zaznaczonej grupy' -OnClick {
+        param($m)
+        $team = @(Get-HTChangeTargets -Module $m -Single)[0]
+        if (-not $team) { return }
+        if (-not $team.IsTeam) { Show-HTWarning "Grupa «$($team.DisplayName)» nie ma zespołu Teams - najpierw «Utwórz zespół z grupy…»." -Title 'Nowy kanał'; return }
+        $me = ''
+        try { $me = [string](Get-MgContext).Account } catch { Write-Verbose $_ }
+        $types = @($script:TeamChannelTypes.Keys)
+        $prev = @{}
+        $get = { param($k, $d) if ($prev.Contains($k)) { $prev[$k] } else { $d } }
+        while ($true) {
+            $form = Show-HTFormDialog -Title "Nowy kanał: $($team.DisplayName)" -Icon 'E8BD' -OkText 'Dalej' -Width 620 -Fields @(
+                @{ Name = 'Name'; Label = 'Nazwa kanału (do 50 znaków)'; Required = $true; Default = (& $get 'Name' '') }
+                @{ Name = 'Description'; Label = 'Opis (opcjonalnie)'; Default = (& $get 'Description' '') }
+                @{ Name = 'Type'; Label = 'Rodzaj kanału (nie można go później zmienić)'; Type = 'Combo'; Options = $types; Default = (& $get 'Type' $types[0]) }
+                @{ Name = 'Owner'; Label = 'Właściciel kanału (UPN - członek zespołu)'; Default = (& $get 'Owner' $me); ShowWhen = @{ Field = 'Type'; Values = @($types[1], $types[2]) } }
+            )
+            if (-not $form) { return }
+            $prev = $form
+            $problem = Test-HTTeamChannelName ([string]$form.Name)
+            $type = $script:TeamChannelTypes[[string]$form.Type]
+            if (-not $problem -and $type -ne 'standard' -and -not ([string]$form.Owner).Trim()) { $problem = 'Kanał prywatny i udostępniony wymaga właściciela.' }
+            if (-not $problem) { break }
+            Show-HTWarning $problem -Title 'Nowy kanał'
+        }
+        $name = ([string]$form.Name).Trim()
+        $description = [string]$form.Description
+        $ownerUpn = ([string]$form.Owner).Trim()
+        Invoke-HTTargetAction -Module $m -Name 'Nowy kanał' -Targets @($team) -Label { param($t) Get-HTGroupLabel $t } -Summary @(@("Kanał: $name", "Rodzaj: $($form.Type)", $(if ($type -ne 'standard') { "Właściciel: $ownerUpn" })) | Where-Object { $_ }) -Action {
+            param($t)
+            $owners = @()
+            if ($type -ne 'standard') { $owners = @([string](Resolve-HTM365User -Identity $ownerUpn).id) }
+            $c = New-HTTeamChannel -TeamId $t.Id -DisplayName $name -Description $description -MembershipType $type -OwnerIds $owners
+            [ordered]@{ Kanał = [string]$c.displayName; Rodzaj = (@{ standard = 'standardowy'; private = 'prywatny'; shared = 'udostępniony' })[$type]; Szczegóły = 'Utworzono'; Link = [string]$c.webUrl }
+        }
+    } | Out-Null
+    Add-HTRowAction -Module $m -Text 'Usuń kanał' -Icon 'E74D' -Danger -Action {
+        param($m, $rows)
+        $general = @($rows | Where-Object { $_.IsGeneral })
+        $rows = @($rows | Where-Object { $_.Id -and $_.__team -and -not $_.IsGeneral })
+        if ($general.Count) { Show-HTWarning 'Kanału ogólnego nie można usunąć - pominięto.' -Title 'Usuń kanał' }
+        if (-not $rows.Count) { return }
+        Invoke-HTRowAction -Module $m -Name 'Usunięcie kanału' -Rows $rows -Danger -Confirm 'Usunąć zaznaczone kanały? Rozmowy kanału znikną z Teams (przywrócenie w Teams przez 30 dni), pliki zostają w witrynie zespołu.' `
+            -Label { param($r) "$($r.Zespół): $($r.Kanał)" } -Action { param($r) Remove-HTTeamChannel -TeamId $r.__team -ChannelId $r.Id; 'Usunięto' } -Refresh { param($m) Invoke-HTModulePrimary $m }
     }
 }
 #endregion

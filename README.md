@@ -88,10 +88,12 @@ Kafelki ze wszystkich połączonych usług i lista problemów; **moduły i środ
 
 ### Organizacja
 Wszystko, co nie dotyczy zaznaczonego konta ani skrzynki - bez listy obiektów po lewej:
-- **Tworzenie**: nowy użytkownik (z profilami tworzenia kont), masowe tworzenie kont (CSV), nowa skrzynka współdzielona / sala, **nowa grupa dowolnego rodzaju** (zabezpieczeń albo Microsoft 365, dystrybucyjna, dynamiczna z kreatorem reguł, grupa SharePoint witryny).
+- **Tworzenie**: nowy użytkownik (z profilami tworzenia kont), masowe tworzenie kont (CSV), nowa skrzynka współdzielona / sala, **nowa grupa dowolnego rodzaju** (zabezpieczeń albo Microsoft 365, dystrybucyjna, dynamiczna z kreatorem reguł, grupa SharePoint witryny), **nowa witryna SharePoint** (ta sama co w przestrzeni SharePoint), **zaproszenie gościa (B2B)** - lista adresów (`adres; Imię Nazwisko`, jeden w linii), e-mail z zaproszeniem albo sam link do przekazania (kolumna «Link zaproszenia», prawy przycisk - kopiuj), wiadomość, kopia, strona po przyjęciu i od razu dodanie do grup Microsoft 365 / zespołów Teams; lista gości ze stanem zaproszenia, ponowne zaproszenie i usunięcie konta gościa.
 - **Poczta (Exchange)**: reguły transportu, dozwoleni i zablokowani nadawcy, kontakty zewnętrzne.
 - **Licencje**: licencje do odzyskania, błędy licencji grupowych.
+- **Domeny**: wszystkie domeny tenanta - zweryfikowana, domyślna, początkowa (onmicrosoft), usługi (poczta, Teams, Intune), uwierzytelnianie (chmura / federacja); **rekordy DNS** do ustawienia u dostawcy domeny (rekord weryfikacji TXT dla niezweryfikowanych, rekordy usług dla pozostałych) z porównaniem z publicznym DNS («Jest» / «Brak» / «Inna wartość»); weryfikacja domeny (Domain.ReadWrite.All).
 - **Raporty**: przekierowania zewnętrzne, nieaktywne skrzynki, skrzynki współdzielone a licencje, kontrola konfiguracji Exchange.
+- **Diagnostyka - «Autotest funkcji»**: zamiast ręcznego klikania po każdej aktualizacji - program sam sprawdza swoje funkcje na połączonym tenancie (31 testów: konta, licencje, grupy, członkowie i właściciele, kosz katalogu, domeny i DNS, goście, zespoły i kanały, logowania, kondycja usług, witryny, Intune, skrzynki, autoodpowiedź, śledzenie wiadomości, grupy dystrybucyjne i dynamiczne z testem filtra, konfiguracja Exchange, witryna, biblioteki, grupy i uprawnienia SharePoint, AD, moduły i ustawienia tego komputera). Domyślnie tylko **testy odczytu** (niczego nie zmieniają). Po zaznaczeniu - **testy zapisu na obiektach tymczasowych** `HT-Autotest-<data>-…`: grupa zabezpieczeń (opis, członek, właściciel), licencja grupowa na grupie bez członków (nie zużywa licencji), gość `…@example.com` bez wysyłki e-maila, grupa dystrybucyjna (ukryta w GAL) i dynamiczna, grupa i folder SharePoint, a na życzenie długi test zespołu Teams z kanałem (do 5 min). Każdy obiekt testowy jest usuwany zaraz po teście, także po błędzie (grupy i konta - również z kosza katalogu); przycisk «Pozostałości po testach» znajduje i usuwa to, co zostało np. po zamknięciu programu w trakcie testu. Wynik: OK / Uwaga / Błąd / Pominięto (brak połączenia, licencji P1, Intune) z czasem i szczegółami - eksport jak każda tabela, a podsumowanie trafia do «Zgłoś problem».
 
 ### Grupy i zespoły
 Wszystkie grupy Microsoft 365 / Entra ID na liście po lewej (Microsoft 365, zabezpieczeń, pocztowe; kropka - rodzaj, szara - z AD; wyszukiwanie po nazwie, adresie i opisie):
@@ -99,6 +101,8 @@ Wszystkie grupy Microsoft 365 / Entra ID na liście po lewej (Microsoft 365, zab
 - **Właściciele**: lista (grupa bez właściciela - ostrzeżenie), dodawanie i usuwanie.
 - **Szczegóły**: rodzaj, adres i alias, opis, widoczność, data utworzenia, zespół Teams, reguła grupy dynamicznej, liczba członków i właściciele.
 - **Nowe grupy i edycja**: nowa grupa zabezpieczeń / Microsoft 365, zmiana nazwy, opisu i widoczności, usunięcie (wpisanie USUŃ); **usunięte grupy** Microsoft 365 z ostatnich 30 dni - przywrócenie albo trwałe usunięcie.
+- **Licencje grupy** (licencjonowanie grupowe): licencje przypisane do grupy, przypisanie (zielone; ostrzeżenie, gdy wolnych licencji jest mniej niż członków) i usunięcie (prawy przycisk), członkowie z błędem przypisania i ponowienie. Licencje grupowe - grupy zabezpieczeń (także dynamiczne i z AD) i grupy Microsoft 365 z włączonymi zabezpieczeniami.
+- **Zespół i kanały**: kanały zespołu (standardowe, prywatne, udostępnione; ogólny - nie do usunięcia), nowy kanał (prywatny i udostępniony - z właścicielem), usunięcie kanału; **zespół Teams z istniejącej grupy Microsoft 365** (członkowie, poczta i pliki zostają; ustawienia kanałów członków i gości, Giphy; grupa musi mieć właściciela, świeża grupa - ponawianie do 15 min replikacji).
 - **Zespoły Teams** (wszystkie zespoły z właścicielami, gośćmi, archiwizacją i aktywnością), **grupy dynamiczne Exchange** (kreator reguł z testem), **grupy do uporządkowania** (bez właściciela, bez członków).
 
 ### Microsoft 365
@@ -238,10 +242,11 @@ Modules/
   ServiceWorker.psm1           Exchange Online i SharePoint (PnP) w osobnych wątkach: połączenie, pośrednicy poleceń, «Przerwij»
   PasswordGenerator.psm1       Generator haseł i ocena siły hasła
   LocalActiveDirectory.psm1    Active Directory: konta, grupy, komputery, blokady, raporty, CIM
-  GraphAPIM365Users.psm1       Użytkownicy, licencje, grupy, MFA, logowania, raporty, kondycja usług, masowe konta (CSV)
+  GraphAPIM365Users.psm1       Użytkownicy, licencje, grupy (także licencje grupowe), goście (zaproszenia B2B), domeny
+                               i rekordy DNS, MFA, logowania, raporty, kondycja usług, masowe konta (CSV)
   GraphAPISecurity.psm1        Dostęp warunkowy, ryzyko, inspekcja, zgody, PIM, sekrety aplikacji, diagnoza logowania,
                                porównanie kont, Defender (alerty, incydenty, izolacja)
-  GraphAPITeams.psm1           Zespoły Teams: właściciele, goście, archiwizacja, aktywność
+  GraphAPITeams.psm1           Zespoły Teams: właściciele, goście, archiwizacja, aktywność, zespół z grupy, kanały
   MailboxesExchangeOnline.psm1 Exchange Online: skrzynki, uprawnienia, kwarantanna, zgodność, raporty
   ExchangeSettings.psm1        Ustawienia skrzynek i grup (katalog atrybutów, różnice, plan zmian, CSV, wzorzec),
                                kontrola konfiguracji organizacji
@@ -253,6 +258,7 @@ Modules/
   SharePointStructure.psm1     Struktura folderów z uprawnieniami (składnia, szablony), biblioteki, kolumny, uprawnienia
                                witryny, dostęp użytkownika, wyewidencjonowane pliki, kopiowanie, wysyłanie, nowe witryny
   Dashboard.psm1               Statystyki Pulpitu
+  TenantSelfTest.psm1          Autotest funkcji na tenancie: rejestr testów, obiekty testowe HT-Autotest-, sprzątanie
   Startup.psm1                 Inicjalizacja po zbudowaniu okna
 GUI/
   MainWindow.ps1               Okno główne (nagłówek, połączenia, profile tenantów, dziennik, skróty)
@@ -263,7 +269,7 @@ GUI/
 HelpdeskToolsRunner.ps1        Raporty, zadania i migawki bez okna (Harmonogram Windows)
 Plugins/                       Wtyczki (*.ps1) - przykład i opis
 Resources/Icons/               Ikony
-Tests/                         Testy Pester i test interfejsu (UiSmoke.ps1)
+Tests/                         Testy Pester, kontrola statyczna, test interfejsu (UiSmoke.ps1), Invoke-HTTests.ps1 - wszystkie naraz
 .github/workflows/tests.yml    CI: Pester, PSScriptAnalyzer i test interfejsu na Windows
 ```
 
@@ -271,9 +277,16 @@ Moduły w `Modules/` zawierają logikę (parametry wejściowe, zwracane dane), a
 
 ## Testy
 
+Są trzy poziomy testów:
+- **Autotest funkcji na tenancie** - w programie: Organizacja > Diagnostyka (opis wyżej). Sprawdza prawdziwe połączenia i uprawnienia, więc warto go uruchomić po każdej aktualizacji na tenancie testowym.
+- **Testy bez tenanta** - jednym poleceniem, to samo co GitHub przy każdej zmianie: `pwsh -File .\Tests\Invoke-HTTests.ps1` (`-Quick` - tylko Pester, `-Install` - doinstaluj Pester i PSScriptAnalyzer). Wśród nich **kontrola statyczna całego kodu** (`Tests/StaticCalls.Tests.ps1`): wywołania nieistniejących funkcji programu, parametry, których funkcja nie ma, funkcje zdefiniowane dwa razy i błędy składni - błędy, które inaczej wychodzą dopiero po kliknięciu przycisku.
+- **Test interfejsu** - budowa okna i wszystkich modułów (Windows), także w `Invoke-HTTests.ps1`.
+
 Testy jednostkowe (Pester 5) obejmują logikę niezależną od interfejsu WPF (m.in. TOTP z wektorami RFC 6238, konta i uprawnienia MFA, filtry kolumn, raport HTML, eksport do Excela, odczyt dziennika, zadania zaplanowane, checklisty, porównanie migawek, cofanie zmian, ocenę zasad dostępu warunkowego, diagnozę logowania, audyt udostępnień, wersje Windows, masowe konta z CSV, ustawienia skrzynek - różnice, plan zmian i CSV, kontrolę konfiguracji Exchange, uprawnienia do folderów, składnię struktury folderów SharePoint, kolumny, poziomy uprawnień i szablony), z atrapami poleceń AD, Exchange i Graph. Test interfejsu (`Tests/UiSmoke.ps1`) buduje okno główne, wszystkie przestrzenie i moduły oraz paletę poleceń bez połączeń z usługami. GitHub Actions uruchamia oba na Windows przy każdym wypchnięciu, razem z PSScriptAnalyzer (`PSScriptAnalyzerSettings.psd1`):
 
 ```powershell
+pwsh -File .\Tests\Invoke-HTTests.ps1 -Install    # wszystko naraz
+# albo osobno:
 Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser
 Invoke-Pester -Path .\Tests
 pwsh -STA -File .\Tests\UiSmoke.ps1

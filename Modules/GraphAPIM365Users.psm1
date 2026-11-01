@@ -330,6 +330,7 @@ function ConvertTo-HTM365GroupObject {
         Created     = $Group.createdDateTime
         MembershipRule = [string]$Group.membershipRule
         IsTeam      = (@($Group.resourceProvisioningOptions) -contains 'Team')
+        SecurityEnabled = [bool]$Group.securityEnabled
     }
 }
 
@@ -1253,30 +1254,35 @@ $script:LicenseErrorNames = @{
     Other                                = 'Inny błąd (np. konflikt adresu e-mail)'
 }
 
+function Get-HTM365GroupLicenseErrors {
+    # Członkowie grupy z błędem licencji przypisanej przez tę grupę (licencjonowanie grupowe)
+    param([Parameter(Mandatory)][string]$Id, [string]$GroupName = '', [hashtable]$SkuNames = $null)
+    if ($null -eq $SkuNames) { $SkuNames = Get-HTSkuNameMap }
+    $members = @(Invoke-HTGraphRequest -Uri "groups/$Id/membersWithLicenseErrors?`$select=id,displayName,userPrincipalName,usageLocation,licenseAssignmentStates&`$top=999" -All)
+    foreach ($u in $members) {
+        foreach ($st in @($u.licenseAssignmentStates | Where-Object { $_.assignedByGroup -eq $Id -and $_.error -and $_.error -ne 'None' })) {
+            [PSCustomObject]@{
+                Grupa              = $GroupName
+                Użytkownik         = $u.displayName
+                UPN                = $u.userPrincipalName
+                Licencja           = Get-HTSkuFriendlyName ($SkuNames["$($st.skuId)"] ?? "$($st.skuId)")
+                Błąd               = $st.error
+                Opis               = $(if ($script:LicenseErrorNames.ContainsKey([string]$st.error)) { $script:LicenseErrorNames[[string]$st.error] } else { [string]$st.error })
+                'Lokalizacja użycia' = $u.usageLocation
+                Stan               = $st.state
+                Id                 = $u.id
+                GroupId            = $Id
+                __flag             = 'crit'
+            }
+        }
+    }
+}
+
 function Get-HTGroupLicenseErrors {
     # Grupy z błędami przypisania licencji i użytkownicy z błędem (licencjonowanie grupowe)
     $skuNames = Get-HTSkuNameMap
     $groups = @(Invoke-HTGraphRequest -Uri 'groups?$filter=hasMembersWithLicenseErrors eq true&$select=id,displayName,assignedLicenses&$top=999' -All)
-    foreach ($g in $groups) {
-        $members = @(Invoke-HTGraphRequest -Uri "groups/$($g.id)/membersWithLicenseErrors?`$select=id,displayName,userPrincipalName,usageLocation,licenseAssignmentStates&`$top=999" -All)
-        foreach ($u in $members) {
-            foreach ($st in @($u.licenseAssignmentStates | Where-Object { $_.assignedByGroup -eq $g.id -and $_.error -and $_.error -ne 'None' })) {
-                [PSCustomObject]@{
-                    Grupa              = $g.displayName
-                    Użytkownik         = $u.displayName
-                    UPN                = $u.userPrincipalName
-                    Licencja           = Get-HTSkuFriendlyName ($skuNames["$($st.skuId)"] ?? "$($st.skuId)")
-                    Błąd               = $st.error
-                    Opis               = $(if ($script:LicenseErrorNames.ContainsKey([string]$st.error)) { $script:LicenseErrorNames[[string]$st.error] } else { [string]$st.error })
-                    'Lokalizacja użycia' = $u.usageLocation
-                    Stan               = $st.state
-                    Id                 = $u.id
-                    GroupId            = $g.id
-                    __flag             = 'crit'
-                }
-            }
-        }
-    }
+    foreach ($g in $groups) { Get-HTM365GroupLicenseErrors -Id $g.id -GroupName $g.displayName -SkuNames $skuNames }
 }
 
 function Invoke-HTLicenseReprocess {
@@ -1382,5 +1388,250 @@ function Test-HTBulkUserRow {
     $manager = & $get 'Przelozony'
     if ($manager -and $manager -notmatch '^[^@\s]+@[^@\s]+$') { $errors.Add('przełożony musi być podany jako UPN') }
     return @{ Valid = ($errors.Count -eq 0); Errors = $errors.ToArray(); Upn = $upn; DisplayName = $display; Login = $login; Domain = $domain; Licenses = $licenses; Groups = @(Split-HTInputList (& $get 'Grupy')); Manager = $manager }
+}
+#endregion
+
+#region Zaproszenia gości (B2B)
+function Test-HTEmailAddress {
+    param([AllowNull()][AllowEmptyString()][string]$Address)
+    return ([string]$Address).Trim() -match '^[^@\s<>;,"]+@[^@\s<>;,"]+\.[A-Za-z]{2,}$'
+}
+
+function ConvertFrom-HTGuestInviteList {
+    <#
+        Lista zapraszanych gości z pola tekstowego, jeden w linii: «adres», «adres; Nazwa», «adres, Nazwa» albo
+        «Nazwa <adres>». Zwraca Email, DisplayName i Problem (niepoprawny adres, powtórzenie) dla każdej linii.
+    #>
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    $seen = @{}
+    foreach ($line in @(([string]$Text) -split '\r?\n')) {
+        $l = $line.Trim()
+        if (-not $l) { continue }
+        $email = ''; $name = ''
+        if ($l -match '^(?<name>.*?)\s*<(?<mail>[^>]+)>\s*$') { $email = $matches.mail.Trim(); $name = $matches.name.Trim().Trim('"').Trim() }
+        else {
+            $parts = @($l -split '\s*[;,\t]\s*', 2)
+            $email = $parts[0].Trim()
+            if ($parts.Count -gt 1) { $name = $parts[1].Trim() }
+        }
+        $problem = ''
+        if (-not (Test-HTEmailAddress $email)) { $problem = 'Niepoprawny adres e-mail' }
+        elseif ($seen.ContainsKey($email.ToLowerInvariant())) { $problem = 'Adres powtórzony na liście' }
+        else { $seen[$email.ToLowerInvariant()] = $true }
+        [PSCustomObject]@{ Email = $email; DisplayName = $name; Problem = $problem; Line = $l }
+    }
+}
+
+function Get-HTGuestInvitationBody {
+    <#
+        Treść zaproszenia gościa (POST invitations). Bez wysyłki e-maila (-SendInvitation $false) konto gościa powstaje od
+        razu, a link do przyjęcia zaproszenia (inviteRedeemUrl) przekazuje się samemu. Kopia zaproszenia: jeden adres (limit Graph).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Email,
+        [string]$DisplayName = '',
+        [string]$RedirectUrl = 'https://myapps.microsoft.com',
+        [bool]$SendInvitation = $true,
+        [string]$Message = '',
+        [string[]]$CcRecipients = @(),
+        [string]$Language = 'pl-PL'
+    )
+    $redirect = if (([string]$RedirectUrl).Trim()) { $RedirectUrl.Trim() } else { 'https://myapps.microsoft.com' }
+    $body = [ordered]@{ invitedUserEmailAddress = $Email.Trim(); inviteRedirectUrl = $redirect; sendInvitationMessage = $SendInvitation }
+    if ($DisplayName.Trim()) { $body.invitedUserDisplayName = $DisplayName.Trim() }
+    if ($SendInvitation) {
+        $info = [ordered]@{ messageLanguage = $Language }
+        if ($Message.Trim()) { $info.customizedMessageBody = $Message.Trim() }
+        $cc = @($CcRecipients | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1 | ForEach-Object { @{ emailAddress = @{ address = $_.Trim() } } })
+        if ($cc.Count) { $info.ccRecipients = @($cc) }
+        $body.invitedUserMessageInfo = $info
+    }
+    return $body
+}
+
+function New-HTM365GuestInvitation {
+    # Zaproszenie gościa (B2B); zwraca konto gościa i link do przyjęcia zaproszenia. Ponowne zaproszenie tego samego adresu wysyła je jeszcze raz.
+    param(
+        [Parameter(Mandatory)][string]$Email,
+        [string]$DisplayName = '',
+        [string]$RedirectUrl = 'https://myapps.microsoft.com',
+        [bool]$SendInvitation = $true,
+        [string]$Message = '',
+        [string[]]$CcRecipients = @(),
+        [string]$Language = 'pl-PL'
+    )
+    $r = Invoke-HTGraphRequest -Uri 'invitations' -Method POST -Body (Get-HTGuestInvitationBody @PSBoundParameters)
+    return [PSCustomObject]@{
+        Email       = [string]$r.invitedUserEmailAddress
+        DisplayName = [string]$r.invitedUserDisplayName
+        Status      = [string]$r.status
+        RedeemUrl   = [string]$r.inviteRedeemUrl
+        UserId      = [string]$r.invitedUser.id
+    }
+}
+#endregion
+
+#region Licencje przypisane do grupy (licencjonowanie grupowe)
+function Test-HTM365GroupLicensable {
+    # Licencje grupowe: grupy zabezpieczeń (także z pocztą, dynamiczne i z AD) i grupy Microsoft 365 z włączonymi zabezpieczeniami
+    param([Parameter(Mandatory)][object]$Group)
+    if ($Group.Type -eq 'Dystrybucyjna') { return $false }
+    if ($Group.Type -eq 'Microsoft 365') { return [bool]$Group.SecurityEnabled }
+    return $true
+}
+
+function Get-HTM365GroupLicenses {
+    # Licencje przypisane do grupy: nazwa, kod SKU, wyłączone plany, wolne licencje w tenancie, członkowie z błędem przypisania
+    param([Parameter(Mandatory)][string]$Id)
+    $g = Invoke-HTGraphRequest -Uri "groups/$Id`?`$select=id,displayName,assignedLicenses"
+    $skus = @{}
+    foreach ($s in @(Get-HTSubscribedSkus)) { $skus[([string]$s.SkuId).ToLowerInvariant()] = $s }
+    $errorCount = 0
+    try { $errorCount = @(Invoke-HTGraphRequest -Uri "groups/$Id/membersWithLicenseErrors?`$select=id&`$top=999" -All).Count }
+    catch { Write-Log -Message "Członkowie z błędami licencji grupy $($g.displayName): $($_.Exception.Message)" -Type 'Warn' }
+    foreach ($l in @($g.assignedLicenses | Where-Object { $_ })) {
+        $sku = $skus[([string]$l.skuId).ToLowerInvariant()]
+        $part = if ($sku) { [string]$sku.SkuPartNumber } else { [string]$l.skuId }
+        $disabled = @($l.disabledPlans | Where-Object { $_ })
+        [PSCustomObject]@{
+            Licencja              = Get-HTSkuFriendlyName $part
+            SKU                   = $part
+            'Wyłączone plany'     = $disabled.Count
+            'Wolne w tenancie'    = $(if ($sku) { $sku.Available } else { $null })
+            'Członkowie z błędem' = $errorCount
+            SkuId                 = [string]$l.skuId
+            __flag                = $(if ($errorCount) { 'crit' } elseif ($sku -and $sku.Available -le 0) { 'warn' } else { '' })
+        }
+    }
+}
+
+function Get-HTGroupLicenseBody {
+    param([string[]]$AddSkuIds = @(), [string[]]$RemoveSkuIds = @())
+    return [ordered]@{
+        addLicenses    = @($AddSkuIds | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { @{ skuId = $_; disabledPlans = @() } })
+        removeLicenses = @($RemoveSkuIds | Where-Object { $_ } | Select-Object -Unique)
+    }
+}
+
+function Set-HTM365GroupLicense {
+    # Przypisanie / usunięcie licencji grupy - członkowie dostają (tracą) licencję automatycznie, zwykle w ciągu kilku minut
+    param([Parameter(Mandatory)][string]$Id, [string[]]$AddSkuIds = @(), [string[]]$RemoveSkuIds = @())
+    $body = Get-HTGroupLicenseBody -AddSkuIds $AddSkuIds -RemoveSkuIds $RemoveSkuIds
+    if (-not (@($body.addLicenses).Count + @($body.removeLicenses).Count)) { return }
+    Invoke-HTGraphRequest -Uri "groups/$Id/assignLicense" -Method POST -Body $body | Out-Null
+}
+#endregion
+
+#region Domeny tenanta
+$script:DomainServiceNames = [ordered]@{
+    Email = 'poczta'; OfficeCommunicationsOnline = 'Teams (Skype)'; Intune = 'Intune'; Sharepoint = 'SharePoint'
+    SharePointDefaultDomain = 'SharePoint (domyślna)'; SharePointPublic = 'SharePoint publiczna'; EmailInternalRelayOnly = 'poczta (tylko przekazywanie)'
+    OrgIdAuthentication = 'logowanie'; Yammer = 'Viva Engage'; FullRedelegation = 'pełne delegowanie'; Exo = 'Exchange Online'
+}
+
+function Get-HTDomainServiceName {
+    param([AllowEmptyString()][string]$Service)
+    if ($Service -and $script:DomainServiceNames.Contains($Service)) { return $script:DomainServiceNames[$Service] }
+    return $Service
+}
+
+function ConvertTo-HTDomainRow {
+    param([Parameter(Mandatory)][object]$Domain)
+    $services = @($Domain.supportedServices | Where-Object { $_ } | ForEach-Object { Get-HTDomainServiceName ([string]$_) })
+    $notes = @()
+    if (-not $Domain.isVerified) { $notes += 'niezweryfikowana - dodaj rekord TXT i kliknij «Zweryfikuj»' }
+    if ($Domain.isVerified -and -not $services.Count -and -not $Domain.isInitial) { $notes += 'bez usług (np. poczty) - rekordy DNS w «Rekordy DNS»' }
+    if ("$($Domain.authenticationType)" -eq 'Federated') { $notes += 'logowanie przez zewnętrzny serwer (federacja)' }
+    return [PSCustomObject]@{
+        Domena                = [string]$Domain.id
+        Zweryfikowana         = [bool]$Domain.isVerified
+        Domyślna              = [bool]$Domain.isDefault
+        'Początkowa (onmicrosoft)' = [bool]$Domain.isInitial
+        Uwierzytelnianie      = $(switch ("$($Domain.authenticationType)") { 'Managed' { 'w chmurze' } 'Federated' { 'federacja' } default { "$($Domain.authenticationType)" } })
+        Usługi                = ($services -join ', ')
+        'Ważność hasła (dni)' = $Domain.passwordValidityPeriodInDays
+        Uwagi                 = ($notes -join '; ')
+        Id                    = [string]$Domain.id
+        __flag                = $(if (-not $Domain.isVerified) { 'crit' } elseif ("$($Domain.authenticationType)" -eq 'Federated') { 'warn' } else { '' })
+    }
+}
+
+function Get-HTM365DomainDetails {
+    # Wszystkie domeny tenanta (także niezweryfikowane): domyślna, usługi, uwierzytelnianie
+    return @(Invoke-HTGraphRequest -Uri 'domains' | ForEach-Object { ConvertTo-HTDomainRow -Domain $_ } | Sort-Object @{ Expression = { -not $_.Domyślna } }, @{ Expression = { $_.'Początkowa (onmicrosoft)' } }, Domena)
+}
+
+function ConvertTo-HTDomainDnsRow {
+    # Rekord DNS z Graph (domainDnsRecord): wartość zależnie od typu (TXT, MX, CNAME, SRV)
+    param([Parameter(Mandatory)][object]$Record, [string]$Domain = '', [string]$Purpose = '')
+    $type = [string]$Record.recordType
+    $value = switch ($type) {
+        'Txt' { [string]$Record.text }
+        'Mx' { [string]$Record.mailExchange }
+        'CName' { [string]$Record.canonicalName }
+        'Srv' { "$($Record.priority) $($Record.weight) $($Record.port) $($Record.nameTarget)" }
+        default { [string]$Record.description }
+    }
+    $name = if ($type -eq 'Srv') { "$($Record.service).$($Record.protocol).$($Record.label)" } else { [string]$Record.label }
+    return [PSCustomObject]@{
+        Domena     = $Domain
+        Cel        = $Purpose
+        Typ        = $type.ToUpperInvariant()
+        Nazwa      = $name
+        Wartość    = $value
+        Priorytet  = $(if ($type -eq 'Mx') { $Record.preference } elseif ($type -eq 'Srv') { $Record.priority } else { $null })
+        TTL        = $Record.ttl
+        Usługa     = Get-HTDomainServiceName ([string]$Record.supportedService)
+        Opcjonalny = [bool]$Record.isOptional
+        __flag     = $(if ($Record.isOptional) { 'muted' } else { '' })
+    }
+}
+
+function Get-HTM365DomainDnsRecords {
+    # Rekordy DNS domeny: -Verification - rekord weryfikacji (TXT/MX), inaczej rekordy usług (poczta, Teams, Intune)
+    param([Parameter(Mandatory)][string]$Domain, [switch]$Verification)
+    $path = if ($Verification) { 'verificationDnsRecords' } else { 'serviceConfigurationRecords' }
+    $purpose = if ($Verification) { 'weryfikacja domeny' } else { 'usługi' }
+    return @(Invoke-HTGraphRequest -Uri "domains/$([uri]::EscapeDataString($Domain))/$path" -All | ForEach-Object { ConvertTo-HTDomainDnsRow -Record $_ -Domain $Domain -Purpose $purpose })
+}
+
+function Compare-HTDnsRecordValue {
+    # Czy wśród wartości z DNS jest oczekiwana (bez wielkości liter, kropki na końcu i cudzysłowów TXT)
+    param([AllowEmptyString()][string]$Expected, [AllowEmptyCollection()][string[]]$Actual = @())
+    $norm = { param($v) ([string]$v).Trim().Trim('"').TrimEnd('.').ToLowerInvariant() }
+    $e = & $norm $Expected
+    if (-not $e) { return $false }
+    return [bool](@($Actual | Where-Object { (& $norm $_) -eq $e }).Count)
+}
+
+function Test-HTDomainDnsRecord {
+    # Sprawdzenie rekordu w publicznym DNS (Resolve-DnsName - Windows): Jest / Brak / Inna wartość / Nie sprawdzono
+    param([Parameter(Mandatory)][object]$Row)
+    if (-not (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue)) { return [PSCustomObject]@{ Stan = 'Nie sprawdzono'; 'W DNS' = 'Resolve-DnsName niedostępne (tylko Windows)' } }
+    $type = [string]$Row.Typ
+    $name = [string]$Row.Nazwa
+    if ($type -eq 'SRV') { $expected = ([string]$Row.Wartość -split '\s+')[-1] } else { $expected = [string]$Row.Wartość }
+    try {
+        $answers = @(Resolve-DnsName -Name $name -Type $type -DnsOnly -QuickTimeout -ErrorAction Stop | Where-Object { "$($_.Type)" -eq $type -or ("$($_.QueryType)" -eq $type) })
+        $values = @(foreach ($a in $answers) {
+                switch ($type) {
+                    'TXT' { ($a.Strings -join '') }
+                    'MX' { $a.NameExchange }
+                    'CNAME' { $a.NameHost }
+                    'SRV' { $a.NameTarget }
+                    default { [string]$a }
+                }
+            })
+        if (-not $values.Count) { return [PSCustomObject]@{ Stan = 'Brak'; 'W DNS' = '' } }
+        $ok = Compare-HTDnsRecordValue -Expected $expected -Actual $values
+        return [PSCustomObject]@{ Stan = $(if ($ok) { 'Jest' } else { 'Inna wartość' }); 'W DNS' = (@($values | Select-Object -First 5) -join ' | ') }
+    }
+    catch { return [PSCustomObject]@{ Stan = 'Brak'; 'W DNS' = "$($_.Exception.Message)" } }
+}
+
+function Invoke-HTM365DomainVerify {
+    # Weryfikacja domeny po dodaniu rekordu TXT (Domain.ReadWrite.All); DNS może potrzebować do kilku godzin
+    param([Parameter(Mandatory)][string]$Domain)
+    return (ConvertTo-HTDomainRow -Domain (Invoke-HTGraphRequest -Uri "domains/$([uri]::EscapeDataString($Domain))/verify" -Method POST -Body @{}))
 }
 #endregion

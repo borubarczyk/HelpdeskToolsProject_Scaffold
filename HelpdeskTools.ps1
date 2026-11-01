@@ -60,7 +60,7 @@ if ($HideConsole) {
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 # Zmienne globalne
-$Global:AppVersion = "3.14.0"
+$Global:AppVersion = "3.15.0"
 $Global:HTScriptPath = $PSCommandPath
 $Global:HTRestarting = $false
 $Global:ConfigDir = Join-Path -Path $env:APPDATA -ChildPath "HelpdeskTools"
@@ -121,6 +121,7 @@ $moduleNames = @(
     "SharePointAudit",
     "SharePointStructure",
     "Dashboard",
+    "TenantSelfTest",
     "Startup"
 )
 

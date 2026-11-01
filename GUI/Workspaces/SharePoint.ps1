@@ -1062,8 +1062,8 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Zawartość' -Key 'sp.uploa
 #endregion
 
 #region Witryna: nowa witryna
-Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.newsite' -Title 'Nowa witryna' -Icon 'E774' -Service 'SharePoint' `
-    -Description 'Nowa witryna zespołu (z grupą Microsoft 365, gotowa do Teams), witryna zespołu bez grupy albo witryna komunikacyjna: nazwa, adres, właściciele, język, prywatność. Od razu można połączyć się z nią i zastosować szablon struktury (biblioteki, foldery, uprawnienia).' -Build {
+$script:NewSiteDescription = 'Nowa witryna zespołu (z grupą Microsoft 365, gotowa do Teams), witryna zespołu bez grupy albo witryna komunikacyjna: nazwa, adres, właściciele, język, prywatność. Od razu można połączyć się z nią i zastosować szablon struktury (biblioteki, foldery, uprawnienia).'
+$script:NewSiteBuild = {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Utwórz witrynę…' -Create -NoRowMenu -Icon 'E710' -Primary -OnClick {
@@ -1132,6 +1132,9 @@ Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.newsite' 
         }
         Invoke-HTSPStructureRun -Module $m -Pending @{ Items = @($parsed.Items); Targets = $targets; SiteMode = $siteMode }
     } | Out-Null
-    Add-HTLabel -Parent $row -Hint -Text 'Wymaga uprawnień do tworzenia witryn (domyślnie mają je użytkownicy; administrator może to ograniczyć).' | Out-Null
+    Add-HTLabel -Parent $row -Hint -Text 'Wymaga połączenia SharePoint (dowolna witryna tenanta) i uprawnień do tworzenia witryn (domyślnie mają je użytkownicy; administrator może to ograniczyć).' | Out-Null
 }
+Register-HTModule -Workspace 'SharePoint' -Category 'Witryna' -Key 'sp.newsite' -Title 'Nowa witryna' -Icon 'E774' -Service 'SharePoint' -Description $script:NewSiteDescription -Build $script:NewSiteBuild
+# Ta sama funkcja w Organizacja > Tworzenie (tworzenie nie dotyczy wybranej witryny)
+Register-HTModule -Workspace 'Organization' -Category 'Tworzenie' -Key 'org.newsite' -Title 'Nowa witryna SharePoint' -Icon 'E774' -Service 'SharePoint' -Description $script:NewSiteDescription -Build $script:NewSiteBuild
 #endregion
