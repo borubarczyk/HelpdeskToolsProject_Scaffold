@@ -586,6 +586,7 @@ function Connect-Module {
                     Write-Log "Adres $url to domena tenantu, nie witryna SharePoint - użyto $($resolvedUrl.Url)." "Warn"
                 }
                 $url = $resolvedUrl.Url
+                Initialize-HTSharePointSession
                 Invoke-HTLogin -Title "SharePoint" -ScriptBlock { Connect-PnPOnline -Url $url -ClientId $clientId -Interactive -ValidateConnection -ErrorAction Stop }.GetNewClosure()
                 $connectedUrl = (Get-PnPConnection).Url
                 $Global:ConnectedToSharepointPnP = $true
@@ -785,16 +786,16 @@ function Show-HTSharePointConnectDialog {
 
 function Connect-HTExchangeSession {
     <#
-        Logowanie do Exchange Online: domyślnie w osobnym wątku Exchange (ExchangeWorker - okno nie zamarza, polecenia
+        Logowanie do Exchange Online: domyślnie w osobnym wątku Exchange (ServiceWorker - okno nie zamarza, polecenia
         Exchange idą przez pośredników), po wyłączeniu w Ustawieniach albo gdy wątek nie wczyta modułu - w wątku okna.
     #>
     param([Parameter(Mandatory)][string]$Title, [Parameter(Mandatory)][hashtable]$Parameters)
-    if ($Global:ExchangeInBackground -ne $false -and (Get-Command -Name Connect-HTExchangeWorker -ErrorAction SilentlyContinue)) {
+    if ($Global:ExchangeInBackground -ne $false -and (Get-Command -Name Connect-HTExchangeWorker -ErrorAction Ignore)) {
         $module = @(Get-Module -Name ExchangeOnlineManagement | Sort-Object Version -Descending)[0]
         $path = if ($module) { $manifest = Join-Path $module.ModuleBase "$($module.Name).psd1"; if (Test-Path -LiteralPath $manifest) { $manifest } else { $module.Path } } else { '' }
         $ready = $false
         if ($path) {
-            try { Start-HTExchangeWorker -ModulePath $path; $ready = $true }
+            try { Start-HTServiceWorker -Service 'Exchange' -ModulePath $path; $ready = $true }
             catch { Write-Log "Exchange w osobnym wątku niedostępny ($($_.Exception.Message)) - łączenie w wątku okna." "Warn" }
         }
         if ($ready) {
@@ -804,8 +805,24 @@ function Connect-HTExchangeSession {
         }
     }
     # Wątek okna: pośrednicy z poprzedniego połączenia w wątku Exchange nie mogą przechwytywać poleceń
-    if (Get-Command -Name Remove-HTExchangeProxies -ErrorAction SilentlyContinue) { Remove-HTExchangeProxies }
+    if (Get-Command -Name Remove-HTServiceProxies -ErrorAction Ignore) { Remove-HTServiceProxies -Service 'Exchange' }
     Invoke-HTLogin -Title $Title -ScriptBlock { Connect-ExchangeOnline @Parameters }.GetNewClosure()
+}
+
+function Initialize-HTSharePointSession {
+    <#
+        SharePoint (PnP): domyślnie polecenia PnP (także logowanie Connect-PnPOnline) działają w osobnym wątku SharePoint
+        (ServiceWorker - okno nie zamarza). Po wyłączeniu w Ustawieniach albo gdy wątek nie wczyta modułu - w wątku okna.
+    #>
+    if ($Global:SharePointInBackground -ne $false -and (Get-Command -Name Enable-HTSharePointWorker -ErrorAction Ignore)) {
+        $module = @(Get-Module -Name PnP.PowerShell | Sort-Object Version -Descending)[0]
+        $path = if ($module) { $manifest = Join-Path $module.ModuleBase "$($module.Name).psd1"; if (Test-Path -LiteralPath $manifest) { $manifest } else { $module.Path } } else { '' }
+        if ($path) {
+            try { Enable-HTSharePointWorker -ModulePath $path; Write-HTDebug { "SharePoint: polecenia PnP w wątku SharePoint (moduł $path)" }; return }
+            catch { Write-Log "SharePoint w osobnym wątku niedostępny ($($_.Exception.Message)) - polecenia PnP w wątku okna." "Warn" }
+        }
+    }
+    if (Get-Command -Name Remove-HTServiceProxies -ErrorAction Ignore) { Remove-HTServiceProxies -Service 'SharePoint' }
 }
 
 # Parametry Connect-ExchangeOnline: logowanie w przeglądarce zamiast okna Windows (WAM) - -DisableWAM, EXO 3.7.2+

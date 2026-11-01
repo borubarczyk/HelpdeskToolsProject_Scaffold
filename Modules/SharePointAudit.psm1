@@ -148,6 +148,8 @@ function Connect-HTPnPReturn {
     param ([Parameter(Mandatory)][string]$Url, [string]$ClientId = "$($Global:LastUsedClientID)")
     if (-not $ClientId) { throw 'Brak Client ID aplikacji PnP (SharePoint > Aplikacja PnP).' }
     $connection = $null
+    # Wczytany moduł PnP: logowanie i polecenia w wątku SharePoint (połączenie wraca jako obiekt do -Connection)
+    if ((Get-Module -Name PnP.PowerShell) -and (Get-Command -Name Initialize-HTSharePointSession -ErrorAction Ignore)) { Initialize-HTSharePointSession }
     $login = { Connect-PnPOnline -Url $Url -ClientId $ClientId -Interactive -ReturnConnection -ErrorAction Stop }.GetNewClosure()
     $connection = @(Invoke-HTLogin -Title "SharePoint ($Url)" -ScriptBlock $login)[-1]
     if (-not $connection) { throw "Nie połączono z $Url." }

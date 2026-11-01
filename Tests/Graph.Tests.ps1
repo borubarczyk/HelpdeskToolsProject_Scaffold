@@ -246,7 +246,7 @@ Describe "Logowanie w przeglądarce" {
         Disable-HTGraphWam
         Should -Invoke -ModuleName ModulesConnection Set-MgGraphOption -Times 1 -Exactly -ParameterFilter { $DisableLoginByWAM -eq $true }
     }
-    AfterAll { Remove-Item function:global:Connect-ExchangeOnline, function:global:Set-MgGraphOption -ErrorAction SilentlyContinue }
+    AfterAll { Remove-Item -LiteralPath Function:Connect-ExchangeOnline, Function:Set-MgGraphOption -ErrorAction SilentlyContinue }
 }
 
 Describe "Błędy Microsoft Graph" {

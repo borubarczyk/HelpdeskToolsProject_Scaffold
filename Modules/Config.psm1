@@ -77,6 +77,7 @@ function Get-HTDefaultConfig {
         # Skrzynki systemowe Exchange (DiscoverySearchMailbox) na listach i w raportach
         ShowSystemMailboxes       = $false
         ExchangeInBackground      = $true
+        SharePointInBackground    = $true
         # Foldery modułów PowerShell w OneDrive pomijane, gdy pliki są tylko w chmurze, a OneDrive nie działa
         SkippedModulePaths        = @()
         ConfigVersion             = $script:ConfigVersion
@@ -266,6 +267,7 @@ function Apply-HTConfig {
     $Global:NotifyLongOperationsSeconds = [int]$Config.NotifyLongOperationsSeconds
     $Global:ShowSystemMailboxes = [bool]$Config.ShowSystemMailboxes
     $Global:ExchangeInBackground = $(if ($null -eq $Config.ExchangeInBackground) { $true } else { [bool]$Config.ExchangeInBackground })
+    $Global:SharePointInBackground = $(if ($null -eq $Config.SharePointInBackground) { $true } else { [bool]$Config.SharePointInBackground })
     $Global:DebugLogging = [bool]$Config.DebugLogging
 
     if ($Global:PasswordDefaultLength -lt 8 -or $Global:PasswordDefaultLength -gt 64) { $Global:PasswordDefaultLength = 12 }

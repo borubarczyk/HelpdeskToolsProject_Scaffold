@@ -6865,9 +6865,9 @@ function Stop-HTBackground {
         Write-Log -Message 'Przerywanie operacji - zatrzyma się po bieżącym obiekcie…' -Type 'Info'
         Set-HTStatus -Text 'Przerywanie… (po bieżącym obiekcie)'
     }
-    # Polecenie Exchange w wątku Exchange (ExchangeWorker) - zatrzymanie od razu
-    $stopExchange = Get-Command -Name Stop-HTExchangeWorkerCommand -ErrorAction Ignore
-    if ($stopExchange -and (& $stopExchange)) { Write-Log -Message 'Przerywanie polecenia Exchange…' -Type 'Info' }
+    # Polecenie Exchange / SharePoint w wątku usługi (ServiceWorker) - zatrzymanie od razu
+    $stopService = Get-Command -Name Stop-HTServiceWorkerCommand -ErrorAction Ignore
+    if ($stopService -and (& $stopService)) { Write-Log -Message 'Przerywanie polecenia Exchange / SharePoint…' -Type 'Info' }
     $ps = $script:Background.Current
     if (-not $ps) { return }
     Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
