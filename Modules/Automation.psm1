@@ -162,7 +162,7 @@ function Get-HTJobMissingServices {
     # Usługi wymagane przez zadanie, z którymi nie ma połączenia
     param ([Parameter(Mandatory)]$Job)
     $needed = @($script:JobTypes[[string]$Job.Type].Services)
-    if ($Job.Type -eq 'Offboarding' -and ($Job.Data.Steps.Shared -or $Job.Data.Steps.Hide -or $Job.Data.Steps.AutoReply)) { $needed += 'Exchange' }
+    if ($Job.Type -eq 'Offboarding' -and ($Job.Data.Steps.Shared -or $Job.Data.Steps.Hide -or $Job.Data.Steps.AutoReply -or $Job.Data.Steps.Forward)) { $needed += 'Exchange' }
     return @($needed | Where-Object {
             switch ($_) {
                 'Graph' { -not $Global:ConnectedToGraphAPI }
@@ -195,6 +195,17 @@ function Invoke-HTJob {
             $s = $d.Steps
             $done = New-Object System.Collections.Generic.List[string]
             $upn = [string]$d.Label
+            # Kopia ustawień konta przed zmianami (do przywrócenia konta) - bez kopii zadanie kończy się błędem, konto bez zmian
+            if ($s.Backup) {
+                if (-not (Get-Command -Name Save-HTAccountBackup -ErrorAction Ignore)) { throw 'Brak modułu kopii kont (AccountBackup) - konto bez zmian.' }
+                try {
+                    $backup = Get-HTM365AccountBackup -Id $d.UserId
+                    if ($Global:ConnectedToExchange) { try { $backup.Mailbox = Get-HTMailboxBackupInfo -Identity $upn } catch { $backup.MailboxError = $_.Exception.Message } }
+                    $path = Save-HTAccountBackup -Backup $backup
+                }
+                catch { throw "Nie zapisano kopii ustawień konta - konto bez zmian: $($_.Exception.Message)" }
+                $done.Add("kopia ustawień ($path)")
+            }
             if ($s.Block) { Set-HTM365UserEnabled -Id $d.UserId -Enabled $false -RevokeSessions $true; $done.Add('blokada i wylogowanie') }
             if ($s.Password) { $pw = New-Password -Length 20 -StartWithLetter $true -NoSimilarChars $true; Reset-HTM365UserPassword -Id $d.UserId -Password $pw -ForceChange $true; $done.Add('losowe hasło') }
             if ($Global:ConnectedToExchange) {

@@ -366,7 +366,7 @@ Describe "Blok w wątku w tle (Test-HTBackgroundSafeBlock)" {
         function global:Get-HTGuiOnlyThing { 1 }
         $Global:HTTestForm = @{ X = 1 }
     }
-    AfterAll { Remove-Item function:global:Get-HTGuiOnlyThing -ErrorAction SilentlyContinue }
+    AfterAll { Remove-Item -LiteralPath Function:Get-HTGuiOnlyThing -ErrorAction SilentlyContinue }
     It "dopuszcza bloki z parametrami, zmiennymi lokalnymi, poleceniami PowerShell i funkcjami modułów puli" {
         Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) Select-HTDetailFields -Detail @{ A = 1 } -Fields 'A' } | Should -BeTrue
         Test-HTBackgroundSafeBlock -AllowedModules 'Utils' -ScriptBlock { param($t) $x = @($t.A | ForEach-Object { $_ }); foreach ($y in $x) { [PSCustomObject]@{ A = $y; U = $env:USERNAME } } } | Should -BeTrue

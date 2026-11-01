@@ -18,7 +18,7 @@ BeforeAll {
     }
 }
 
-AfterAll { Remove-Item function:global:New-HTTestBackup -ErrorAction SilentlyContinue }
+AfterAll { Remove-Item -LiteralPath Function:New-HTTestBackup -ErrorAction SilentlyContinue }
 
 Describe "Kopia ustawień konta przed offboardingiem" {
     It "nazywa plik kopii UPN-em i datą bez znaków niedozwolonych" {

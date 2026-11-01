@@ -99,7 +99,7 @@ Describe "Skrzynki systemowe (DiscoverySearchMailbox)" {
         $Global:ShowSystemMailboxes = $true
         @(Get-HTMailboxes).Count | Should -Be 2
     }
-    AfterAll { Remove-Item function:global:Get-EXOMailbox -ErrorAction SilentlyContinue }
+    AfterAll { Remove-Item -LiteralPath Function:Get-EXOMailbox -ErrorAction SilentlyContinue }
 }
 
 Describe "Zestawienie skrzynki (wiersz = skrzynka)" {

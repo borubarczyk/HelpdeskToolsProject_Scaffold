@@ -51,7 +51,7 @@ $Global:ShowNotifications = $false
 $Global:HTActiveAccount = 'automatyzacja'
 
 foreach ($name in 'Utils', 'Security', 'Config', 'Reports', 'Excel', 'Integrations', 'Automation', 'ModulesConnection', 'PasswordGenerator', 'GraphAPIM365Users',
-    'GraphAPISecurity', 'GraphAPITeams', 'MailboxesExchangeOnline', 'GraphAPIIntune', 'GraphAPISharePoint', 'SharePointAudit') {
+    'GraphAPISecurity', 'GraphAPITeams', 'MailboxesExchangeOnline', 'GraphAPIIntune', 'GraphAPISharePoint', 'SharePointAudit', 'AccountBackup') {
     Import-Module (Join-Path $PSScriptRoot "Modules/$name.psm1") -Force -Global -DisableNameChecking
 }
 # Moduły PowerShell w OneDrive bez lokalnej kopii plików - folder pomijany (moduły z C:\Program Files\PowerShell\Modules)
@@ -91,7 +91,7 @@ try {
 
     $needsExchange = @($reports | Where-Object { (Get-HTHeadlessReports)[$_].Service -eq 'Exchange' }).Count -gt 0 -or
         @($snapshots | Where-Object { (Get-HTSnapshotDefinitions)[$_].Service -eq 'Exchange' }).Count -gt 0 -or
-        ($RunJobs -and @(Get-HTDueJobs | Where-Object { $_.Type -eq 'RemoveMailboxPermission' -or ($_.Type -eq 'Offboarding' -and ($_.Data.Steps.Shared -or $_.Data.Steps.Hide -or $_.Data.Steps.AutoReply)) }).Count -gt 0)
+        ($RunJobs -and @(Get-HTDueJobs | Where-Object { $_.Type -eq 'RemoveMailboxPermission' -or ($_.Type -eq 'Offboarding' -and ($_.Data.Steps.Shared -or $_.Data.Steps.Hide -or $_.Data.Steps.AutoReply -or $_.Data.Steps.Forward)) }).Count -gt 0)
     if ($needsExchange) {
         if (-not $Organization) { throw 'Raport lub zadanie wymaga Exchange Online - ustaw domenę organizacji (AutomationOrganization).' }
         Import-Module ExchangeOnlineManagement -ErrorAction Stop

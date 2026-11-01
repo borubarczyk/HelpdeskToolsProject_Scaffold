@@ -62,10 +62,42 @@ Describe "Zadania zaplanowane" {
         $r[0].Status | Should -Be "OK"
         $Global:HTTestCalls[0] | Should -Be 'DELETE groups/g1/members/u1/$ref'
         @(Get-HTJobs)[0].Status | Should -Be "Wykonane"
-        Remove-Item function:global:Invoke-HTGraphRequest
+        Remove-Item -LiteralPath Function:Invoke-HTGraphRequest
     }
     It "nie przyjmuje nieznanego typu" {
         { New-HTScheduledJob -Type "Nieznany" -RunAt (Get-Date) } | Should -Throw
+    }
+}
+
+Describe "Zaplanowany offboarding - kopia ustawień konta" {
+    BeforeAll {
+        function global:Get-HTM365AccountBackup { param($Id) $Global:HTTestCalls += "backup $Id"; [ordered]@{ User = [ordered]@{ Id = $Id; UserPrincipalName = 'jan@firma.pl' }; Mailbox = $null } }
+        function global:Save-HTAccountBackup { param($Backup) if ($Global:HTTestBackupFails) { throw 'brak dostępu do folderu' }; $Global:HTTestCalls += 'save'; 'C:\Kopie kont\Kopia_jan.json' }
+        function global:Set-HTM365UserEnabled { param($Id, $Enabled, $RevokeSessions) $Global:HTTestCalls += "block $Id" }
+        $Global:HTTestJob = [PSCustomObject]@{ Type = 'Offboarding'; Data = @{ UserId = 'u-1'; Label = 'jan@firma.pl'; Steps = @{ Backup = $true; Block = $true } } }
+    }
+    AfterAll {
+        foreach ($n in 'Get-HTM365AccountBackup', 'Save-HTAccountBackup', 'Set-HTM365UserEnabled') { Remove-Item -LiteralPath "Function:$n" -ErrorAction SilentlyContinue }
+        Remove-Variable -Name HTTestBackupFails, HTTestJob -Scope Global -ErrorAction SilentlyContinue
+    }
+    It "zapisuje kopię przed zmianami" {
+        $Global:HTTestCalls = @()
+        $Global:HTTestBackupFails = $false
+        $Global:ConnectedToExchange = $false
+        Invoke-HTJob -Job $Global:HTTestJob | Should -Be 'kopia ustawień (C:\Kopie kont\Kopia_jan.json), blokada i wylogowanie'
+        $Global:HTTestCalls | Should -Be @('backup u-1', 'save', 'block u-1')
+    }
+    It "bez kopii nie zmienia konta (zadanie kończy się błędem)" {
+        $Global:HTTestCalls = @()
+        $Global:HTTestBackupFails = $true
+        { Invoke-HTJob -Job $Global:HTTestJob } | Should -Throw '*konto bez zmian*'
+        $Global:HTTestCalls | Should -Not -Contain 'block u-1'
+    }
+    It "przekierowanie poczty wymaga połączenia z Exchange w terminie" {
+        $Global:ConnectedToGraphAPI = $true
+        $Global:ConnectedToExchange = $false
+        @(Get-HTJobMissingServices -Job ([PSCustomObject]@{ Type = 'Offboarding'; Data = @{ Steps = @{ Forward = 'szef@firma.pl' } } })) | Should -Be @('Exchange')
+        @(Get-HTJobMissingServices -Job ([PSCustomObject]@{ Type = 'Offboarding'; Data = @{ Steps = @{ Block = $true } } })).Count | Should -Be 0
     }
 }
 
@@ -142,7 +174,7 @@ Describe "Cofanie zmian" {
         @(Get-HTUndoRecords)[0].Undone | Should -Not -BeNullOrEmpty
         { Invoke-HTUndo -Id $rec.Id } | Should -Throw
         @(Get-HTOperationRecords -Object "PC-01").Count | Should -Be 1
-        Remove-Item function:global:Set-HTEntraDeviceEnabled
+        Remove-Item -LiteralPath Function:Set-HTEntraDeviceEnabled
     }
     It "nie przyjmuje nieznanego rodzaju" {
         { Register-HTUndo -Operation "x" -Kind "Nieznany" } | Should -Throw

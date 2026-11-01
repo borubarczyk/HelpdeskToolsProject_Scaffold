@@ -58,8 +58,9 @@ Describe "Exchange w osobnym wątku" {
         $Global:HTFakeProxies | Should -Be 4
         Test-HTServiceProxies -Service 'Exchange' | Should -BeTrue
         Test-Path function:global:Get-HTFakeMailbox | Should -BeTrue
-        Test-Path function:global:Connect-ExchangeOnline | Should -BeFalse
-        Test-Path function:global:Get-ChildItem | Should -BeFalse
+        # Bez pośrednika (inna funkcja o tej nazwie, np. atrapa z innego testu, może istnieć)
+        "$((Get-Command -Name Connect-ExchangeOnline -ErrorAction Ignore).Definition)" | Should -Not -Match 'Invoke-HTServiceProxyCall'
+        (Get-Command -Name Get-ChildItem).CommandType | Should -Be 'Cmdlet'
     }
     It "wykonuje polecenie w innym wątku z przełącznikami i aliasami parametrów" {
         $r = Get-HTFakeMailbox -Identity 'jan@firma.pl' -Archive -Props 'a', 'b' -WarningAction SilentlyContinue

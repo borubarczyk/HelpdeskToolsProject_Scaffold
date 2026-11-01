@@ -194,7 +194,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
 }
 
 Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks.offboard' -Title 'Zaplanowany offboarding' -Icon 'E8F8' `
-    -Description 'Offboarding w wybranym terminie (np. ostatni dzień pracy o 17:00): blokada i wylogowanie, losowe hasło, autoodpowiedź i przekierowanie, skrzynka współdzielona, ukrycie w GAL, grupy i licencje.' -Build {
+    -Description 'Offboarding w wybranym terminie (np. ostatni dzień pracy o 17:00): kopia ustawień konta, blokada i wylogowanie, losowe hasło, autoodpowiedź i przekierowanie, skrzynka współdzielona, ukrycie w GAL, grupy i licencje.' -Build {
     param($m)
     $row = Add-HTToolbarRow -Module $m
     Add-HTButton -Parent $row -Module $m -Text 'Zaplanuj offboarding…' -Icon 'E8F8' -Primary -Danger -OnClick {
@@ -206,6 +206,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
         $form = Show-HTFormDialog -Title "Offboarding: $(Get-HTM365Label $user)" -Icon 'E8F8' -OkText 'Zaplanuj' -Danger -Width 620 -Fields @(
             @{ Name = 'When'; Label = 'Termin (RRRR-MM-DD GG:MM)'; Type = 'Date'; Default = (Get-Date).AddDays(1).ToString('yyyy-MM-dd 17:00') }
             @{ Type = 'Header'; Label = 'Kroki' }
+            @{ Name = 'Backup'; Label = "Kopia ustawień konta do pliku przed zmianami (do przywrócenia konta; folder: $(Get-HTAccountBackupDirectory))"; Type = 'Check'; Default = $true }
             @{ Name = 'Block'; Label = 'Zablokuj logowanie i unieważnij sesje'; Type = 'Check'; Default = $true }
             @{ Name = 'Password'; Label = 'Losowe hasło'; Type = 'Check'; Default = $true }
             @{ Name = 'AutoReply'; Label = 'Autoodpowiedź - ta sama treść dla osób z firmy i spoza firmy (opcjonalnie, wymaga połączenia z Exchange w terminie)'; Type = 'Multiline'; Height = 50 }
@@ -219,7 +220,7 @@ Register-HTModule -Workspace 'Tasks' -Category 'Zadania zaplanowane' -Key 'tasks
         if (-not $form -or -not $form.When) { return }
         $when = [datetime]$form.When
         if (-not (Confirm-HTChange -Name 'Zaplanowany offboarding' -Labels @(Get-HTM365Label $user) -Danger -Confirm "Zaplanować offboarding na $($when.ToString('yyyy-MM-dd HH:mm'))? Kroki wykonają się automatycznie w tym terminie.")) { return }
-        $steps = @{ Block = [bool]$form.Block; Password = [bool]$form.Password; AutoReply = [string]$form.AutoReply; Forward = [string]$form.Forward; Shared = [bool]$form.Shared; Hide = [bool]$form.Hide; Groups = [bool]$form.Groups; Licenses = [bool]$form.Licenses }
+        $steps = @{ Backup = [bool]$form.Backup; Block = [bool]$form.Block; Password = [bool]$form.Password; AutoReply = [string]$form.AutoReply; Forward = [string]$form.Forward; Shared = [bool]$form.Shared; Hide = [bool]$form.Hide; Groups = [bool]$form.Groups; Licenses = [bool]$form.Licenses }
         $job = New-HTScheduledJob -Type 'Offboarding' -RunAt $when -Object (Get-HTM365Label $user) -Description "Zaplanowany offboarding" -Data @{ UserId = $user.Id; Label = (Get-HTM365Label $user); Steps = $steps }
         Add-HTOperationRecord -Operation 'Zaplanowanie offboardingu' -Object (Get-HTM365Label $user) -Details $when.ToString('yyyy-MM-dd HH:mm') -Module $m.Title
         [void](Send-HTTeamsMessage -Event 'Offboarding' -Title 'Zaplanowano offboarding' -Tone 'warn' -Facts ([ordered]@{ Konto = (Get-HTM365Label $user); Termin = $when.ToString('yyyy-MM-dd HH:mm'); Zaplanował = $job.CreatedBy }))
