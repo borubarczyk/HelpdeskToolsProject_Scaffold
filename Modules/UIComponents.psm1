@@ -3761,32 +3761,38 @@ function Complete-HTModuleView {
 }
 
 function Add-HTParamRow {
-    # Wiersz panelu parametrów z podpisem po lewej (-Title) i dowolną zawartością
+    <#
+        Wiersz panelu parametrów z podpisem po lewej (-Title) i dowolną zawartością. Kolumna podpisów jest wspólna dla
+        wierszy modułu (SharedSizeGroup): gdy którykolwiek wiersz ma podpis, wiersze bez podpisu zaczynają się w kolumnie
+        treści (np. czerwone przyciski zmian pod «Sprawdź stan», a nie pod podpisem «Stan»); bez podpisów - bez wcięcia.
+    #>
     param([Parameter(Mandatory)][hashtable]$Module, [string]$Title = '', [Parameter(Mandatory)]$Content)
-    $container = $Content
+    $stack = $Module.ParamsStack
+    [System.Windows.Controls.Grid]::SetIsSharedSizeScope($stack, $true)
+    $grid = New-Object System.Windows.Controls.Grid
+    $c1 = New-Object System.Windows.Controls.ColumnDefinition
+    $c1.Width = [System.Windows.GridLength]::Auto
+    $c1.SharedSizeGroup = 'HTParamCaption'
+    $c2 = New-Object System.Windows.Controls.ColumnDefinition
+    [void]$grid.ColumnDefinitions.Add($c1)
+    [void]$grid.ColumnDefinitions.Add($c2)
     if ($Title) {
-        $grid = New-Object System.Windows.Controls.Grid
-        $c1 = New-Object System.Windows.Controls.ColumnDefinition
-        $c1.Width = New-Object System.Windows.GridLength 128
-        $c2 = New-Object System.Windows.Controls.ColumnDefinition
-        [void]$grid.ColumnDefinitions.Add($c1)
-        [void]$grid.ColumnDefinitions.Add($c2)
         $caption = New-Object System.Windows.Controls.TextBlock
         $caption.Text = $Title
         $caption.Foreground = Get-HTBrush '#8791A5'
         $caption.FontWeight = 'SemiBold'
         $caption.FontSize = 12
+        # Szerokość podpisu 116 + odstęp 12 = 128 (jak dotąd)
+        $caption.Width = 116
         $caption.Margin = '0,8,12,0'
         $caption.VerticalAlignment = 'Top'
         $caption.TextWrapping = 'Wrap'
         [void]$grid.Children.Add($caption)
-        [System.Windows.Controls.Grid]::SetColumn($Content, 1)
-        [void]$grid.Children.Add($Content)
-        $container = $grid
     }
-    $stack = $Module.ParamsStack
-    if ($stack.Children.Count -gt 0) { $container.Margin = '0,4,0,0' }
-    [void]$stack.Children.Add($container)
+    [System.Windows.Controls.Grid]::SetColumn($Content, 1)
+    [void]$grid.Children.Add($Content)
+    if ($stack.Children.Count -gt 0) { $grid.Margin = '0,4,0,0' }
+    [void]$stack.Children.Add($grid)
     $Module.ParamsCard.Visibility = 'Visible'
     return $Content
 }
