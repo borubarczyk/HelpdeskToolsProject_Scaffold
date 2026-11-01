@@ -298,6 +298,7 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.forward' -T
     } | Out-Null
     $row = Add-HTToolbarRow -Module $m -Title 'Przekieruj do'
     $m.C.To = Add-HTTextBox -Parent $row -Width 280 -Placeholder 'adres@domena.pl'
+    Add-HTAddressPicker -Parent $row -Module $m -TextBox $m.C.To | Out-Null
     $m.C.Keep = Add-HTCheckBox -Parent $row -Text 'Zachowaj kopię w skrzynce' -Checked $true
     Add-HTButton -Parent $row -Module $m -Text 'Ustaw' -Icon 'E89C' -Primary -Danger -OnClick {
         param($m)

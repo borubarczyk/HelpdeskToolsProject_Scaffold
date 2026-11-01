@@ -475,8 +475,9 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
     $m.C.Shared = Add-HTCheckBox -Parent $row2 -Text 'Konwertuj na skrzynkę współdzieloną' -Checked $true -ToolTip 'Skrzynka współdzielona do 50 GB nie wymaga licencji'
     $m.C.Hide = Add-HTCheckBox -Parent $row2 -Text 'Ukryj w książce adresowej' -Checked $true
     $m.C.Forward = Add-HTTextBox -Parent $row2 -Width 240 -Placeholder 'Przekieruj pocztę do (opcjonalnie)'
+    Add-HTAddressPicker -Parent $row2 -Module $m -TextBox $m.C.Forward | Out-Null
     $row3 = Add-HTToolbarRow -Module $m -Title 'Autoodpowiedź'
-    $m.C.AutoReply = Add-HTTextBox -Parent $row3 -Width 560 -Multiline -Height 54 -Placeholder 'Treść autoodpowiedzi (opcjonalnie), np. Pracownik nie pracuje już w firmie. Proszę kontaktować się z ...'
+    $m.C.AutoReply = Add-HTTextBox -Parent $row3 -Width 560 -Multiline -Height 54 -Placeholder 'Treść autoodpowiedzi - ta sama dla osób z firmy i spoza firmy (opcjonalnie), np. Pracownik nie pracuje już w firmie. Proszę kontaktować się z ...'
     $row4 = Add-HTToolbarRow -Module $m -Title 'Dostęp'
     $m.C.Groups = Add-HTCheckBox -Parent $row4 -Text 'Usuń z grup' -Checked $true
     $m.C.Licenses = Add-HTCheckBox -Parent $row4 -Text 'Usuń licencje (po konwersji skrzynki)' -Checked $true
@@ -500,7 +501,7 @@ Register-HTModule -Workspace 'M365' -Category 'Cykl życia' -Key 'm365.offboardi
         $steps = @()
         if ($o.Block) { $steps += 'blokada i wylogowanie' }
         if ($o.Password) { $steps += 'reset hasła' }
-        if ($o.AutoReply) { $steps += 'autoodpowiedź' }
+        if ($o.AutoReply) { $steps += 'autoodpowiedź (w firmie i na zewnątrz)' }
         if ($o.Forward) { $steps += "przekierowanie do $($o.Forward)" }
         if ($o.Shared) { $steps += 'skrzynka współdzielona' }
         if ($o.Hide) { $steps += 'ukrycie w GAL' }
