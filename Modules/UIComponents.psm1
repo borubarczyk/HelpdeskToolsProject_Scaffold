@@ -3483,6 +3483,13 @@ $script:ModuleViewXaml = @'
           <TextBlock x:Name="busyText" Text="Trwa operacja…" Foreground="#8CC0FF" FontSize="12" VerticalAlignment="Center" MaxWidth="360" TextTrimming="CharacterEllipsis"/>
         </StackPanel>
       </Border>
+      <Button x:Name="btnBusyStop" Style="{StaticResource DangerButton}" MinHeight="26" Padding="10,2" Margin="8,0,0,0" Visibility="Collapsed" VerticalAlignment="Center"
+              ToolTip="Przerwij (Esc): zapytanie w tle od razu, operację na wielu obiektach - po bieżącym obiekcie. Wyniki zostaną w tabeli.">
+        <StackPanel Orientation="Horizontal">
+          <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE71A;" FontSize="11" Margin="0,0,7,0" VerticalAlignment="Center"/>
+          <TextBlock Text="Przerwij" FontSize="12" VerticalAlignment="Center"/>
+        </StackPanel>
+      </Button>
       <Button x:Name="btnCollapse" Style="{StaticResource GhostButton}" Padding="8,4" MinHeight="28" ToolTip="Zwiń / rozwiń panel parametrów"/>
     </StackPanel>
   </Grid>
@@ -3618,7 +3625,7 @@ function New-HTModuleView {
     param([Parameter(Mandatory)][hashtable]$Module)
     $root = New-HTUiElement $script:ModuleViewXaml
     $Module.Root = $root
-    foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
+    foreach ($n in 'paramsCard', 'paramsStack', 'statsGrid', 'busyChip', 'busyText', 'btnBusyStop', 'countText', 'btnFilters', 'resultHint', 'filterBox', 'chkReveal',
         'btnViews', 'btnColumns', 'btnEmptyCols', 'btnDetail', 'btnCopy', 'btnMail', 'btnExport', 'grid', 'emptyState', 'emptyIcon', 'emptyText', 'emptyHint', 'detailCol', 'detailSplit',
         'detailPane', 'detailText', 'btnDetailCopy', 'btnCollapse') {
         $Module.View_[$n] = $root.FindName($n)
@@ -3636,6 +3643,7 @@ function New-HTModuleView {
     if ($Module.Description) { $desc.Text = $Module.Description } else { $desc.Visibility = 'Collapsed' }
 
     $v = $Module.View_
+    $v.btnBusyStop.add_Click({ Stop-HTBackground })
     $v.btnDetail.Content = New-HTIconContent -Text '' -Icon 'E8A1'
     $v.btnColumns.Content = New-HTIconContent -Text '' -Icon 'E8FD'
     $v.btnEmptyCols.Content = New-HTIconContent -Text '' -Icon 'ED1A'
@@ -4510,10 +4518,13 @@ function Invoke-HTTargetAction {
     if (-not $NoConfirm -and -not (Confirm-HTChange -Name $Name -Labels $labels -Confirm $Confirm -Summary $Summary -Source $source -Danger:$Danger -TypeToConfirm $TypeToConfirm)) { return }
     if (-not $KeepResults) { Reset-HTResults -Module $Module }
     Set-HTBusy -Busy $true -Text "$Name…"
+    Start-HTStoppable
     $ok = 0
     $failed = 0
+    $stoppedAt = -1
     try {
         for ($i = 0; $i -lt $Targets.Count; $i++) {
+            if (Test-HTStopRequested) { $stoppedAt = $i; break }
             $t = $Targets[$i]
             Set-HTProgress -Value ($i + 1) -Maximum $Targets.Count -Text "$Name [$($i + 1)/$($Targets.Count)] $($labels[$i])"
             $row = [ordered]@{ Obiekt = $labels[$i]; Status = 'OK' }
@@ -4536,10 +4547,18 @@ function Invoke-HTTargetAction {
             $row['__target'] = $t
             Add-HTResultRows -Module $Module -Objects @([PSCustomObject]$row)
         }
+        # Przerwano: pozostałe obiekty w wynikach jako «Pominięto» - widać, czego nie zmieniono
+        if ($stoppedAt -ge 0) {
+            $skipped = @(for ($j = $stoppedAt; $j -lt $Targets.Count; $j++) { [PSCustomObject][ordered]@{ Obiekt = $labels[$j]; Status = 'Pominięto'; Szczegóły = 'Przerwano przez użytkownika'; __target = $Targets[$j]; __flag = 'muted' } })
+            Add-HTResultRows -Module $Module -Objects $skipped
+            Write-Log -Message "Przerwano: $Name - wykonano dla $stoppedAt z $($Targets.Count) obiekt., pominięto: $($skipped.Count) ($(@($labels | Select-Object -Skip $stoppedAt -First 10) -join ', ')$(if ($skipped.Count -gt 10) { ' …' }))" -Type 'Warn'
+        }
     }
     finally {
-        Set-HTBusy -Busy $false -Text "$Name - zakończono: $ok OK, błędy: $failed"
+        Stop-HTStoppable
+        Set-HTBusy -Busy $false -Text $(if ($stoppedAt -ge 0) { "$Name - przerwano: $ok OK, błędy: $failed, pominięto: $($Targets.Count - $stoppedAt)" } else { "$Name - zakończono: $ok OK, błędy: $failed" })
     }
+    if ($stoppedAt -ge 0) { Show-HTToast "$Name - przerwano. Wykonano: $ok, błędy: $failed, pominięto: $($Targets.Count - $stoppedAt)." 'warn'; return }
     $tone = if ($failed -gt 0) { 'warn' } else { 'ok' }
     Show-HTToast "$Name - wykonano: $ok, błędy: $failed." $tone
 }
@@ -5247,9 +5266,12 @@ function Invoke-HTTargetQuery {
     $showObject = $AlwaysShowObject -or $Targets.Count -gt 1
     Reset-HTResults -Module $Module
     Set-HTBusy -Busy $true -Text "$Name…"
+    if ($Targets.Count -gt 1) { Start-HTStoppable }
     $failed = 0
+    $stoppedAt = -1
     try {
         for ($i = 0; $i -lt $Targets.Count; $i++) {
+            if ($Targets.Count -gt 1 -and (Test-HTStopRequested)) { $stoppedAt = $i; break }
             $t = $Targets[$i]
             $caption = [string](& $Label $t)
             if ($Targets.Count -gt 1) { Set-HTProgress -Value ($i + 1) -Maximum $Targets.Count -Text "$Name [$($i + 1)/$($Targets.Count)] $caption" }
@@ -5276,10 +5298,13 @@ function Invoke-HTTargetQuery {
         }
     }
     finally {
+        if ($Targets.Count -gt 1) { Stop-HTStoppable }
         $count = $Module.Table.Rows.Count
-        Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($failed) { ", błędy: $failed" })"
+        $stopText = if ($stoppedAt -ge 0) { ", przerwano po $stoppedAt z $($Targets.Count) obiekt." } else { '' }
+        Set-HTBusy -Busy $false -Text "$Name - wyników: $count$(if ($failed) { ", błędy: $failed" })$stopText"
     }
-    Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($failed) { ", błędy: $failed" })" -Type $(if ($failed) { 'Warn' } else { 'Info' })
+    $stopText = if ($stoppedAt -ge 0) { " - przerwano po $stoppedAt z $($Targets.Count) obiekt." } else { '' }
+    Write-Log -Message "$Name ($($Targets.Count) obiekt.) - wyników: $($Module.Table.Rows.Count)$(if ($failed) { ", błędy: $failed" })$stopText" -Type $(if ($failed -or $stoppedAt -ge 0) { 'Warn' } else { 'Info' })
 }
 
 function Get-HTSelectedResultTargets {
@@ -5332,10 +5357,13 @@ function Invoke-HTRowAction {
     $labels = @($Rows | ForEach-Object { [string](& $Label $_) })
     if (-not $NoConfirm -and -not (Confirm-HTChange -Name $Name -Labels $labels -Confirm $Confirm -Summary $Summary -Danger:$Danger -TypeToConfirm $TypeToConfirm)) { return }
     Set-HTBusy -Busy $true -Text "$Name…"
+    if ($Rows.Count -gt 1) { Start-HTStoppable }
     $ok = 0
     $errors = New-Object System.Collections.Generic.List[string]
+    $stoppedAt = -1
     try {
         for ($i = 0; $i -lt $Rows.Count; $i++) {
+            if ($Rows.Count -gt 1 -and (Test-HTStopRequested)) { $stoppedAt = $i; break }
             if ($Rows.Count -gt 1) { Set-HTProgress -Value ($i + 1) -Maximum $Rows.Count -Text "$Name [$($i + 1)/$($Rows.Count)] $($labels[$i])" }
             try {
                 $detail = & $Action $Rows[$i]
@@ -5351,8 +5379,18 @@ function Invoke-HTRowAction {
             }
         }
     }
-    finally { Set-HTBusy -Busy $false -Text "$Name - wykonano: $ok, błędy: $($errors.Count)" }
-    if ($errors.Count -gt 0) { Show-HTWarning -Title $Name -Text ("Wykonano: $ok, błędy: $($errors.Count)`n`n" + (($errors | Select-Object -First 30) -join "`n")) }
+    finally {
+        if ($Rows.Count -gt 1) { Stop-HTStoppable }
+        Set-HTBusy -Busy $false -Text "$Name - wykonano: $ok, błędy: $($errors.Count)$(if ($stoppedAt -ge 0) { ", przerwano - pominięto: $($Rows.Count - $stoppedAt)" })"
+    }
+    $stopNote = ''
+    if ($stoppedAt -ge 0) {
+        $skipped = @($labels | Select-Object -Skip $stoppedAt)
+        $stopNote = "`n`nPrzerwano - pominięto ($($skipped.Count)): $(@($skipped | Select-Object -First 15) -join ', ')$(if ($skipped.Count -gt 15) { ' …' })"
+        Write-Log -Message "Przerwano: $Name - wykonano: $ok, pominięto: $($skipped.Count) ($(@($skipped | Select-Object -First 10) -join ', ')$(if ($skipped.Count -gt 10) { ' …' }))" -Type 'Warn'
+    }
+    if ($errors.Count -gt 0) { Show-HTWarning -Title $Name -Text ("Wykonano: $ok, błędy: $($errors.Count)`n`n" + (($errors | Select-Object -First 30) -join "`n") + $stopNote) }
+    elseif ($stoppedAt -ge 0) { Show-HTToast "$Name - przerwano. Wykonano: $ok, pominięto: $($Rows.Count - $stoppedAt)." 'warn' }
     else { Show-HTToast "$Name - wykonano: $ok." 'ok' }
     if ($Refresh -and $ok -gt 0) { Invoke-HTUiAction -Module $Module -Action $Refresh }
 }
@@ -6650,12 +6688,41 @@ function Write-HTForwardedLog {
 }
 
 function Set-HTCancelVisible([bool]$Visible) {
+    # «Przerwij» na pasku stanu i obok wskaźnika pracy w nagłówku modułu
+    $state = if ($Visible) { 'Visible' } else { 'Collapsed' }
     $b = $script:UI.Controls['btnCancelOps']
-    if ($b) { $b.Visibility = if ($Visible) { 'Visible' } else { 'Collapsed' } }
+    if ($b) { $b.Visibility = $state }
+    $m = $script:UI.ActiveModule
+    if ($m -and $m.View_ -and $m.View_['btnBusyStop']) { $m.View_.btnBusyStop.Visibility = $state }
+}
+
+function Start-HTStoppable {
+    # Operacja na wielu obiektach w wątku okna: «Przerwij» (albo Esc) zatrzymuje ją po bieżącym obiekcie
+    $script:UI.StoppableDepth = [int]$script:UI.StoppableDepth + 1
+    if ($script:UI.StoppableDepth -eq 1) { $script:UI.StopRequested = $false }
+    Set-HTCancelVisible $true
+}
+
+function Stop-HTStoppable {
+    $script:UI.StoppableDepth = [Math]::Max(0, [int]$script:UI.StoppableDepth - 1)
+    if ($script:UI.StoppableDepth -eq 0) {
+        $script:UI.StopRequested = $false
+        if (-not $script:Background.Current) { Set-HTCancelVisible $false }
+    }
+}
+
+function Test-HTStopRequested {
+    # Czy użytkownik kliknął «Przerwij» w trakcie operacji na wielu obiektach
+    return ([bool]$script:UI.StopRequested -and [int]$script:UI.StoppableDepth -gt 0)
 }
 
 function Stop-HTBackground {
-    # «Przerwij» na pasku stanu: zatrzymanie bieżącego zapytania w tle
+    # «Przerwij» (pasek stanu, nagłówek modułu, Esc): zapytanie w tle - od razu; operacja na wielu obiektach - po bieżącym obiekcie
+    if ([int]$script:UI.StoppableDepth -gt 0 -and -not $script:UI.StopRequested) {
+        $script:UI.StopRequested = $true
+        Write-Log -Message 'Przerywanie operacji - zatrzyma się po bieżącym obiekcie…' -Type 'Info'
+        Set-HTStatus -Text 'Przerywanie… (po bieżącym obiekcie)'
+    }
     $ps = $script:Background.Current
     if (-not $ps) { return }
     Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
@@ -6727,7 +6794,7 @@ function Invoke-HTBackground {
     }
     finally {
         $bg.Current = $previous
-        if (-not $previous) { Set-HTCancelVisible $false }
+        if (-not $previous -and -not [int]$script:UI.StoppableDepth) { Set-HTCancelVisible $false }
         $ps.Dispose()
     }
     if (-not $OnItem) { return $results.ToArray() }
