@@ -6831,6 +6831,11 @@ function Set-HTCancelVisible([bool]$Visible) {
     if ($m -and $m.View_ -and $m.View_['btnBusyStop']) { $m.View_.btnBusyStop.Visibility = $state }
 }
 
+function Hide-HTCancelIfIdle {
+    # Ukrywa «Przerwij», gdy nic już nie trwa (zapytanie w tle, pętla po obiektach) - po dłuższym poleceniu Exchange
+    if (-not $script:Background.Current -and -not [int]$script:UI.StoppableDepth) { Set-HTCancelVisible $false }
+}
+
 function Start-HTStoppable {
     # Operacja na wielu obiektach w wątku okna: «Przerwij» (albo Esc) zatrzymuje ją po bieżącym obiekcie
     $script:UI.StoppableDepth = [int]$script:UI.StoppableDepth + 1
@@ -6858,6 +6863,9 @@ function Stop-HTBackground {
         Write-Log -Message 'Przerywanie operacji - zatrzyma się po bieżącym obiekcie…' -Type 'Info'
         Set-HTStatus -Text 'Przerywanie… (po bieżącym obiekcie)'
     }
+    # Polecenie Exchange w wątku Exchange (ExchangeWorker) - zatrzymanie od razu
+    $stopExchange = Get-Command -Name Stop-HTExchangeWorkerCommand -ErrorAction Ignore
+    if ($stopExchange -and (& $stopExchange)) { Write-Log -Message 'Przerywanie polecenia Exchange…' -Type 'Info' }
     $ps = $script:Background.Current
     if (-not $ps) { return }
     Write-Log -Message 'Przerywanie operacji w tle…' -Type 'Info'
