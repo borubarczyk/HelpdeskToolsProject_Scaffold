@@ -375,6 +375,31 @@ function ConvertTo-HTDisplayValue {
 }
 
 # Rozbija tekst (np. wklejoną listę) na unikalne, niepuste wpisy
+function Protect-HTSupportText {
+    # Tekst do wsparcia bez sekretów: tokeny (JWT), hasła i sekrety «nazwa=wartość», podpisy i klucze w adresach, webhooki
+    param([AllowEmptyString()][AllowNull()][string]$Text)
+    if (-not $Text) { return '' }
+    $t = $Text -replace 'eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*', '[token]'
+    $t = $t -replace '(?i)https?://[^\s"''<>]*(webhook|logic\.azure|powerautomate|environment\.api)[^\s"''<>]*', '[adres webhooka]'
+    $t = $t -replace '(?i)([?&](sig|code|token|key|secret|password)=)[^\s&"''<>]+', '$1[ukryte]'
+    $t = $t -replace '(?i)\b(password|passwd|hasło|haslo|secret|sekret|client_?secret|token|api_?key)(\s*[:=]\s*)\S+', '$1$2[ukryte]'
+    return $t
+}
+
+function Format-HTSupportReport {
+    # Dane do zgłoszenia problemu z sekcji [ordered]@{ Tytuł = wiersze } (kolejność zachowana), bez sekretów
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Sections)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $Sections.Keys) {
+        if ($lines.Count) { $lines.Add('') }
+        $lines.Add("== $k ==")
+        $items = @($Sections[$k] | Where-Object { $null -ne $_ })
+        if (-not $items.Count) { $lines.Add('(brak)') }
+        foreach ($l in $items) { $lines.Add((Protect-HTSupportText ([string]$l))) }
+    }
+    return ($lines -join "`r`n")
+}
+
 function Get-HTAddressCompletion {
     <#
         Podpowiedź końcówki adresu podczas pisania: najdłuższy wspólny początek znanych adresów zaczynających się od -Token

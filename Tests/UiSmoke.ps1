@@ -95,6 +95,7 @@ foreach ($dialog in @(
         }
         @{ Name = 'Wybór opcji'; Open = { [void](Show-HTChoiceDialog -Title 'Wybór opcji' -Choices @(@{ Key = 'a'; Text = 'Konto organizacji'; Description = 'Logowanie interaktywne'; Icon = 'E77B' }, @{ Key = 'b'; Text = 'Import z pliku…'; Icon = 'E8B5' })) }; Expect = '' }
         @{ Name = 'Podsumowanie do zgłoszenia'; Open = { Add-HTOperationRecord -Kind Check -Operation 'Uprawnienia witryny' -Object 'https://firma.sharepoint.com/sites/A' -Details 'wyników: 3'; Add-HTOperationRecord -Operation 'Nadanie uprawnień' -Object 'jan@firma.pl'; Show-HTOperationSummaryDialog }; Expect = '' }
+        @{ Name = 'Dane do zgłoszenia problemu'; Open = { Show-HTSupportDialog }; Expect = '' }
         @{ Name = 'Potwierdzenie zmiany'; Open = { [void](Confirm-HTChange -Name 'Potwierdzenie zmiany' -Labels @('a@firma.pl', 'b@firma.pl') -Summary @('Tryb: Enabled')) }; Expect = '' }
     )) {
     $errorsBefore = $Global:SmokeErrors.Count

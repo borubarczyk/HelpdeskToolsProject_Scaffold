@@ -251,6 +251,7 @@ function Show-HTToolsMenu {
 }
 
 #region Polecenia palety (Ctrl+K)
+Register-HTPaletteAction -Text 'Dane do zgłoszenia problemu (wsparcie)' -Icon 'EBE8' -Description 'Wersje programu i modułów, system, połączenia, ostatnie błędy i dziennik - do skopiowania albo paczka ZIP' -Keywords 'support wsparcie błąd problem diagnostyka logi wersja moduły zgłoś' -Action { param($q) Show-HTSupportDialog }
 Register-HTPaletteAction -Text 'Podsumowanie do zgłoszenia' -Icon 'E8A5' -Description 'Operacje wykonane w tej sesji - tekst do ticketu' -Keywords 'ticket zgłoszenie podsumowanie raport' -Action { param($q) Show-HTOperationSummaryDialog }
 Register-HTPaletteAction -Text 'Podsumowanie do zgłoszenia' -Icon 'E8A5' -Description 'Operacje dotyczące wpisanego obiektu' -NeedsQuery -Action { param($q) Show-HTOperationSummaryDialog -Object $q }
 Register-HTPaletteAction -Text 'Przełącz tenant' -Icon 'E8AB' -Description 'Microsoft 365, Exchange i SharePoint z innym zapisanym tenantem (GDAP)' -Keywords 'gdap klient tenant profil' -Action { param($q) Show-HTTenantSwitch }

@@ -7745,6 +7745,123 @@ function Show-HTOperationSummaryDialog {
 }
 #endregion
 
+#region Dane do zgłoszenia problemu (wsparcie)
+function Get-HTSupportSections {
+    <#
+        Dane do zgłoszenia problemu: program, system, moduły (wczytane i zainstalowane wersje), połączenia i wątki usług,
+        ustawienia (bez sekretów), ostatnie błędy i ostrzeżenia, wyjątki PowerShell z miejscem wystąpienia, końcówka dziennika.
+    #>
+    $sections = [ordered]@{}
+    $sections['Program'] = @(
+        "Helpdesk Tools $($Global:AppVersion)"
+        "Plik: $($Global:HTScriptPath)"
+        "Raport: $((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) ($([System.TimeZoneInfo]::Local.Id))"
+        "Konto programu (MFA): $(if ($Global:HTActiveAccount) { $Global:HTActiveAccount } else { 'podstawowe' })"
+    )
+    $admin = try { if (Get-Command -Name Test-HTIsAdministrator -ErrorAction Ignore) { Test-HTIsAdministrator } else { '?' } } catch { '?' }
+    $sections['System'] = @(
+        "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition)), $PSHOME"
+        ".NET $([System.Environment]::Version)"
+        "$([System.Runtime.InteropServices.RuntimeInformation]::OSDescription) ($([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture))"
+        "Kultura: $((Get-Culture).Name), interfejs: $((Get-UICulture).Name), administrator: $admin, wątek okna: $([System.Threading.Thread]::CurrentThread.GetApartmentState())"
+        "PSModulePath: $($env:PSModulePath -replace [regex]::Escape([System.IO.Path]::PathSeparator), ' | ')"
+    )
+    $sections['Moduły'] = foreach ($name in 'Microsoft.Graph.Authentication', 'ExchangeOnlineManagement', 'PnP.PowerShell', 'ActiveDirectory', 'Pester') {
+        $loaded = @(Get-Module -Name $name | ForEach-Object { "$($_.Version)" })
+        $installed = @(Get-Module -ListAvailable -Name $name -ErrorAction SilentlyContinue | Sort-Object Version -Descending | ForEach-Object { "$($_.Version) ($($_.ModuleBase))" })
+        "$($name): wczytany $(if ($loaded.Count) { $loaded -join ', ' } else { '-' }); zainstalowane: $(if ($installed.Count) { $installed -join '; ' } else { 'brak' })"
+    }
+    $worker = { param($s) try { if (Get-Command -Name Test-HTServiceWorker -ErrorAction Ignore) { if (Test-HTServiceWorker -Service $s) { 'działa' } else { 'nie działa' } } else { '-' } } catch { '?' } }
+    $sections['Połączenia'] = @(
+        "Microsoft 365 (Graph): $(if ($Global:ConnectedToGraphAPI) { 'połączono' } else { 'nie' })"
+        "Exchange Online: $(if ($Global:ConnectedToExchange) { 'połączono' } else { 'nie' }); w osobnym wątku: $($Global:ExchangeInBackground -ne $false) (wątek: $(& $worker 'Exchange'))"
+        "SharePoint (PnP): $(if ($Global:ConnectedToSharepointPnP) { 'połączono' } else { 'nie' }); w osobnym wątku: $($Global:SharePointInBackground -ne $false) (wątek: $(& $worker 'SharePoint'))"
+        "Active Directory: $(if ($Global:IsModuleActiveDirectoryLoaded) { 'moduł wczytany' } else { 'nie' })"
+        "Operacje w tle (Graph): $($Global:BackgroundQueries -ne $false)$(if ($script:Background -and $script:Background.Disabled) { ' - wyłączone w tej sesji (brak połączenia w wątku w tle)' })"
+    )
+    $sections['Ustawienia'] = foreach ($n in 'DebugLogging', 'ShowNotifications', 'ShowOnPremises', 'ShowSystemMailboxes', 'BackgroundQueries', 'ExchangeInBackground', 'SharePointInBackground', 'LoginTimeoutMinutes', 'AutoLockMinutes', 'NotifyLongOperationsSeconds', 'LogFileMaxSizeMB', 'ExportPath', 'LogDir', 'ConfigDir') {
+        $v = Get-Variable -Name $n -Scope Global -ValueOnly -ErrorAction Ignore
+        "$($n): $(if ($null -eq $v) { '-' } else { [string]$v })"
+    }
+    $history = @(Get-HTLogHistory)
+    $sections['Ostatnie błędy i ostrzeżenia (25)'] = @($history | Where-Object { $_.Type -in 'Error', 'Warn' } | Select-Object -Last 25 | ForEach-Object { Format-HTLogEntry -Entry $_ })
+    $sections['Ostatnie wyjątki PowerShell (5)'] = foreach ($e in @($global:Error | Select-Object -First 5)) {
+        if ($e -is [System.Management.Automation.ErrorRecord]) {
+            $where = if ($e.InvocationInfo -and $e.InvocationInfo.ScriptName) { "$(Split-Path -Leaf $e.InvocationInfo.ScriptName):$($e.InvocationInfo.ScriptLineNumber)" } else { '' }
+            $stack = @(([string]$e.ScriptStackTrace) -split "`r?`n" | Where-Object { $_ } | Select-Object -First 4) -join ' <- '
+            "$($e.Exception.GetType().Name): $($e.Exception.Message)$(if ($where) { " [$where]" })$(if ($stack) { " | $stack" })"
+        }
+        else { "$($e.GetType().Name): $([string]$e)" }
+    }
+    $sections['Dziennik - ostatnie wpisy (80)'] = @($history | Select-Object -Last 80 | ForEach-Object { Format-HTLogEntry -Entry $_ })
+    return $sections
+}
+
+$script:SupportDialogXaml = @'
+<StackPanel>
+  <TextBox x:Name="spText" Style="{StaticResource MultiText}" IsReadOnly="True" Height="400" TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12"/>
+  <TextBlock Foreground="#7B8496" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
+             Text="Wersja programu i modułów, system, połączenia, ustawienia, ostatnie błędy i dziennik - bez haseł, tokenów i adresów webhooków. Dziennik może zawierać nazwy kont i skrzynek: sprawdź tekst przed wysłaniem poza firmę."/>
+</StackPanel>
+'@
+
+$script:SupportDialogEvents = @{
+    Copy = {
+        param($s, $e)
+        $t = [System.Windows.Window]::GetWindow($s).FindName('spText').Text
+        if ($t) { Set-HTClipboard $t; Show-HTToast 'Skopiowano dane do zgłoszenia problemu.' 'ok' }
+    }
+    Zip  = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        try {
+            $path = Save-HTSupportPackage -Report $w.FindName('spText').Text
+            Show-HTToast "Zapisano paczkę: $path" 'ok' 8
+            Start-Process -FilePath 'explorer.exe' -ArgumentList "/select,`"$path`""
+        }
+        catch { Show-HTError -Text 'Nie zapisano paczki dla wsparcia.' -ErrorObject $_ }
+    }
+}
+
+function Save-HTSupportPackage {
+    # Paczka ZIP dla wsparcia: raport (tekst) i pliki dziennika z ostatnich 2 dni; folder eksportu. Zwraca ścieżkę.
+    param([Parameter(Mandatory)][string]$Report)
+    $dir = Get-HTExportDirectory
+    $stamp = (Get-Date).ToString('yyyyMMdd_HHmmss')
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) "HelpdeskTools_wsparcie_$stamp"
+    New-Item -ItemType Directory -Path $work -Force | Out-Null
+    try {
+        [System.IO.File]::WriteAllText((Join-Path $work 'Dane_do_zgloszenia.txt'), $Report, (New-Object System.Text.UTF8Encoding($true)))
+        foreach ($f in @(Get-HTLogFiles | Where-Object { $_.Date -ge (Get-Date).Date.AddDays(-1) })) {
+            # Dziennik z tego dnia może być otwarty do zapisu - kopia przez strumień z FileShare.ReadWrite
+            $src = [System.IO.File]::Open($f.Path, 'Open', 'Read', 'ReadWrite')
+            try { $dst = [System.IO.File]::Create((Join-Path $work $f.Name)); try { $src.CopyTo($dst) } finally { $dst.Dispose() } } finally { $src.Dispose() }
+        }
+        $zip = Join-Path $dir "HelpdeskTools_wsparcie_$stamp.zip"
+        Compress-Archive -Path (Join-Path $work '*') -DestinationPath $zip -Force
+        return $zip
+    }
+    finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+function Show-HTSupportDialog {
+    # Dane do zgłoszenia problemu: tekst do skopiowania albo paczka ZIP z dziennikiem
+    Set-HTBusy -Busy $true -Text 'Zbieranie danych do zgłoszenia…'
+    try { $text = Format-HTSupportReport -Sections (Get-HTSupportSections) }
+    finally { Set-HTBusy -Busy $false -Text 'Gotowe' }
+    $w = New-HTDialog -Title 'Dane do zgłoszenia problemu' -Subtitle 'Do wysłania wsparciu: wersje, system, moduły, połączenia, ostatnie błędy i dziennik.' -Body $script:SupportDialogXaml -Icon 'EBE8' -OkText 'Zamknij' -NoCancel -Width 900
+    $copy = New-HTButton -Text 'Kopiuj' -Icon 'E8C8' -Primary
+    $copy.Margin = '0,0,8,0'
+    $copy.add_Click($script:SupportDialogEvents.Copy)
+    [void]$w.FindName('dlgExtra').Children.Add($copy)
+    $zip = New-HTButton -Text 'Zapisz paczkę ZIP (z dziennikiem)' -Icon 'E74E'
+    $zip.add_Click($script:SupportDialogEvents.Zip)
+    [void]$w.FindName('dlgExtra').Children.Add($zip)
+    $w.FindName('spText').Text = $text
+    [void](Invoke-HTDialog $w)
+}
+#endregion
+
 #region Ponowne uruchomienie programu
 function Restart-HTApplication {
     <#

@@ -102,6 +102,7 @@ $script:MainXaml = @'
           </StackPanel>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="btnLogSummary" Style="{StaticResource GhostButton}" ToolTip="Podsumowanie do zgłoszenia - operacje wykonane w tej sesji" MinHeight="26" Padding="8,2"/>
+            <Button x:Name="btnLogSupport" Style="{StaticResource GhostButton}" ToolTip="Dane do zgłoszenia problemu dla wsparcia: wersje programu i modułów, system, połączenia, ostatnie błędy i dziennik (bez haseł)" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogCopy" Style="{StaticResource GhostButton}" ToolTip="Kopiuj dziennik (zaznaczone wpisy lub wszystkie widoczne)" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogHistory" Style="{StaticResource GhostButton}" ToolTip="Dziennik z poprzednich dni (Pulpit > Dziennik programu)" MinHeight="26" Padding="8,2"/>
             <Button x:Name="btnLogFile" Style="{StaticResource GhostButton}" ToolTip="Otwórz dzisiejszy plik dziennika" MinHeight="26" Padding="8,2"/>
@@ -348,7 +349,7 @@ function New-HTMainWindow {
     foreach ($n in 'txtVersion', 'txtUser', 'wsSwitcher', 'txtSubtitle', 'connHost', 'btnLock', 'btnPassword', 'btnSettings', 'btnSearch',
         'targetColumn', 'targetHost', 'navHost', 'contentHost', 'toastHost', 'logRow', 'logSplitter', 'logPanel', 'logList',
         'btnLogCopy', 'btnLogFile', 'btnLogClear', 'btnLogHide', 'statusDot', 'txtStatus', 'prgStatus', 'btnLogToggle',
-        'logBadge', 'logBadgeText', 'logLevel', 'logSearch', 'logCount', 'btnLogHistory', 'btnLogSummary', 'btnCancelOps') {
+        'logBadge', 'logBadgeText', 'logLevel', 'logSearch', 'logCount', 'btnLogHistory', 'btnLogSummary', 'btnLogSupport', 'btnCancelOps') {
         $c[$n] = $w.FindName($n)
     }
     $w.Title = "Helpdesk Tools $($Global:AppVersion)"
@@ -367,6 +368,7 @@ function New-HTMainWindow {
     $c.btnLogHide.Content = New-HTIconContent -Text '' -Icon 'E70D' -IconSize 12
     $c.btnLogHistory.Content = New-HTIconContent -Text '' -Icon 'E81C' -IconSize 12
     $c.btnLogSummary.Content = New-HTIconContent -Text 'Do zgłoszenia' -Icon 'E8A5' -IconSize 12
+    $c.btnLogSupport.Content = New-HTIconContent -Text 'Zgłoś problem' -Icon 'EBE8' -IconSize 12
     $c.logList.ItemsSource = $HT_UI.LogItems
     foreach ($level in $script:LogLevelFilters) { [void]$c.logLevel.Items.Add($level.Text) }
     $c.logLevel.SelectedIndex = 0
@@ -386,6 +388,7 @@ function New-HTMainWindow {
     $c.btnSearch.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTCommandPalette } })
     $c.btnCancelOps.add_Click({ Stop-HTBackground })
     $c.btnLogSummary.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTOperationSummaryDialog } })
+    $c.btnLogSupport.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTSupportDialog } })
     $c.btnLock.add_Click({ Invoke-HTUiAction -Module $null -Action { Lock-HTApplication } })
     $c.btnPassword.add_Click({ Invoke-HTUiAction -Module $null -Action { Show-HTPasswordGenerator } })
     $c.btnSettings.add_Click({ Invoke-HTUiAction -Module $null -Action { if (Show-HTSettingsDialog) { Show-HTToast 'Zapisano ustawienia.' 'ok' } } })
