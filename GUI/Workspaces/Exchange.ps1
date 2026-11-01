@@ -269,11 +269,11 @@ Register-HTModule -Workspace 'Exchange' -Category 'Poczta' -Key 'exo.autoreply' 
         if ($targets.Count -eq 1) { try { $current = Get-HTMailboxAutoReply -Identity $targets[0].PrimarySmtpAddress } catch { $current = $null } }
         $form = Show-HTFormDialog -Title 'Autoodpowiedź' -Description "Skrzynki: $($targets.Count)" -Icon 'E8BD' -Width 640 -Fields @(
             @{ Name = 'State'; Label = 'Tryb'; Type = 'Combo'; Options = @('Enabled', 'Scheduled', 'Disabled'); Default = $(if ($current) { "$($current.AutoReplyState)" } else { 'Enabled' }) }
-            @{ Name = 'Start'; Label = 'Od (dla Scheduled)'; Type = 'Date'; Optional = $true; Default = $(if ($current -and "$($current.AutoReplyState)" -eq 'Scheduled') { $current.StartTime } else { (Get-Date).Date.AddHours(8) }) }
-            @{ Name = 'End'; Label = 'Do (dla Scheduled)'; Type = 'Date'; Optional = $true; Default = $(if ($current -and "$($current.AutoReplyState)" -eq 'Scheduled') { $current.EndTime } else { (Get-Date).Date.AddDays(7).AddHours(17) }) }
-            @{ Name = 'Internal'; Label = 'Wiadomość wewnętrzna'; Type = 'Multiline'; Default = $(if ($current) { ConvertFrom-HTAutoReplyHtml $current.InternalMessage }) }
-            @{ Name = 'External'; Label = 'Wiadomość zewnętrzna (puste = jak wewnętrzna)'; Type = 'Multiline'; Default = $(if ($current) { ConvertFrom-HTAutoReplyHtml $current.ExternalMessage }) }
-            @{ Name = 'Audience'; Label = 'Odbiorcy zewnętrzni'; Type = 'Combo'; Options = @('All', 'Known', 'None'); Default = $(if ($current) { "$($current.ExternalAudience)" } else { 'All' }) }
+            @{ Name = 'Start'; Label = 'Od'; Type = 'Date'; Optional = $true; ShowWhen = @{ Field = 'State'; Values = @('Scheduled') }; Default = $(if ($current -and "$($current.AutoReplyState)" -eq 'Scheduled') { $current.StartTime } else { (Get-Date).Date.AddHours(8) }) }
+            @{ Name = 'End'; Label = 'Do'; Type = 'Date'; Optional = $true; ShowWhen = @{ Field = 'State'; Values = @('Scheduled') }; Default = $(if ($current -and "$($current.AutoReplyState)" -eq 'Scheduled') { $current.EndTime } else { (Get-Date).Date.AddDays(7).AddHours(17) }) }
+            @{ Name = 'Internal'; Label = 'Wiadomość wewnętrzna'; Type = 'Multiline'; ShowWhen = @{ Field = 'State'; Values = @('Enabled', 'Scheduled') }; Default = $(if ($current) { ConvertFrom-HTAutoReplyHtml $current.InternalMessage }) }
+            @{ Name = 'External'; Label = 'Wiadomość zewnętrzna (puste = jak wewnętrzna)'; Type = 'Multiline'; ShowWhen = @{ Field = 'State'; Values = @('Enabled', 'Scheduled') }; Default = $(if ($current) { ConvertFrom-HTAutoReplyHtml $current.ExternalMessage }) }
+            @{ Name = 'Audience'; Label = 'Odbiorcy zewnętrzni'; Type = 'Combo'; Options = @('All', 'Known', 'None'); ShowWhen = @{ Field = 'State'; Values = @('Enabled', 'Scheduled') }; Default = $(if ($current) { "$($current.ExternalAudience)" } else { 'All' }) }
         )
         if (-not $form) { return }
         if ($form.State -ne 'Disabled' -and -not $form.Internal) { Show-HTWarning 'Wpisz treść wiadomości.'; return }

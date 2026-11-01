@@ -1229,6 +1229,11 @@ function Show-InputBox {
 }
 
 $script:FormEvents = @{
+    Dependency   = {
+        param($s, $e)
+        $w = [System.Windows.Window]::GetWindow($s)
+        if ($w -and $w.Tag -is [hashtable] -and $w.Tag.Controls) { Update-HTFormDependents -Controls $w.Tag.Controls }
+    }
     NumericInput = {
         param($s, $e)
         if ($e.Text -notmatch '^\d+$') { $e.Handled = $true }
@@ -1257,6 +1262,8 @@ $script:FormEvents = @{
 function Get-HTFormFieldError {
     # Komunikat o błędzie pola formularza albo pusty tekst (pole poprawne)
     param([Parameter(Mandatory)][hashtable]$Entry)
+    # Pole ukryte warunkiem ShowWhen nie jest sprawdzane
+    if ($Entry.Hidden) { return '' }
     $f = $Entry.Field
     $value = Get-HTFormControlValue -Entry $Entry
     $label = [string]$f.Label
@@ -1300,7 +1307,8 @@ function Show-HTFormDialog {
     <#
         Formularz w oknie. -Fields: tablica hashtabel:
           @{ Name; Label; Type = Text|Password|Multiline|Combo|Check|Date|Number|Info|Header|Buttons; Default; Options;
-             Required; Validation; Editable; Optional; DateOnly; Min; Max; Placeholder; Hint }
+             Required; Validation; Editable; Optional; DateOnly; Min; Max; Placeholder; Hint;
+             ShowWhen = @{ Field = 'Tryb'; Values = @('Scheduled') } - pole widoczne tylko przy tych wartościach innego pola }
         Buttons: @{ Type = 'Buttons'; Buttons = @(@{ Text; Icon; OnClick = { param($w) } }) } - przyciski w treści formularza.
         -Sections: każdy Header zaczyna sekcję (lista sekcji po lewej, Icon - ikona sekcji, Hint - opis sekcji);
         okno ma stałą wysokość (-MaxHeight), a błąd walidacji przełącza na sekcję z błędnym polem.
@@ -1445,11 +1453,13 @@ function Show-HTFormDialog {
             $first = $false
             continue
         }
+        $fieldElements = New-Object System.Collections.Generic.List[object]
         if ($type -ne 'Check') {
             $caption = [string]$f.Label + $(if ($f.Required) { ' *' } else { '' })
             $lbl = New-HTDialogText -Text $caption -Color '#8791A5' -Size 12
             $lbl.Margin = $(if ($first) { '0,0,0,5' } else { '0,12,0,5' })
             [void]$stack.Children.Add($lbl)
+            $fieldElements.Add($lbl)
         }
         $ctl = $null
         switch ($type) {
@@ -1510,15 +1520,35 @@ function Show-HTFormDialog {
         if ($f.Placeholder -and $ctl -is [System.Windows.Controls.TextBox]) { $ctl.Tag = [string]$f.Placeholder }
         if ($f.ToolTip) { $ctl.ToolTip = [string]$f.ToolTip }
         [void]$stack.Children.Add($ctl)
+        $fieldElements.Add($ctl)
         if ($f.Hint) {
             $hint = New-HTDialogText -Text ([string]$f.Hint) -Color '#6B7487' -Size 11.5
             $hint.Margin = '1,5,0,0'
             [void]$stack.Children.Add($hint)
+            $fieldElements.Add($hint)
         }
-        $controls[[string]$f.Name] = @{ Type = $type; Control = $ctl; Field = $f; Nav = $nav }
+        $controls[[string]$f.Name] = @{ Type = $type; Control = $ctl; Field = $f; Nav = $nav; Elements = $fieldElements.ToArray(); Hidden = $false }
         $first = $false
     }
     $w.Tag.Controls = $controls
+    # Pola zależne (ShowWhen): widoczne tylko przy wybranych wartościach innego pola
+    $hasDependents = $false
+    foreach ($entry in @($controls.Values)) {
+        $condition = $entry.Field.ShowWhen
+        if (-not $condition -or -not $controls.Contains([string]$condition.Field)) { continue }
+        $source = $controls[[string]$condition.Field]
+        $entry.ShowWhen = @{ Source = $source; Values = @($condition.Values | ForEach-Object { [string]$_ }) }
+        if (-not $source.Watched) {
+            $source.Watched = $true
+            switch ($source.Type) {
+                'Combo' { $source.Control.add_SelectionChanged($script:FormEvents.Dependency); if ($source.Control.IsEditable) { $source.Control.AddHandler([System.Windows.Controls.Primitives.TextBoxBase]::TextChangedEvent, [System.Windows.Controls.TextChangedEventHandler]$script:FormEvents.Dependency) } }
+                'Check' { $source.Control.add_Checked($script:FormEvents.Dependency); $source.Control.add_Unchecked($script:FormEvents.Dependency) }
+                default { if ($source.Control -is [System.Windows.Controls.TextBox]) { $source.Control.add_TextChanged($script:FormEvents.Dependency) } }
+            }
+        }
+        $hasDependents = $true
+    }
+    if ($hasDependents) { Update-HTFormDependents -Controls $controls }
     foreach ($b in @((New-HTFormButtons -Buttons $ExtraButtons).Children)) {
         [void]$b.Parent.Children.Remove($b)
         [void]$w.FindName('dlgExtra').Children.Add($b)
@@ -1535,6 +1565,18 @@ function Show-HTFormDialog {
     $result = [ordered]@{}
     foreach ($name in $controls.Keys) { $result[$name] = Get-HTFormControlValue -Entry $controls[$name] }
     return $result
+}
+
+function Update-HTFormDependents {
+    # Widoczność pól zależnych (ShowWhen) według bieżących wartości pól źródłowych
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Controls)
+    foreach ($entry in @($Controls.Values)) {
+        if (-not $entry.ShowWhen) { continue }
+        $value = Get-HTFormControlValue -Entry $entry.ShowWhen.Source
+        $visible = $entry.ShowWhen.Values -contains [string]$value
+        $entry.Hidden = -not $visible
+        foreach ($element in @($entry.Elements)) { $element.Visibility = if ($visible) { 'Visible' } else { 'Collapsed' } }
+    }
 }
 
 function Get-HTFormControlValue {
